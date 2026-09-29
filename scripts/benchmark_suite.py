@@ -3,18 +3,14 @@
 AeroDesk Polyglot Benchmark & Stress Verification Suite (Python 3.14)
 Verifies and benchmarks:
   1. C++20 + x86-64 AVX2 Assembly SIMD Kernels (AeroDeskTests.exe)
-  2. C# .NET 10 Standalone Rendezvous & Relay Server (AeroDeskRelay --self-test & 50-peer stress test)
-  3. Node.js v24 Web Portal Gateway (HTTP + WebSocket protocol smoke check)
+  2. C# .NET 10 Standalone Rendezvous & Relay Server (AeroDeskRelay --self-test & 40-peer stress test)
 """
 
-import os
 import socket
 import struct
 import subprocess
 import sys
 import time
-import urllib.request
-import json
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -70,7 +66,6 @@ def benchmark_dotnet_relay() -> tuple[int, float, float]:
     )
 
     try:
-        # Wait for server to bind
         time.sleep(0.45)
         peer_sockets: list[socket.socket] = []
         num_peers = 40
@@ -112,37 +107,6 @@ def benchmark_dotnet_relay() -> tuple[int, float, float]:
             proc.kill()
 
 
-def verify_node_web_gateway() -> float:
-    """Starts the Node.js v24 Web Gateway on a test port and verifies HTTP + /api/peers latency."""
-    env = os.environ.copy()
-    env["PORT"] = "18081"
-    proc = subprocess.Popen(
-        ["node", str(ROOT / "web" / "server.mjs")],
-        env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-    )
-    try:
-        time.sleep(0.35)
-        t0 = time.perf_counter()
-        with urllib.request.urlopen("http://127.0.0.1:18081/api/peers", timeout=2.0) as resp:
-            assert resp.status == 200
-            data = json.loads(resp.read().decode("utf-8"))
-            assert "webViewerId" in data and len(data["webViewerId"]) == 11
-        with urllib.request.urlopen("http://127.0.0.1:18081/", timeout=2.0) as html_resp:
-            assert html_resp.status == 200
-            html = html_resp.read().decode("utf-8")
-            assert "AeroDesk" in html and "WEB PORTAL" in html
-        return (time.perf_counter() - t0) * 1000.0
-    finally:
-        proc.terminate()
-        try:
-            proc.wait(timeout=2.0)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-
-
 def main() -> int:
     print("=================================================================")
     print("   AeroDesk Polyglot Verification & Performance Benchmark (Py3)  ")
@@ -151,24 +115,19 @@ def main() -> int:
     # 1. C++20 + x86-64 AVX2 Assembly Test Suite
     test_exe = ROOT / "AeroDeskTests.exe"
     if test_exe.exists():
-        print("[1/3] Running Native C++20 + x86-64 AVX2 Assembly Test Suite...")
+        print("[1/2] Running Native C++20 + x86-64 AVX2 Assembly Test Suite...")
         res = subprocess.run([str(test_exe)], capture_output=True, text=True, check=True)
         for line in res.stdout.splitlines():
             if "AVX2" in line or "Assertions Passed" in line:
                 print(f"      {line.strip()}")
 
     # 2. C# .NET 10 Relay Stress Test
-    print("[2/3] Stress-Testing C# (.NET 10) Standalone Relay Server...")
+    print("[2/2] Stress-Testing C# (.NET 10) Standalone Relay Server...")
     peers, reg_total_ms, avg_lookup_ms = benchmark_dotnet_relay()
     print(f"      Registered {peers} concurrent hosts in {reg_total_ms:.1f} ms | Avg ID Lookup: {avg_lookup_ms:.2f} ms")
 
-    # 3. Node.js v24 Web Portal Verification
-    print("[3/3] Verifying Node.js v24 Web Gateway & HTML5/CSS/JS Frontend...")
-    web_ms = verify_node_web_gateway()
-    print(f"      Web Portal HTTP + /api/peers verified in {web_ms:.2f} ms")
-
     print("-----------------------------------------------------------------")
-    print("Polyglot Stack Status: ALL 4 LANGUAGE RUNTIMES VERIFIED (PASS)")
+    print("Polyglot Stack Status: ALL NATIVE & RELAY RUNTIMES VERIFIED (PASS)")
     print("=================================================================")
     return 0
 

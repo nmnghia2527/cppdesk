@@ -1201,17 +1201,6 @@ void AeroDeskWindow::drawTopNavBar(float width, float& outTopOffset) {
                    applyWindowThemeAttribute();
                    showToast(s.darkTheme ? "Switched to Dark Mode (Obsidian & Crimson Red)." : "Switched to Light Mode (White & Crimson Red).");
                }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
-
-    if (themeBtn.left - 110.0f > settTab.right + 12.0f) {
-        UiRect webBtn = { themeBtn.left - 106.0f, 11.0f, themeBtn.left - 8.0f, 45.0f };
-        drawButton("btn_web_portal", webBtn, "Web Portal",
-                   COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY,
-                   7.5f, [this]() {
-                       ShellExecuteA(nullptr, "open", "node", "web/server.mjs", nullptr, SW_HIDE);
-                       ShellExecuteA(nullptr, "open", "http://localhost:8080", nullptr, nullptr, SW_SHOWNORMAL);
-                       showToast("Launched Browser Web Portal at http://localhost:8080");
-                   }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
-    }
 }
 
 // ---------------- Dashboard View ----------------
