@@ -1,0 +1,412 @@
+using System.Buffers.Binary;
+using System.Collections.Concurrent;
+using System.Net;
+using System.Net.Sockets;
+using System.Security.Cryptography;
+using System.Text;
+
+namespace AeroDeskRelay;
+
+internal static class Program
+{
+    private const uint ProtocolMagic = 0x4144534B; // "ADSK"
+    private const int DefaultRelayPort = 50999;
+    private const int MaxPayloadSize = 32 * 1024 * 1024;
+
+    private const byte PacketPing              = 0x07;
+    private const byte PacketPong              = 0x08;
+    private const byte PacketRelayRegister     = 0x50;
+    private const byte PacketRelayRegisterAck  = 0x51;
+    private const byte PacketRelayLookup       = 0x52;
+    private const byte PacketRelayLookupResp   = 0x53;
+    private const byte PacketRelayConnectReq   = 0x54;
+    private const byte PacketRelayIncomingReq  = 0x55;
+    private const byte PacketRelayBridgeAccept = 0x56;
+    private const byte PacketRelayBridgeReady  = 0x57;
+
+    private sealed record RegisteredHost(
+        ulong DeskId,
+        string Hostname,
+        string Ip,
+        ushort TcpPort,
+        NetworkStream ControlStream,
+        DateTime RegisteredAtUtc);
+
+    private static readonly ConcurrentDictionary<ulong, RegisteredHost> Hosts = new();
+    private static readonly ConcurrentDictionary<ulong, TaskCompletionSource<TcpClient>> PendingBridges = new();
+    private static long _totalLookups;
+    private static long _activeBridges;
+
+    public static async Task<int> Main(string[] args)
+    {
+        int port = DefaultRelayPort;
+        bool selfTest = false;
+
+        for (int i = 0; i < args.Length; i++)
+        {
+            if (args[i] == "--port" && i + 1 < args.Length && int.TryParse(args[i + 1], out int p))
+            {
+                port = p;
+                i++;
+            }
+            else if (args[i] == "--self-test")
+            {
+                selfTest = true;
+            }
+        }
+
+        using var cts = new CancellationTokenSource();
+        Console.CancelKeyPress += (_, e) =>
+        {
+            e.Cancel = true;
+            cts.Cancel();
+        };
+
+        var listener = new TcpListener(IPAddress.Any, port);
+        listener.Server.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
+        listener.Start();
+
+        int boundPort = ((IPEndPoint)listener.LocalEndpoint).Port;
+        Log($"AeroDesk .NET 10 Rendezvous & Relay Server listening on 0.0.0.0:{boundPort}");
+
+        if (selfTest)
+        {
+            _ = Task.Run(() => AcceptLoopAsync(listener, cts.Token));
+            bool ok = await RunSelfTestAsync(boundPort);
+            cts.Cancel();
+            listener.Stop();
+            return ok ? 0 : 1;
+        }
+
+        await AcceptLoopAsync(listener, cts.Token);
+        listener.Stop();
+        return 0;
+    }
+
+    private static async Task AcceptLoopAsync(TcpListener listener, CancellationToken ct)
+    {
+        while (!ct.IsCancellationRequested)
+        {
+            try
+            {
+                TcpClient client = await listener.AcceptTcpClientAsync(ct);
+                client.NoDelay = true;
+                _ = Task.Run(() => HandleClientAsync(client, ct), ct);
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
+            catch
+            {
+                // Ignore transient accept error
+            }
+        }
+    }
+
+    private static async Task HandleClientAsync(TcpClient client, CancellationToken ct)
+    {
+        bool keepAlive = false;
+        try
+        {
+            NetworkStream stream = client.GetStream();
+            var (ok, type, _, payload) = await ReadFrameAsync(stream, ct);
+            if (!ok) return;
+
+            switch (type)
+            {
+                case PacketRelayRegister:
+                {
+                    int pos = 0;
+                    ulong deskId = ReadU64(payload, ref pos);
+                    string hostname = ReadString(payload, ref pos);
+                    string ip = ReadString(payload, ref pos);
+                    ushort tcpPort = ReadU16(payload, ref pos);
+
+                    if (string.IsNullOrWhiteSpace(ip) && client.Client.RemoteEndPoint is IPEndPoint ep)
+                    {
+                        ip = ep.Address.ToString();
+                    }
+
+                    var host = new RegisteredHost(deskId, hostname, ip, tcpPort, stream, DateTime.UtcNow);
+                    Hosts[deskId] = host;
+
+                    await WriteFrameAsync(stream, PacketRelayRegisterAck, 0, new byte[] { 1 }, ct);
+                    Log($"Registered Host {FormatDeskId(deskId)} ({hostname} @ {ip}:{tcpPort}) | Active Hosts: {Hosts.Count}");
+
+                    keepAlive = true;
+                    try
+                    {
+                        while (!ct.IsCancellationRequested)
+                        {
+                            var (pOk, pType, _, _) = await ReadFrameAsync(stream, ct);
+                            if (!pOk) break;
+                            if (pType == PacketPing)
+                            {
+                                await WriteFrameAsync(stream, PacketPong, 0, Array.Empty<byte>(), ct);
+                            }
+                        }
+                    }
+                    finally
+                    {
+                        Hosts.TryRemove(deskId, out _);
+                        client.Dispose();
+                        Log($"Unregistered Host {FormatDeskId(deskId)} | Active Hosts: {Hosts.Count}");
+                    }
+                    break;
+                }
+
+                case PacketRelayLookup:
+                {
+                    Interlocked.Increment(ref _totalLookups);
+                    int pos = 0;
+                    ulong targetId = ReadU64(payload, ref pos);
+
+                    using var ms = new MemoryStream();
+                    if (Hosts.TryGetValue(targetId, out RegisteredHost? foundHost))
+                    {
+                        ms.WriteByte(1);
+                        WriteString(ms, foundHost.Ip);
+                        WriteU16(ms, foundHost.TcpPort);
+                        WriteString(ms, foundHost.Hostname);
+                    }
+                    else
+                    {
+                        ms.WriteByte(0);
+                        WriteString(ms, string.Empty);
+                        WriteU16(ms, 0);
+                        WriteString(ms, string.Empty);
+                    }
+
+                    await WriteFrameAsync(stream, PacketRelayLookupResp, 0, ms.ToArray(), ct);
+                    break;
+                }
+
+                case PacketRelayConnectReq:
+                {
+                    int pos = 0;
+                    ulong targetId = ReadU64(payload, ref pos);
+
+                    if (!Hosts.TryGetValue(targetId, out RegisteredHost? host))
+                    {
+                        await WriteFrameAsync(stream, PacketRelayBridgeReady, 0, new byte[] { 0 }, ct);
+                        break;
+                    }
+
+                    ulong token = BinaryPrimitives.ReadUInt64LittleEndian(RandomNumberGenerator.GetBytes(8));
+                    var tcs = new TaskCompletionSource<TcpClient>(TaskCreationOptions.RunContinuationsAsynchronously);
+                    PendingBridges[token] = tcs;
+
+                    byte[] reqPayload = new byte[8];
+                    BinaryPrimitives.WriteUInt64LittleEndian(reqPayload, token);
+                    await WriteFrameAsync(host.ControlStream, PacketRelayIncomingReq, 0, reqPayload, ct);
+
+                    using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                    timeoutCts.CancelAfter(TimeSpan.FromMilliseconds(3500));
+
+                    TcpClient? hostBridgeClient = null;
+                    try
+                    {
+                        hostBridgeClient = await tcs.Task.WaitAsync(timeoutCts.Token);
+                    }
+                    catch
+                    {
+                        PendingBridges.TryRemove(token, out _);
+                    }
+
+                    if (hostBridgeClient is null)
+                    {
+                        await WriteFrameAsync(stream, PacketRelayBridgeReady, 0, new byte[] { 0 }, ct);
+                        break;
+                    }
+
+                    await WriteFrameAsync(stream, PacketRelayBridgeReady, 0, new byte[] { 1 }, ct);
+
+                    keepAlive = true;
+                    Interlocked.Increment(ref _activeBridges);
+                    Log($"Bridged Relay Session for {FormatDeskId(targetId)} (Active Bridges: {Interlocked.Read(ref _activeBridges)})");
+
+                    try
+                    {
+                        NetworkStream hostBridgeStream = hostBridgeClient.GetStream();
+                        Task t1 = stream.CopyToAsync(hostBridgeStream, ct);
+                        Task t2 = hostBridgeStream.CopyToAsync(stream, ct);
+                        await Task.WhenAny(t1, t2);
+                    }
+                    finally
+                    {
+                        Interlocked.Decrement(ref _activeBridges);
+                        hostBridgeClient.Dispose();
+                        client.Dispose();
+                    }
+                    break;
+                }
+
+                case PacketRelayBridgeAccept:
+                {
+                    int pos = 0;
+                    ulong token = ReadU64(payload, ref pos);
+                    if (PendingBridges.TryRemove(token, out var tcs))
+                    {
+                        keepAlive = true;
+                        tcs.TrySetResult(client);
+                    }
+                    break;
+                }
+            }
+        }
+        catch
+        {
+            // Connection closed
+        }
+        finally
+        {
+            if (!keepAlive)
+            {
+                client.Dispose();
+            }
+        }
+    }
+
+    private static async Task<(bool Ok, byte Type, byte Flags, byte[] Payload)> ReadFrameAsync(NetworkStream stream, CancellationToken ct)
+    {
+        byte[] hdr = new byte[10];
+        if (!await ReadExactAsync(stream, hdr, ct)) return (false, 0, 0, Array.Empty<byte>());
+
+        uint magic = BinaryPrimitives.ReadUInt32LittleEndian(hdr.AsSpan(0, 4));
+        if (magic != ProtocolMagic) return (false, 0, 0, Array.Empty<byte>());
+
+        byte type = hdr[4];
+        byte flags = hdr[5];
+        uint size = BinaryPrimitives.ReadUInt32LittleEndian(hdr.AsSpan(6, 4));
+        if (size > MaxPayloadSize) return (false, 0, 0, Array.Empty<byte>());
+
+        byte[] payload = size > 0 ? new byte[size] : Array.Empty<byte>();
+        if (size > 0 && !await ReadExactAsync(stream, payload, ct))
+        {
+            return (false, 0, 0, Array.Empty<byte>());
+        }
+        return (true, type, flags, payload);
+    }
+
+    private static async Task<bool> ReadExactAsync(NetworkStream stream, byte[] buffer, CancellationToken ct)
+    {
+        int offset = 0;
+        while (offset < buffer.Length)
+        {
+            int n = await stream.ReadAsync(buffer.AsMemory(offset, buffer.Length - offset), ct);
+            if (n <= 0) return false;
+            offset += n;
+        }
+        return true;
+    }
+
+    private static async Task WriteFrameAsync(NetworkStream stream, byte type, byte flags, byte[] payload, CancellationToken ct)
+    {
+        byte[] frame = new byte[10 + payload.Length];
+        BinaryPrimitives.WriteUInt32LittleEndian(frame.AsSpan(0, 4), ProtocolMagic);
+        frame[4] = type;
+        frame[5] = flags;
+        BinaryPrimitives.WriteUInt32LittleEndian(frame.AsSpan(6, 4), (uint)payload.Length);
+        if (payload.Length > 0)
+        {
+            Buffer.BlockCopy(payload, 0, frame, 10, payload.Length);
+        }
+        await stream.WriteAsync(frame, ct);
+    }
+
+    private static ushort ReadU16(byte[] buf, ref int pos)
+    {
+        ushort v = BinaryPrimitives.ReadUInt16LittleEndian(buf.AsSpan(pos, 2));
+        pos += 2;
+        return v;
+    }
+
+    private static ulong ReadU64(byte[] buf, ref int pos)
+    {
+        ulong v = BinaryPrimitives.ReadUInt64LittleEndian(buf.AsSpan(pos, 8));
+        pos += 8;
+        return v;
+    }
+
+    private static string ReadString(byte[] buf, ref int pos)
+    {
+        ushort len = ReadU16(buf, ref pos);
+        string s = Encoding.UTF8.GetString(buf, pos, len);
+        pos += len;
+        return s;
+    }
+
+    private static void WriteU16(MemoryStream ms, ushort val)
+    {
+        Span<byte> b = stackalloc byte[2];
+        BinaryPrimitives.WriteUInt16LittleEndian(b, val);
+        ms.Write(b);
+    }
+
+    private static void WriteU64(MemoryStream ms, ulong val)
+    {
+        Span<byte> b = stackalloc byte[8];
+        BinaryPrimitives.WriteUInt64LittleEndian(b, val);
+        ms.Write(b);
+    }
+
+    private static void WriteString(MemoryStream ms, string s)
+    {
+        byte[] bytes = Encoding.UTF8.GetBytes(s);
+        ushort len = (ushort)Math.Min(bytes.Length, 65535);
+        WriteU16(ms, len);
+        ms.Write(bytes, 0, len);
+    }
+
+    private static string FormatDeskId(ulong id)
+    {
+        string s = id.ToString("D9");
+        return s.Length == 9 ? $"{s[..3]} {s[3..6]} {s[6..9]}" : s;
+    }
+
+    private static void Log(string msg)
+    {
+        Console.WriteLine($"[{DateTime.Now:HH:mm:ss}] {msg}");
+    }
+
+    private static async Task<bool> RunSelfTestAsync(int port)
+    {
+        using var hostClient = new TcpClient();
+        await hostClient.ConnectAsync(IPAddress.Loopback, port);
+        NetworkStream hStream = hostClient.GetStream();
+
+        using var regMs = new MemoryStream();
+        WriteU64(regMs, 482910375UL);
+        WriteString(regMs, "DotNet-TestHost");
+        WriteString(regMs, "127.0.0.1");
+        WriteU16(regMs, 50990);
+
+        await WriteFrameAsync(hStream, PacketRelayRegister, 0, regMs.ToArray(), CancellationToken.None);
+        var (ackOk, ackType, _, ackPay) = await ReadFrameAsync(hStream, CancellationToken.None);
+        if (!ackOk || ackType != PacketRelayRegisterAck || ackPay.Length < 1 || ackPay[0] != 1)
+        {
+            return false;
+        }
+
+        using var lookupClient = new TcpClient();
+        await lookupClient.ConnectAsync(IPAddress.Loopback, port);
+        NetworkStream lStream = lookupClient.GetStream();
+
+        using var lookMs = new MemoryStream();
+        WriteU64(lookMs, 482910375UL);
+        await WriteFrameAsync(lStream, PacketRelayLookup, 0, lookMs.ToArray(), CancellationToken.None);
+
+        var (respOk, respType, _, respPay) = await ReadFrameAsync(lStream, CancellationToken.None);
+        if (!respOk || respType != PacketRelayLookupResp) return false;
+
+        int pos = 0;
+        byte found = respPay[pos++];
+        string ip = ReadString(respPay, ref pos);
+        ushort hostPort = ReadU16(respPay, ref pos);
+        string hostName = ReadString(respPay, ref pos);
+
+        Log($"Self-test verified: Found={found}, Host={hostName}, Endpoint={ip}:{hostPort}");
+        return found == 1 && ip == "127.0.0.1" && hostPort == 50990 && hostName == "DotNet-TestHost";
+    }
+}

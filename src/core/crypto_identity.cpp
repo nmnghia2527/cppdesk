@@ -1,4 +1,5 @@
 #include "crypto_identity.hpp"
+#include "../simd/simd_kernels.hpp"
 #include "protocol.hpp"
 
 #ifndef WIN32_LEAN_AND_MEAN
@@ -175,6 +176,19 @@ void CryptoUtils::transformPayload(
     };
 
     size_t i = 0;
+    if (SimdKernels::hasAvx2() && len >= 32) {
+        alignas(32) uint64_t ksBatch[32]; // Up to 8 x 32-byte (256-bit) AVX2 blocks per call
+        while (i + 32 <= len) {
+            size_t blocks = std::min<size_t>((len - i) / 32, 8);
+            size_t words = blocks * 4;
+            for (size_t w = 0; w < words; ++w) {
+                ksBatch[w] = nextWord();
+            }
+            aerodesk_avx2_xor_blocks32(data + i, reinterpret_cast<const uint8_t*>(ksBatch), blocks);
+            i += blocks * 32;
+        }
+    }
+
     while (i + 8 <= len) {
         uint64_t ks = nextWord();
         uint64_t chunk = 0;

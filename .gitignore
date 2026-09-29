@@ -3,7 +3,7 @@
 .claude/
 .gemini/
 
-# Compiler / IDE temporaries
+# Compiler / IDE / .NET / Python temporaries
 *.o
 *.obj
 *.pdb
@@ -12,3 +12,7 @@
 *.tmp
 *.part
 config_*.ini
+relay-dotnet/bin/
+relay-dotnet/obj/
+__pycache__/
+*.pyc

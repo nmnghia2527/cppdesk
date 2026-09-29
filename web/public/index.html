@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AeroDesk Web Portal — Zero-Install Remote Desktop Viewer</title>
+    <meta name="description" content="AeroDesk Browser Remote Desktop Client with End-to-End Encryption, 9-Digit Desk ID resolution, and Hybrid Zstd/JPEG streaming." />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500;700&family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+    <div class="app-shell">
+        <header class="topbar">
+            <div class="brand">
+                <div class="brand-logo" aria-hidden="true">A</div>
+                <div>
+                    <h1>AeroDesk <span class="badge-pill">WEB PORTAL</span></h1>
+                    <p class="subtitle">Zero-Install Browser Viewer &bull; Native E2EE Protocol Bridge</p>
+                </div>
+            </div>
+            <div class="topbar-actions">
+                <div class="client-id-chip" id="web-client-id-chip" title="Your temporary Web Viewer Desk ID">
+                    <span class="dot-online"></span>
+                    <span id="web-viewer-id">--- --- ---</span>
+                </div>
+                <button id="btn-theme-toggle" class="btn-secondary" type="button" aria-label="Toggle Light/Dark Crimson Theme">
+                    Dark Mode
+                </button>
+            </div>
+        </header>
+
+        <main class="workspace">
+            <!-- Connection & LAN Discovery Panel -->
+            <section id="connect-panel" class="panel-grid">
+                <div class="card hero-card">
+                    <div class="card-accent-bar"></div>
+                    <h2>Connect to Remote Windows Desk</h2>
+                    <p class="card-desc">Enter the 9-digit AeroDesk ID or <code>IP:Port</code> of any running AeroDesk Host. Leave password blank for interactive Host approval.</p>
+
+                    <form id="connect-form" class="connect-form">
+                        <div class="field-group">
+                            <label for="input-target-id">Remote 9-Digit Desk ID or IP:Port</label>
+                            <input id="input-target-id" type="text" placeholder="e.g. 482 910 375 or 127.0.0.1:50990" autocomplete="off" required />
+                        </div>
+                        <div class="field-group">
+                            <label for="input-password">Unattended Password or 6-Char Session Code (Optional)</label>
+                            <input id="input-password" type="password" placeholder="Leave blank to request interactive approval" autocomplete="off" />
+                        </div>
+                        <div class="form-actions">
+                            <button id="btn-connect" type="submit" class="btn-primary">Connect to Desk</button>
+                        </div>
+                    </form>
+                    <div id="status-banner" class="status-banner hidden"></div>
+                </div>
+
+                <div class="card peers-card">
+                    <div class="card-header-row">
+                        <h2>Discovered on LAN</h2>
+                        <button id="btn-refresh-peers" type="button" class="btn-ghost">Refresh</button>
+                    </div>
+                    <p class="card-desc">Click any discovered AeroDesk Host below to auto-fill its 9-digit Desk ID.</p>
+                    <div id="peers-list" class="peers-list">
+                        <div class="empty-state">Scanning local network on UDP port 50998...</div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Active Remote Session Viewport -->
+            <section id="session-panel" class="session-panel hidden">
+                <div class="session-toolbar">
+                    <div class="session-meta">
+                        <span class="dot-online"></span>
+                        <strong id="session-host-label">Connected</strong>
+                        <span id="session-sas-badge" class="sas-badge">E2EE SAS: ----</span>
+                        <span id="session-metrics" class="metrics-chip">RTT: -- ms</span>
+                    </div>
+                    <div class="toolbar-controls">
+                        <select id="select-quality" aria-label="Stream Quality Preset">
+                            <option value="0">Ultra (Zstd)</option>
+                            <option value="1" selected>Balanced</option>
+                            <option value="2">Low Bandwidth</option>
+                        </select>
+                        <select id="select-fps" aria-label="Target Frame Rate">
+                            <option value="15">15 FPS</option>
+                            <option value="30" selected>30 FPS</option>
+                            <option value="60">60 FPS</option>
+                        </select>
+                        <button id="btn-task-mgr" type="button" class="btn-secondary">Task Mgr</button>
+                        <button id="btn-toggle-chat" type="button" class="btn-secondary">Live Chat</button>
+                        <button id="btn-disconnect" type="button" class="btn-danger">Disconnect</button>
+                    </div>
+                </div>
+
+                <div class="session-stage">
+                    <div class="canvas-Stage-wrap" id="canvas-wrap">
+                        <canvas id="remote-canvas" width="1280" height="720" tabindex="0"></canvas>
+                    </div>
+
+                    <aside id="chat-drawer" class="chat-drawer hidden">
+                        <div class="chat-header">
+                            <h3>Encrypted Session Chat</h3>
+                        </div>
+                        <div id="chat-messages" class="chat-messages"></div>
+                        <form id="chat-form" class="chat-form">
+                            <input id="input-chat" type="text" placeholder="Type encrypted message..." autocomplete="off" />
+                            <button id="btn-send-chat" type="submit" class="btn-primary">Send</button>
+                        </form>
+                    </aside>
+                </div>
+            </section>
+        </main>
+    </div>
+    <script src="/app.js"></script>
+</body>
+</html>

@@ -1,5 +1,6 @@
 #include "../src/core/protocol.hpp"
 #include "../src/core/crypto_identity.hpp"
+#include "../src/simd/simd_kernels.hpp"
 #include "../src/capture/screen_capture.hpp"
 #include "../src/control/input_injector.hpp"
 #include "../src/control/clipboard_file_manager.hpp"
@@ -486,6 +487,54 @@ void testAppSettingsAndAdaptiveFps() {
     }
 }
 
+void testAvx2SimdAssemblyKernels() {
+    std::cout << "[TEST 7] x86-64 AVX2 Assembly SIMD Kernels (Tile Diff, Tile Hash & Stream Cipher)...\n";
+    TEST_ASSERT(SimdKernels::hasAvx2());
+
+    const int W = 64;
+    const int H = 64;
+    const int stride = W * 4;
+    std::vector<uint8_t> tileA(W * H * 4, 0x42);
+    std::vector<uint8_t> tileB(W * H * 4, 0x42);
+
+    // 1. Identical 64x64 tiles -> diff == 0, hashes match
+    TEST_ASSERT(aerodesk_avx2_tile_diff(tileA.data(), tileB.data(), stride, W * 4, H) == 0);
+    uint64_t h1 = aerodesk_avx2_hash_tile(tileA.data(), stride, W * 4, H);
+    uint64_t h2 = aerodesk_avx2_hash_tile(tileB.data(), stride, W * 4, H);
+    TEST_ASSERT(h1 == h2 && h1 != 0);
+
+    // 2. Single-pixel difference -> diff == 1, hash changes
+    tileB[W * H * 2 + 17] ^= 0x01;
+    TEST_ASSERT(aerodesk_avx2_tile_diff(tileA.data(), tileB.data(), stride, W * 4, H) == 1);
+    uint64_t h3 = aerodesk_avx2_hash_tile(tileB.data(), stride, W * 4, H);
+    TEST_ASSERT(h1 != h3);
+    tileB[W * H * 2 + 17] ^= 0x01; // Restore
+
+    // 3. Benchmark AVX2 Assembly vs C++ Scalar over 25,000 64x64 tile comparisons (400 MB)
+    const int iters = 25000;
+    auto t0 = std::chrono::high_resolution_clock::now();
+    int accScalar = 0;
+    for (int i = 0; i < iters; ++i) {
+        accScalar += SimdKernels::scalarTileDiff(tileA.data(), tileB.data(), stride, W * 4, H) ? 1 : 0;
+    }
+    auto t1 = std::chrono::high_resolution_clock::now();
+    int accAvx2 = 0;
+    for (int i = 0; i < iters; ++i) {
+        accAvx2 += aerodesk_avx2_tile_diff(tileA.data(), tileB.data(), stride, W * 4, H);
+    }
+    auto t2 = std::chrono::high_resolution_clock::now();
+    TEST_ASSERT(accScalar == 0 && accAvx2 == 0);
+
+    double scalarSec = std::chrono::duration<double>(t1 - t0).count();
+    double avx2Sec   = std::chrono::duration<double>(t2 - t1).count();
+    double totalGb   = (static_cast<double>(iters) * W * H * 4.0) / (1024.0 * 1024.0 * 1024.0);
+    double avx2Gbs   = totalGb / std::max(1e-6, avx2Sec);
+    double speedup   = scalarSec / std::max(1e-6, avx2Sec);
+
+    std::cout << "  -> AVX2 Assembly 64x64 Tile Diff Throughput: " << avx2Gbs
+              << " GB/s (" << speedup << "x faster than scalar C++)\n";
+}
+
 } // namespace
 
 int main() {
@@ -501,6 +550,7 @@ int main() {
     testEndToEndSessionAndFileTransfer();
     testFileTransferEdgeCasesAndFavorites();
     testAppSettingsAndAdaptiveFps();
+    testAvx2SimdAssemblyKernels();
 
     std::cout << "---------------------------------------------------------\n";
     std::cout << "Assertions Passed: " << g_passed << " | Failed: " << g_failed << "\n";

@@ -1,4 +1,5 @@
 #include "screen_capture.hpp"
+#include "../simd/simd_kernels.hpp"
 
 #include <windows.h>
 #include <objidl.h>
@@ -40,6 +41,11 @@ bool findJpegEncoderClsid(CLSID* pClsid) {
 }
 
 uint64_t hashTileBgra(const uint8_t* frame, int frameStride, int startX, int startY, int w, int h) {
+    const uint8_t* tileTopLeft = frame + static_cast<size_t>(startY) * frameStride + static_cast<size_t>(startX) * 4;
+    if (SimdKernels::hasAvx2()) {
+        return aerodesk_avx2_hash_tile(tileTopLeft, frameStride, w * 4, h);
+    }
+
     uint64_t hash = 14695981039346656037ULL;
     for (int ry = 0; ry < h; ++ry) {
         const uint64_t* rowPtr = reinterpret_cast<const uint64_t*>(
