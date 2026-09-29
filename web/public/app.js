@@ -279,4 +279,12 @@
         ev.preventDefault();
         ws.send(JSON.stringify({ type: 'key', vk: ev.keyCode || ev.which, down: false }));
     });
+
+    const releaseAllModifiers = () => {
+        if (isConnected && ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: 'release_all' }));
+        }
+    };
+    window.addEventListener('blur', releaseAllModifiers);
+    canvas.addEventListener('blur', releaseAllModifiers);
 })();

@@ -30,6 +30,7 @@ internal static class Program
         string Ip,
         ushort TcpPort,
         NetworkStream ControlStream,
+        SemaphoreSlim WriteLock,
         DateTime RegisteredAtUtc);
 
     private static readonly ConcurrentDictionary<ulong, RegisteredHost> Hosts = new();
@@ -128,7 +129,7 @@ internal static class Program
                         ip = ep.Address.ToString();
                     }
 
-                    var host = new RegisteredHost(deskId, hostname, ip, tcpPort, stream, DateTime.UtcNow);
+                    var host = new RegisteredHost(deskId, hostname, ip, tcpPort, stream, new SemaphoreSlim(1, 1), DateTime.UtcNow);
                     Hosts[deskId] = host;
 
                     await WriteFrameAsync(stream, PacketRelayRegisterAck, 0, new byte[] { 1 }, ct);
@@ -143,7 +144,15 @@ internal static class Program
                             if (!pOk) break;
                             if (pType == PacketPing)
                             {
-                                await WriteFrameAsync(stream, PacketPong, 0, Array.Empty<byte>(), ct);
+                                await host.WriteLock.WaitAsync(ct);
+                                try
+                                {
+                                    await WriteFrameAsync(stream, PacketPong, 0, Array.Empty<byte>(), ct);
+                                }
+                                finally
+                                {
+                                    host.WriteLock.Release();
+                                }
                             }
                         }
                     }
@@ -199,7 +208,15 @@ internal static class Program
 
                     byte[] reqPayload = new byte[8];
                     BinaryPrimitives.WriteUInt64LittleEndian(reqPayload, token);
-                    await WriteFrameAsync(host.ControlStream, PacketRelayIncomingReq, 0, reqPayload, ct);
+                    await host.WriteLock.WaitAsync(ct);
+                    try
+                    {
+                        await WriteFrameAsync(host.ControlStream, PacketRelayIncomingReq, 0, reqPayload, ct);
+                    }
+                    finally
+                    {
+                        host.WriteLock.Release();
+                    }
 
                     using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
                     timeoutCts.CancelAfter(TimeSpan.FromMilliseconds(3500));

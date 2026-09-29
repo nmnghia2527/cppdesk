@@ -375,6 +375,11 @@ function attachWsBridge(wsSocket) {
                     const pktType = tcpRecvBuf.readUInt8(4);
                     const flags = tcpRecvBuf.readUInt8(5);
                     const payloadLen = tcpRecvBuf.readUInt32LE(6);
+                    if (payloadLen > 32 * 1024 * 1024) {
+                        cleanupTcp();
+                        sendWsJson(wsSocket, { type: 'error', message: 'Oversized frame rejected.' });
+                        return;
+                    }
                     if (tcpRecvBuf.length < 10 + payloadLen) break;
 
                     const payload = Buffer.from(tcpRecvBuf.subarray(10, 10 + payloadLen));
@@ -441,6 +446,8 @@ function attachWsBridge(wsSocket) {
             b.writeUInt8(cmd.down ? 1 : 0, 4);
             b.writeUInt8(0, 5);
             sendAeroFrame(PacketType.INPUT_KEY_EVENT, 0, b);
+        } else if (cmd.type === 'release_all' && encrypted) {
+            sendAeroFrame(PacketType.INPUT_RELEASE_ALL, 0, null);
         } else if (cmd.type === 'video_control' && encrypted) {
             const b = Buffer.allocUnsafe(8);
             b.writeUInt8(Number(cmd.quality ?? 1), 0);
@@ -466,7 +473,6 @@ function attachWsBridge(wsSocket) {
         const readI32 = () => { const v = payload.readInt32LE(pos); pos += 4; return v; };
         const readU32 = () => { const v = payload.readUInt32LE(pos); pos += 4; return v; };
         const readU64 = () => { const v = payload.readBigUInt64LE(pos); pos += 8; return v; };
-        const readF32 = () => { const v = payload.readFloatLE(pos); pos += 4; return v; };
         const readString = () => {
             const len = readU16();
             const s = payload.subarray(pos, pos + len).toString('utf8');
@@ -558,7 +564,7 @@ function attachWsBridge(wsSocket) {
                 pos += dSize;
 
                 if (enc === 2) {
-                    // JPEG tile: send binary frame [type=1, tx, ty, tw, th, jpegBytes...]
+                    // JPEG tile: send binary frame [type=2, tx, ty, tw, th, jpegBytes...]
                     const hdr = Buffer.allocUnsafe(9);
                     hdr.writeUInt8(2, 0);
                     hdr.writeUInt16LE(tx, 1);
@@ -629,6 +635,12 @@ function attachWsBridge(wsSocket) {
                 offset = 10;
             }
 
+            if (payloadLen > 1024 * 1024) {
+                cleanupTcp();
+                wsSocket.destroy();
+                return;
+            }
+
             const maskBytes = masked ? 4 : 0;
             if (wsBuf.length < offset + maskBytes + payloadLen) return;
 
@@ -646,6 +658,10 @@ function attachWsBridge(wsSocket) {
                 for (let i = 0; i < data.length; i++) {
                     data[i] ^= mask[i & 3];
                 }
+            }
+            if (opcode === 0x09) {
+                sendWsFrame(wsSocket, 0x0A, data);
+                continue;
             }
             if (opcode === 0x01) {
                 try {
@@ -687,8 +703,9 @@ const server = http.createServer((req, res) => {
         return;
     }
 
-    let filePath = path.join(PUBLIC_DIR, url.pathname === '/' ? 'index.html' : url.pathname);
-    if (!filePath.startsWith(PUBLIC_DIR)) {
+    const relPath = url.pathname === '/' ? 'index.html' : url.pathname.replace(/^\/+/, '');
+    const filePath = path.resolve(PUBLIC_DIR, relPath);
+    if (filePath !== PUBLIC_DIR && !filePath.startsWith(PUBLIC_DIR + path.sep)) {
         res.writeHead(403);
         res.end('Forbidden');
         return;
