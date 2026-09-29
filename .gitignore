@@ -1,0 +1,14 @@
+# Planning & agent metadata
+.planning/
+.claude/
+.gemini/
+
+# Compiler / IDE temporaries
+*.o
+*.obj
+*.pdb
+*.ilk
+*.log
+*.tmp
+*.part
+config_*.ini

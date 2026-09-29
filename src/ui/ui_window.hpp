@@ -1,0 +1,273 @@
+#pragma once
+
+#include "../core/protocol.hpp"
+#include "../core/crypto_identity.hpp"
+#include "../net/network_engine.hpp"
+
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#include <shellapi.h>
+#include <d2d1.h>
+#include <dwrite.h>
+
+#include <string>
+#include <vector>
+#include <array>
+#include <unordered_map>
+#include <functional>
+
+namespace aerodesk {
+
+enum class ActiveTab : uint8_t {
+    Dashboard     = 0,
+    RemoteSession = 1,
+    Settings      = 2
+};
+
+enum class ScaleMode : uint8_t {
+    FitAspect = 0,
+    Stretch   = 1,
+    Original  = 2
+};
+
+enum class FocusedField : uint8_t {
+    None            = 0,
+    RemoteId        = 1,
+    RemotePassword  = 2,
+    LocalPassword   = 3,
+    RelayServer     = 4,
+    RemoteCanvas    = 5,
+    ChatInput       = 6
+};
+
+enum class DrawerTab : uint8_t {
+    FilesAndClip = 0,
+    LiveChat     = 1
+};
+
+struct UiRect {
+    float left = 0.0f;
+    float top = 0.0f;
+    float right = 0.0f;
+    float bottom = 0.0f;
+
+    float width() const { return right - left; }
+    float height() const { return bottom - top; }
+    float centerX() const { return (left + right) * 0.5f; }
+    float centerY() const { return (top + bottom) * 0.5f; }
+
+    bool contains(float x, float y) const {
+        return x >= left && x <= right && y >= top && y <= bottom;
+    }
+
+    UiRect offset(float dx, float dy) const {
+        return { left + dx, top + dy, right + dx, bottom + dy };
+    }
+
+    UiRect inflate(float dx, float dy) const {
+        return { left - dx, top - dy, right + dx, bottom + dy };
+    }
+};
+
+struct ClickRegion {
+    UiRect                rect;
+    std::string           id;
+    std::function<void()> onClick;
+    bool                  isTextInput = false;
+};
+
+struct WidgetAnimState {
+    float hoverT   = 0.0f; // 0..1 smooth hover state
+    float pressT   = 0.0f; // 0..1 smooth mouse-down compression
+    float focusT   = 0.0f; // 0..1 smooth textbox focus ring
+    float toggleT  = 0.0f; // 0..1 smooth switch knob position
+    float rippleT  = 1.0f; // 0..1 click ripple progress (1.0 = inactive)
+    float rippleX  = 0.0f;
+    float rippleY  = 0.0f;
+    bool  toggleInitialized = false;
+};
+
+class AeroDeskWindow {
+public:
+    AeroDeskWindow(IdentityManager& identity, NetworkEngine& network);
+    ~AeroDeskWindow();
+
+    bool create(HINSTANCE hInstance, int nCmdShow);
+    int messageLoop();
+
+private:
+    static LRESULT CALLBACK WndProcStatic(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
+    LRESULT handleMessage(UINT msg, WPARAM wParam, LPARAM lParam);
+
+    // Direct2D / DirectWrite lifecycle
+    bool initGraphics();
+    void discardDeviceResources();
+    void releaseGraphics();
+    void applyWindowThemeAttribute();
+    void switchTab(ActiveTab newTab);
+    void onPaint();
+
+    // Lightweight animation step (returns true if any interactive animation is in motion)
+    bool stepAnimations(float dt);
+
+    // Rendering views
+    void drawTopNavBar(float width, float& outTopOffset);
+    void drawDashboardView(const UiRect& bounds, float alpha = 1.0f);
+    void drawRemoteSessionView(const UiRect& bounds, float alpha = 1.0f);
+    void drawSettingsView(const UiRect& bounds, float alpha = 1.0f);
+    void drawFileTransferDrawer(const UiRect& bounds, float slideProgress);
+    void drawIncomingApprovalModal(float width, float height, float modalProgress);
+    void drawToastBanner(float width, float height, float toastProgress);
+    void drawCustomCursor();
+
+    // Primitive drawing helpers
+    void drawCardShadow(const UiRect& r, float radius, float intensity = 1.0f);
+    void drawCardSurface(const UiRect& r, float radius, float alpha, bool accentHeader = true);
+    void drawPulseDot(float cx, float cy, float baseRadius, D2D1_COLOR_F color, float alpha = 1.0f);
+    void drawSparkline(const UiRect& r, const float* values, size_t count, float maxVal, D2D1_COLOR_F color, float alpha = 1.0f);
+    void fillRoundRect(const UiRect& r, float radius, D2D1_COLOR_F color);
+    void strokeRoundRect(const UiRect& r, float radius, D2D1_COLOR_F color, float strokeWidth = 1.0f);
+    void drawText(const std::string& utf8, const UiRect& r, IDWriteTextFormat* fmt, D2D1_COLOR_F color,
+                  DWRITE_TEXT_ALIGNMENT hAlign = DWRITE_TEXT_ALIGNMENT_LEADING,
+                  DWRITE_PARAGRAPH_ALIGNMENT vAlign = DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+    void drawButton(const std::string& id, const UiRect& r, const std::string& label,
+                    D2D1_COLOR_F bgColor, D2D1_COLOR_F hoverColor, D2D1_COLOR_F textColor,
+                    float radius, std::function<void()> onClick, IDWriteTextFormat* fmt = nullptr,
+                    bool hasBorder = false, D2D1_COLOR_F borderColor = D2D1::ColorF(0, 0, 0, 0),
+                    D2D1_COLOR_F hoverTextColor = D2D1::ColorF(0, 0, 0, -1.0f));
+    void drawTextField(const std::string& id, FocusedField fieldType, const UiRect& r,
+                       const std::string& value, const std::string& placeholder, bool maskPassword);
+    void drawToggleSwitch(const std::string& id, const UiRect& r, bool checked,
+                          const std::string& label, std::function<void()> onToggle);
+
+    // Input & interaction handlers
+    void onMouseMove(float x, float y);
+    void onMouseButton(MouseButtonId btn, bool isDown, float x, float y);
+    void onMouseWheel(int delta);
+    void onCharInput(wchar_t ch);
+    void onKeyEvent(uint16_t vk, uint16_t scan, bool isDown, bool isExtended);
+    void onDropFiles(HDROP hDrop);
+
+    // Actions
+    void initiateConnection();
+    void openSendFileDialog();
+    void saveRemoteScreenshot();
+    void sendChatFromInput();
+    void toggleFullscreen();
+    void showToast(const std::string& message, bool isError = false);
+    bool mapCanvasPointToNormalized(float x, float y, float& outNormX, float& outNormY) const;
+    std::string* activeFocusedTextBuffer();
+
+    IdentityManager&        identity_;
+    NetworkEngine&          network_;
+    HWND                    hwnd_ = nullptr;
+
+    // Direct2D & DirectWrite resources
+    ID2D1Factory*           d2dFactory_ = nullptr;
+    ID2D1HwndRenderTarget*  renderTarget_ = nullptr;
+    ID2D1SolidColorBrush*   solidBrush_ = nullptr;
+    ID2D1PathGeometry*      cursorArrowGeo_ = nullptr;
+    ID2D1Bitmap*            remoteBitmap_ = nullptr;
+    int                     bitmapW_ = 0;
+    int                     bitmapH_ = 0;
+
+    IDWriteFactory*         dwriteFactory_ = nullptr;
+    IDWriteTextFormat*      fmtHeroId_ = nullptr;
+    IDWriteTextFormat*      fmtHeading_ = nullptr;
+    IDWriteTextFormat*      fmtSubheading_ = nullptr;
+    IDWriteTextFormat*      fmtBody_ = nullptr;
+    IDWriteTextFormat*      fmtBodyBold_ = nullptr;
+    IDWriteTextFormat*      fmtSmall_ = nullptr;
+    IDWriteTextFormat*      fmtMono_ = nullptr;
+
+    // Interactive UI state
+    ActiveTab               activeTab_ = ActiveTab::Dashboard;
+    DrawerTab               drawerTab_ = DrawerTab::FilesAndClip;
+    ScaleMode               scaleMode_ = ScaleMode::FitAspect;
+    FocusedField            focusedField_ = FocusedField::RemoteId;
+    bool                    showFileDrawer_ = false;
+    bool                    remoteInputEnabled_ = true;
+    bool                    showLocalPassword_ = false;
+    bool                    showRemotePassword_ = false;
+    bool                    isFullscreen_ = false;
+    WINDOWPLACEMENT         savedWindowPlacement_{};
+
+    std::string             remoteIdInput_;
+    std::string             remotePasswordInput_;
+    std::string             localPasswordEdit_;
+    std::string             relayServerEdit_;
+    std::string             chatInput_;
+
+    // Pending incoming request local permission checkboxes
+    uint8_t                 modalPermissions_ = PERM_ALL;
+    bool                    modalWasActive_ = false;
+    uint32_t                lastSeenUnreadChat_ = 0;
+
+    // Remote video canvas cache
+    uint64_t                displayedFrameSeq_ = 0;
+    std::vector<uint8_t>    frameBufferBgra_;
+    int                     frameBufferW_ = 0;
+    int                     frameBufferH_ = 0;
+    CursorState             remoteCursor_{};
+    UiRect                  renderedCanvasRect_{};
+
+    // Rolling network telemetry history for live Sparkline graph
+    static constexpr size_t SPARKLINE_SAMPLES = 36;
+    std::array<float, SPARKLINE_SAMPLES> rttHistory_{};
+    std::array<float, SPARKLINE_SAMPLES> fpsHistory_{};
+    uint64_t                lastTelemetrySampleTick_ = 0;
+
+    // Hit-test regions & Lightweight Animation Engine state
+    std::vector<ClickRegion>                        clickRegions_;
+    std::unordered_map<std::string, WidgetAnimState> widgetAnims_;
+    std::string             hoveredWidgetId_;
+    std::string             pressedWidgetId_;
+    bool                    hoveredIsTextInput_ = false;
+    float                   mouseX_ = -1000.0f;
+    float                   mouseY_ = -1000.0f;
+    bool                    mouseInsideClient_ = false;
+    bool                    trackingMouseLeave_ = false;
+    bool                    mouseLeftDown_ = false;
+    uint64_t                lastMouseSendTick_ = 0;
+    uint64_t                lastMouseMoveTick_ = 0;
+
+    // Custom In-Window Cursor physics & morph state
+    float                   cursorTrailX_ = -1000.0f;
+    float                   cursorTrailY_ = -1000.0f;
+    float                   cursorHoverT_ = 0.0f;
+    float                   cursorTextT_ = 0.0f;
+    float                   cursorPressT_ = 0.0f;
+    bool                    cursorTrailInit_ = false;
+
+    // Global layout, sliding nav pill & seamless tab viewport animations
+    int64_t                 qpcFreq_ = 0;
+    int64_t                 lastQpcCounter_ = 0;
+    float                   animTimeSec_ = 0.0f;
+    float                   viewportPos_ = 0.0f;       // Continuous 0.0 (Dashboard) <-> 1.0 (Session) <-> 2.0 (Settings)
+    float                   dashViewAnimT_ = 1.0f;     // 1.0 when Dashboard active
+    float                   sessViewAnimT_ = 0.0f;     // 1.0 when RemoteSession active
+    float                   settingsViewAnimT_ = 0.0f; // 1.0 when Settings active
+    float                   tabEnterStaggerT_ = 1.0f;  // 0..1 card entrance choreography
+    float                   navPillLeft_ = 280.0f;     // Spring-animated sliding nav pill left edge
+    float                   navPillRight_ = 394.0f;    // Spring-animated sliding nav pill right edge
+    float                   targetPillLeft_ = 280.0f;
+    float                   targetPillRight_ = 394.0f;
+    bool                    navPillInit_ = false;
+
+    float                   themeAnimT_ = 0.0f;        // 0.0 = Light Red, 1.0 = Dark Red
+    float                   drawerAnimT_ = 0.0f;       // 0.0 = Closed, 1.0 = Open
+    float                   modalAnimT_ = 0.0f;        // 0.0 = Hidden, 1.0 = Visible
+    float                   toastAnimT_ = 0.0f;        // 0.0 = Hidden, 1.0 = Visible
+    float                   transferProgSmooth_[16]{};
+
+    // Toast notification
+    std::string             toastText_;
+    bool                    toastIsError_ = false;
+    uint64_t                toastExpireTick_ = 0;
+
+    ViewerConnectionState   prevViewerState_ = ViewerConnectionState::Disconnected;
+};
+
+} // namespace aerodesk

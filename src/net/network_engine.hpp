@@ -1,0 +1,307 @@
+#pragma once
+
+#include "../core/protocol.hpp"
+#include "../core/crypto_identity.hpp"
+#include "../capture/screen_capture.hpp"
+#include "../control/input_injector.hpp"
+#include "../control/clipboard_file_manager.hpp"
+
+#include <cstdint>
+#include <string>
+#include <vector>
+#include <unordered_map>
+#include <mutex>
+#include <atomic>
+#include <thread>
+#include <memory>
+#include <condition_variable>
+
+namespace aerodesk {
+
+struct DiscoveredPeer {
+    uint64_t    deskId = 0;
+    std::string hostname;
+    std::string ip;
+    uint16_t    port = DEFAULT_HOST_PORT;
+    uint64_t    lastSeenTickMs = 0;
+    bool        viaRelay = false;
+};
+
+struct PendingIncomingRequest {
+    bool        active = false;
+    uint64_t    callerDeskId = 0;
+    std::string callerHostname;
+    std::string callerIp;
+    uint8_t     proposedPermissions = PERM_ALL;
+};
+
+struct HostSessionStatus {
+    bool        active = false;
+    uint64_t    viewerDeskId = 0;
+    std::string viewerHostname;
+    std::string viewerIp;
+    uint8_t     permissions = PERM_ALL;
+    uint64_t    connectedSinceTickMs = 0;
+    std::string securityFingerprint;
+};
+
+struct ChatMessageEntry {
+    std::string senderName;
+    std::string text;
+    bool        fromLocal = false;
+    uint64_t    timestampMs = 0;
+};
+
+enum class ViewerConnectionState : uint8_t {
+    Disconnected    = 0,
+    ResolvingId     = 1,
+    ConnectingTcp   = 2,
+    Authenticating  = 3,
+    WaitingApproval = 4,
+    Connected       = 5,
+    Error           = 6
+};
+
+struct ViewerSessionStats {
+    ViewerConnectionState state = ViewerConnectionState::Disconnected;
+    std::string           statusMessage = "Ready";
+    uint64_t              remoteDeskId = 0;
+    std::string           remoteHostname;
+    std::string           remoteAddress;
+    std::string           securityFingerprint;
+    uint64_t              connectedSinceTickMs = 0;
+    uint8_t               grantedPermissions = PERM_ALL;
+    QualityPreset         qualityPreset = QualityPreset::Balanced;
+    uint8_t               targetFps = 30;
+    uint8_t               effectiveFpsCap = 30;
+    bool                  adaptiveFps = true;
+    bool                  networkThrottled = false;
+    int                   activeMonitorIndex = 0;
+    int                   monitorCount = 1;
+    std::vector<MonitorDesc> monitors;
+    int                   frameWidth = 0;
+    int                   frameHeight = 0;
+    float                 fps = 0.0f;
+    uint32_t              rttMs = 0;
+    float                 kbps = 0.0f;
+    CursorState           remoteCursor;
+};
+
+class RelayServer {
+public:
+    RelayServer();
+    ~RelayServer();
+
+    bool start(uint16_t port = DEFAULT_RELAY_PORT);
+    void stop();
+    bool isRunning() const { return running_.load(); }
+    uint16_t port() const { return port_; }
+    size_t registeredPeerCount() const;
+
+private:
+    void acceptLoop();
+    void handleClientSocket(uintptr_t sock, std::string peerIp);
+
+    struct RegisteredHost {
+        uint64_t    deskId = 0;
+        std::string hostname;
+        std::string ip;
+        uint16_t    tcpPort = 0;
+        uintptr_t   controlSock = ~uintptr_t(0);
+        uint64_t    lastSeenMs = 0;
+    };
+
+    struct PendingBridge {
+        uint64_t  token = 0;
+        uintptr_t viewerSock = ~uintptr_t(0);
+        uintptr_t hostSock = ~uintptr_t(0);
+        bool      ready = false;
+    };
+
+    std::atomic<bool>           running_{false};
+    uint16_t                    port_ = DEFAULT_RELAY_PORT;
+    uintptr_t                   listenSock_ = ~uintptr_t(0);
+    std::thread                 acceptThread_;
+
+    mutable std::mutex          mutex_;
+    std::condition_variable     bridgeCv_;
+    std::vector<RegisteredHost> hosts_;
+    std::vector<PendingBridge>  bridges_;
+};
+
+class NetworkEngine {
+public:
+    explicit NetworkEngine(IdentityManager& identity);
+    ~NetworkEngine();
+
+    bool start();
+    void stop();
+
+    // Local IP & listening status
+    std::string localIpAddress() const { return localIp_; }
+    uint16_t hostListenPort() const { return identity_.listenPort(); }
+
+    // Discovery
+    std::vector<DiscoveredPeer> discoveredPeers() const;
+    void sendDiscoveryQuery(uint64_t targetDeskId = 0);
+
+    // Built-in Relay Server control
+    bool startLocalRelayServer(uint16_t port = DEFAULT_RELAY_PORT);
+    void stopLocalRelayServer();
+    bool isLocalRelayRunning() const { return localRelay_.isRunning(); }
+    size_t localRelayPeerCount() const { return localRelay_.registeredPeerCount(); }
+
+    // Host: Incoming connection approval & active host session control
+    PendingIncomingRequest pendingIncomingRequest() const;
+    void respondToIncomingRequest(bool accept, uint8_t permissions);
+    void setAutoAcceptIncoming(bool autoAccept, uint8_t defaultPerms = PERM_ALL);
+
+    HostSessionStatus hostSessionStatus() const;
+    void updateHostSessionPermissions(uint8_t newPermissions);
+    void disconnectHostClient();
+    void clearRateLimitRecords();
+
+    // Viewer: Outgoing connection & remote session control
+    bool connectToRemote(const std::string& targetIdOrAddr, const std::string& password);
+    void disconnectViewer();
+
+    ViewerSessionStats viewerStats() const;
+
+    // Copy latest decoded remote frame if frameSeq > lastSeenSeq
+    bool copyLatestViewerFrame(
+        uint64_t& inOutSeq,
+        std::vector<uint8_t>& outBgra,
+        int& outW,
+        int& outH,
+        CursorState& outCursor) const;
+
+    // Viewer input & session actions
+    void sendMouseMove(float normX, float normY);
+    void sendMouseButton(MouseButtonId button, bool isDown, float normX, float normY);
+    void sendMouseWheel(int32_t verticalDelta, int32_t horizontalDelta = 0);
+    void sendKeyEvent(uint16_t vkCode, uint16_t scanCode, bool isDown, bool isExtended);
+    void sendReleaseAllModifiers();
+    void sendSystemAction(SystemActionType action);
+    void requestVideoSettings(QualityPreset preset, int monitorIndex, bool forceKeyframe, uint8_t targetFps = 0, int adaptiveFps = -1);
+    void setSessionFpsConfig(uint8_t targetFps, bool adaptiveFps);
+
+    // File transfer, clipboard & live encrypted chat
+    uint32_t sendFile(const std::string& filePath);
+    bool cancelFileTransfer(uint32_t transferId);
+    void pushLocalClipboardNow();
+    bool sendChatMessage(const std::string& text);
+    std::vector<ChatMessageEntry> chatMessages() const;
+    uint32_t unreadChatCount() const { return unreadChatCount_.load(); }
+    void markChatRead() { unreadChatCount_.store(0); }
+
+    FileTransferManager& fileTransferManager() { return fileManager_; }
+    const FileTransferManager& fileTransferManager() const { return fileManager_; }
+
+private:
+    // Background worker loops
+    void discoveryLoop();
+    void relayRegistrationLoop();
+    void hostAcceptLoop();
+    void runHostSession(uintptr_t clientSock, std::string clientIp);
+    void runViewerSession(std::string targetInput, std::string password);
+
+    // Brute-force protection helpers
+    bool isIpRateLimited(const std::string& ip);
+    void recordAuthResultForIp(const std::string& ip, bool success);
+
+    // Encrypted send helpers for active sessions
+    bool sendHostEncryptedPacket(PacketType type, uint8_t flags, const void* payload, size_t payloadLen);
+    bool sendViewerEncryptedPacket(PacketType type, uint8_t flags, const void* payload, size_t payloadLen);
+
+    // Socket framing helpers
+    static bool sendFrame(
+        uintptr_t sock,
+        PacketType type,
+        uint8_t flags,
+        const void* payload,
+        size_t payloadLen,
+        std::mutex& sendMutex,
+        const std::array<uint8_t, 32>* sessionKey = nullptr,
+        uint64_t* sendSeq = nullptr);
+
+    static bool recvFrame(
+        uintptr_t sock,
+        FrameHeader& outHeader,
+        std::vector<uint8_t>& outPayload,
+        const std::array<uint8_t, 32>* sessionKey = nullptr,
+        uint64_t* recvSeq = nullptr);
+
+    IdentityManager&            identity_;
+    std::string                 localIp_ = "127.0.0.1";
+    std::atomic<bool>           running_{false};
+
+    // Discovery
+    uintptr_t                   udpSock_ = ~uintptr_t(0);
+    std::thread                 discoveryThread_;
+    mutable std::mutex          peersMutex_;
+    std::vector<DiscoveredPeer> peers_;
+
+    // Relay registration & built-in server
+    RelayServer                 localRelay_;
+    std::thread                 relayRegThread_;
+    uintptr_t                   relayControlSock_ = ~uintptr_t(0);
+
+    // Host server & session
+    uintptr_t                   hostListenSock_ = ~uintptr_t(0);
+    std::thread                 hostAcceptThread_;
+    std::thread                 hostSessionThread_;
+    std::atomic<uintptr_t>      activeHostClientSock_{~uintptr_t(0)};
+    std::mutex                  hostSendMutex_;
+    std::array<uint8_t, 32>     hostSessionKey_{};
+    uint64_t                    hostSendSeq_ = 0;
+    std::atomic<bool>           hostEncrypted_{false};
+
+    struct BruteForceRecord {
+        int      failedCount = 0;
+        uint64_t windowStartMs = 0;
+        uint64_t lockedUntilMs = 0;
+    };
+    mutable std::mutex                              authRateMutex_;
+    std::unordered_map<std::string, BruteForceRecord> authRateMap_;
+
+    mutable std::mutex          approvalMutex_;
+    std::condition_variable     approvalCv_;
+    PendingIncomingRequest      pendingReq_;
+    bool                        approvalDecided_ = false;
+    bool                        approvalAccepted_ = false;
+    uint8_t                     approvalPermissions_ = PERM_ALL;
+    std::atomic<bool>           autoAcceptIncoming_{false};
+    std::atomic<uint8_t>        autoAcceptPerms_{PERM_ALL};
+
+    mutable std::mutex          hostStatusMutex_;
+    HostSessionStatus           hostStatus_;
+    std::atomic<uint8_t>        hostLivePermissions_{PERM_ALL};
+
+    // Viewer session
+    std::thread                 viewerThread_;
+    std::atomic<bool>           viewerActive_{false};
+    std::atomic<uintptr_t>      viewerSock_{~uintptr_t(0)};
+    std::mutex                  viewerSendMutex_;
+    std::array<uint8_t, 32>     viewerSessionKey_{};
+    uint64_t                    viewerSendSeq_ = 0;
+    std::atomic<bool>           viewerEncrypted_{false};
+
+    mutable std::mutex          viewerStatsMutex_;
+    ViewerSessionStats          viewerStats_;
+
+    mutable std::mutex          viewerFrameMutex_;
+    std::vector<uint8_t>        viewerCanvasBgra_;
+    int                         viewerCanvasW_ = 0;
+    int                         viewerCanvasH_ = 0;
+    uint64_t                    viewerFrameSeq_ = 0;
+    CursorState                 viewerCursor_;
+
+    // Shared FileTransfer, Clipboard & Chat state
+    FileTransferManager             fileManager_;
+    ClipboardManager                clipboardManager_;
+    mutable std::mutex              chatMutex_;
+    std::vector<ChatMessageEntry>   chatHistory_;
+    std::atomic<uint32_t>           unreadChatCount_{0};
+};
+
+} // namespace aerodesk

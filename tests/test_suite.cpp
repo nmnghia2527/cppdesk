@@ -1,0 +1,511 @@
+#include "../src/core/protocol.hpp"
+#include "../src/core/crypto_identity.hpp"
+#include "../src/capture/screen_capture.hpp"
+#include "../src/control/input_injector.hpp"
+#include "../src/control/clipboard_file_manager.hpp"
+#include "../src/net/network_engine.hpp"
+
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#include <objbase.h>
+
+#include <iostream>
+#include <fstream>
+#include <filesystem>
+#include <chrono>
+#include <thread>
+#include <cassert>
+#include <cstring>
+
+using namespace aerodesk;
+
+namespace {
+
+int g_passed = 0;
+int g_failed = 0;
+
+void check(bool cond, const char* expr, const char* file, int line) {
+    if (cond) {
+        ++g_passed;
+    } else {
+        ++g_failed;
+        std::cerr << "[FAIL] " << file << ":" << line << " -> " << expr << "\n";
+    }
+}
+
+#define TEST_ASSERT(cond) check((cond), #cond, __FILE__, __LINE__)
+
+void testDeskIdAndCrypto() {
+    std::cout << "[TEST 1] 9-Digit Desk ID Formatting & CNG Crypto Handshake...\n";
+
+    uint64_t id = CryptoUtils::generateNineDigitId();
+    TEST_ASSERT(id >= 100000000ULL && id <= 999999999ULL);
+
+    std::string formatted = CryptoUtils::formatDeskId(482910375ULL);
+    TEST_ASSERT(formatted == "482 910 375");
+    TEST_ASSERT(CryptoUtils::parseDeskId("482 910 375") == 482910375ULL);
+    TEST_ASSERT(CryptoUtils::parseDeskId("482-910-375") == 482910375ULL);
+    TEST_ASSERT(CryptoUtils::parseDeskId("482910375") == 482910375ULL);
+    TEST_ASSERT(CryptoUtils::parseDeskId("127.0.0.1:50990") == 0ULL);
+
+    IdentityManager hostId(10);
+    hostId.loadOrCreate();
+    hostId.setUnattendedEnabled(true);
+    hostId.setUnattendedPassword("SecretPass#2026");
+
+    // Verify plaintext password is NEVER stored in config_*.ini (only salted verifier)
+    {
+        std::ifstream cfgIn(hostId.configFilePath());
+        std::string cfgText((std::istreambuf_iterator<char>(cfgIn)), std::istreambuf_iterator<char>());
+        TEST_ASSERT(cfgText.find("SecretPass#2026") == std::string::npos);
+        TEST_ASSERT(cfgText.find("unattended_verifier=") != std::string::npos);
+    }
+
+    // Reload from disk and verify salted verifier still authenticates
+    IdentityManager hostReloaded(10);
+    hostReloaded.loadOrCreate();
+    TEST_ASSERT(hostReloaded.hasStoredPasswordVerifier());
+
+    std::array<uint8_t, 32> nonce{};
+    TEST_ASSERT(CryptoUtils::randomBytes(nonce.data(), nonce.size()));
+
+    uint64_t clientId = 123456789ULL;
+    auto validResp = CryptoUtils::computeChallengeResponse("SecretPass#2026", hostReloaded.deskId(), clientId, nonce);
+    auto wrongResp = CryptoUtils::computeChallengeResponse("WrongPassword", hostReloaded.deskId(), clientId, nonce);
+
+    TEST_ASSERT(hostReloaded.verifyChallengeResponse(clientId, nonce, validResp));
+    TEST_ASSERT(!hostReloaded.verifyChallengeResponse(clientId, nonce, wrongResp));
+
+    // Verify dynamic 6-char One-Time Session Code authentication & regeneration
+    std::string code1 = hostReloaded.sessionCode();
+    TEST_ASSERT(code1.size() == 6);
+    auto codeResp1 = CryptoUtils::computeChallengeResponse(code1, hostReloaded.deskId(), clientId, nonce);
+    TEST_ASSERT(hostReloaded.verifyChallengeResponse(clientId, nonce, codeResp1));
+
+    std::string code2 = hostReloaded.regenerateSessionCode();
+    TEST_ASSERT(code2.size() == 6);
+    auto codeResp2 = CryptoUtils::computeChallengeResponse(code2, hostReloaded.deskId(), clientId, nonce);
+    TEST_ASSERT(hostReloaded.verifyChallengeResponse(clientId, nonce, codeResp2));
+
+    // Stream cipher round-trip & SAS fingerprint ("XXXX-XXXX")
+    auto sessionKey = CryptoUtils::deriveSessionKey(hostReloaded.deskId(), clientId, nonce);
+    std::string fp = CryptoUtils::sessionFingerprintHex(sessionKey);
+    TEST_ASSERT(fp.size() == 9);
+
+    std::string secretPayload = "AeroDesk Encrypted Frame Payload Verification 1234567890";
+    std::vector<uint8_t> buf(secretPayload.begin(), secretPayload.end());
+    CryptoUtils::transformPayload(buf.data(), buf.size(), sessionKey, 42);
+    TEST_ASSERT(std::memcmp(buf.data(), secretPayload.data(), buf.size()) != 0);
+    CryptoUtils::transformPayload(buf.data(), buf.size(), sessionKey, 42);
+    TEST_ASSERT(std::memcmp(buf.data(), secretPayload.data(), buf.size()) == 0);
+}
+
+void testTileCodecRoundTrip() {
+    std::cout << "[TEST 2] Hybrid Zstd & GDI+ JPEG Tile Codec Round-Trip...\n";
+
+    TileCodec::initGdiPlus();
+
+    const int W = 128;
+    const int H = 128;
+    std::vector<uint8_t> srcRect(W * H * 4);
+    for (int y = 0; y < H; ++y) {
+        for (int x = 0; x < W; ++x) {
+            size_t idx = static_cast<size_t>(y * W + x) * 4;
+            srcRect[idx + 0] = static_cast<uint8_t>((x * 2) & 0xFF);
+            srcRect[idx + 1] = static_cast<uint8_t>((y * 2) & 0xFF);
+            srcRect[idx + 2] = static_cast<uint8_t>(((x + y) * 3) & 0xFF);
+            srcRect[idx + 3] = 0xFF;
+        }
+    }
+
+    // Ultra (Zstd lossless on structured pattern)
+    EncodedTile zTile = TileCodec::encodeRect(32, 32, W, H, srcRect.data(), QualityPreset::Ultra);
+    TEST_ASSERT(!zTile.data.empty());
+
+    std::vector<uint8_t> canvas(256 * 256 * 4, 0);
+    TEST_ASSERT(TileCodec::decodeTileIntoCanvas(zTile, canvas.data(), 256, 256));
+
+    // Verify lossless pixel match at (32, 32)
+    if (zTile.encoding == TileEncoding::Zstd) {
+        bool exactMatch = true;
+        for (int y = 0; y < H; ++y) {
+            const uint8_t* cRow = canvas.data() + ((32 + y) * 256 + 32) * 4;
+            const uint8_t* sRow = srcRect.data() + (y * W) * 4;
+            if (std::memcmp(cRow, sRow, W * 4) != 0) {
+                exactMatch = false;
+                break;
+            }
+        }
+        TEST_ASSERT(exactMatch);
+    }
+
+    // Explicit JPEG encode & decode test
+    auto jpegBytes = TileCodec::encodeJpeg(srcRect.data(), W, H, 85);
+    TEST_ASSERT(!jpegBytes.empty());
+    std::vector<uint8_t> decodedJpeg;
+    int jw = 0, jh = 0;
+    TEST_ASSERT(TileCodec::decodeJpeg(jpegBytes.data(), jpegBytes.size(), decodedJpeg, jw, jh));
+    TEST_ASSERT(jw == W && jh == H);
+}
+
+void testScreenCapturer() {
+    std::cout << "[TEST 3] DXGI Desktop Duplication / GDI Screen Capture & Delta Tiles...\n";
+
+    ScreenCapturer capturer;
+    auto monitors = capturer.enumerateMonitors();
+    TEST_ASSERT(!monitors.empty());
+    TEST_ASSERT(capturer.frameWidth() > 0 && capturer.frameHeight() > 0);
+
+    std::vector<EncodedTile> tiles;
+    bool isKf = false;
+    CursorState cursor{};
+
+    bool ok = capturer.captureDirtyTiles(true, QualityPreset::Balanced, tiles, isKf, cursor);
+    TEST_ASSERT(ok);
+    TEST_ASSERT(isKf);
+    TEST_ASSERT(!tiles.empty());
+
+    std::cout << "  -> Captured " << capturer.frameWidth() << "x" << capturer.frameHeight()
+              << " keyframe into " << tiles.size() << " compressed tiles (Backend: "
+              << (capturer.usingDxgi() ? "DXGI GPU" : "GDI") << ")\n";
+}
+
+void testEndToEndSessionAndFileTransfer() {
+    std::cout << "[TEST 4] End-to-End 9-Digit ID Resolution, E2EE Stream, Video, File SHA-256, Chat & Rate Limiting...\n";
+
+    IdentityManager hostIdentity(11);
+    hostIdentity.loadOrCreate();
+    hostIdentity.setListenPort(50994);
+    hostIdentity.setUnattendedEnabled(true);
+    hostIdentity.setUnattendedPassword("TestPass99");
+    hostIdentity.setRelayServerAddress("127.0.0.1:50999");
+
+    IdentityManager viewerIdentity(12);
+    viewerIdentity.loadOrCreate();
+    viewerIdentity.setListenPort(50995);
+    viewerIdentity.setRelayServerAddress("127.0.0.1:50999");
+
+    NetworkEngine hostNet(hostIdentity);
+    NetworkEngine viewerNet(viewerIdentity);
+
+    // Configure isolated temp receive directory for file transfer verification
+    std::filesystem::path tempDir = std::filesystem::temp_directory_path() / "AeroDesk_Test_Xfer";
+    std::error_code ec;
+    std::filesystem::remove_all(tempDir, ec);
+    std::filesystem::create_directories(tempDir, ec);
+    hostNet.fileTransferManager().setReceiveDirectory(tempDir.string());
+
+    TEST_ASSERT(hostNet.start());
+    hostNet.startLocalRelayServer(DEFAULT_RELAY_PORT);
+    TEST_ASSERT(viewerNet.start());
+
+    // Wait briefly for UDP LAN discovery / Relay registration
+    std::this_thread::sleep_for(std::chrono::milliseconds(400));
+
+    // Connect Viewer -> Host using the formatted 9-digit Desk ID ("XXX XXX XXX") and Unattended Password
+    std::string targetIdStr = hostIdentity.formattedDeskId();
+    std::cout << "  -> Dialing Host by 9-digit ID: " << targetIdStr << "...\n";
+    TEST_ASSERT(viewerNet.connectToRemote(targetIdStr, "TestPass99"));
+
+    // Wait up to 4 seconds for Connected state and first decoded video frame
+    uint64_t frameSeq = 0;
+    std::vector<uint8_t> viewerFrame;
+    int fw = 0, fh = 0;
+    CursorState cur{};
+    bool gotVideoFrame = false;
+
+    for (int i = 0; i < 80; ++i) {
+        auto st = viewerNet.viewerStats();
+        if (st.state == ViewerConnectionState::Connected) {
+            if (viewerNet.copyLatestViewerFrame(frameSeq, viewerFrame, fw, fh, cur) && fw > 0 && fh > 0) {
+                gotVideoFrame = true;
+                break;
+            }
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+
+    TEST_ASSERT(viewerNet.viewerStats().state == ViewerConnectionState::Connected);
+    TEST_ASSERT(gotVideoFrame);
+    // Verify E2EE session SAS fingerprint matches between Viewer and Host
+    TEST_ASSERT(!viewerNet.viewerStats().securityFingerprint.empty());
+    TEST_ASSERT(viewerNet.viewerStats().securityFingerprint == hostNet.hostSessionStatus().securityFingerprint);
+    std::cout << "  -> Viewer received encrypted video frame (" << fw << "x" << fh
+              << ", SAS: " << viewerNet.viewerStats().securityFingerprint << ")!\n";
+
+    // Test bidirectional encrypted Live Chat
+    TEST_ASSERT(viewerNet.sendChatMessage("Hello Host over E2EE!"));
+    TEST_ASSERT(hostNet.sendChatMessage("Hello Viewer from Host!"));
+    bool chatSynced = false;
+    for (int i = 0; i < 30; ++i) {
+        auto vMsgs = viewerNet.chatMessages();
+        auto hMsgs = hostNet.chatMessages();
+        if (vMsgs.size() >= 2 && hMsgs.size() >= 2) {
+            chatSynced = true;
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(30));
+    }
+    TEST_ASSERT(chatSynced);
+    std::cout << "  -> Verified bidirectional encrypted live chat!\n";
+
+    // Test chunked file transfer from Viewer -> Host with streaming SHA-256 verification & .part rename
+    std::filesystem::path srcFile = tempDir / "source_payload.bin";
+    std::string testContent(150000, '\0'); // ~150 KB (> 2 chunks)
+    for (size_t i = 0; i < testContent.size(); ++i) {
+        testContent[i] = static_cast<char>('A' + (i % 26));
+    }
+    {
+        std::ofstream out(srcFile, std::ios::binary);
+        out.write(testContent.data(), static_cast<std::streamsize>(testContent.size()));
+    }
+
+    uint32_t tid = viewerNet.sendFile(srcFile.string());
+    TEST_ASSERT(tid > 0);
+
+    bool fileReceived = false;
+    std::filesystem::path receivedPath;
+    for (int i = 0; i < 60; ++i) {
+        auto items = hostNet.fileTransferManager().snapshotTransfers();
+        if (!items.empty() && items.front().status == TransferStatus::Completed) {
+            fileReceived = true;
+            receivedPath = items.front().savedPath;
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+
+    TEST_ASSERT(fileReceived);
+    if (fileReceived) {
+        std::ifstream in(receivedPath, std::ios::binary);
+        std::string recContent((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        TEST_ASSERT(recContent.size() == testContent.size());
+        TEST_ASSERT(CryptoUtils::sha256Hex(recContent) == CryptoUtils::sha256Hex(testContent));
+        // Ensure temporary .part file was atomically renamed away
+        TEST_ASSERT(!std::filesystem::exists(receivedPath.string() + ".part"));
+        std::cout << "  -> Verified 150 KB chunked file transfer SHA-256 integrity & atomic .part rename!\n";
+    }
+
+    // Test live permission updates from Host -> Viewer
+    hostNet.updateHostSessionPermissions(PERM_CLIPBOARD | PERM_FILE_TRANSFER); // Disable PERM_INPUT
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+    TEST_ASSERT((viewerNet.viewerStats().grantedPermissions & PERM_INPUT) == 0);
+    TEST_ASSERT((viewerNet.viewerStats().grantedPermissions & PERM_FILE_TRANSFER) != 0);
+
+    // Test live 15 / 30 / 60 FPS control updates from Viewer -> Host
+    viewerNet.setSessionFpsConfig(60, true);
+    TEST_ASSERT(viewerNet.viewerStats().targetFps == 60);
+    TEST_ASSERT(viewerNet.viewerStats().adaptiveFps == true);
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+    viewerNet.setSessionFpsConfig(15, false);
+    TEST_ASSERT(viewerNet.viewerStats().targetFps == 15);
+    TEST_ASSERT(viewerNet.viewerStats().adaptiveFps == false);
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+    viewerNet.disconnectViewer();
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+
+    // Test Interactive Approval Modal Flow (connecting with blank password -> Host clicks Accept)
+    std::cout << "  -> Testing Interactive Approval Flow (Accept/Reject modal + custom permissions)...\n";
+    TEST_ASSERT(viewerNet.connectToRemote(targetIdStr, ""));
+
+    bool sawPendingPopup = false;
+    for (int i = 0; i < 40; ++i) {
+        auto pending = hostNet.pendingIncomingRequest();
+        if (pending.active && pending.callerDeskId == viewerIdentity.deskId()) {
+            sawPendingPopup = true;
+            hostNet.respondToIncomingRequest(true, PERM_INPUT | PERM_CLIPBOARD);
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    TEST_ASSERT(sawPendingPopup);
+
+    for (int i = 0; i < 40; ++i) {
+        if (viewerNet.viewerStats().state == ViewerConnectionState::Connected) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    TEST_ASSERT(viewerNet.viewerStats().state == ViewerConnectionState::Connected);
+    TEST_ASSERT(viewerNet.viewerStats().grantedPermissions == (PERM_INPUT | PERM_CLIPBOARD));
+
+    viewerNet.disconnectViewer();
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+
+    // Test Brute-Force IP Rate Limiting (5 failed password attempts -> RateLimited lockout)
+    std::cout << "  -> Testing Brute-Force Rate Limiting (5 bad attempts -> 60s lockout)...\n";
+    hostNet.clearRateLimitRecords();
+    bool sawRateLimited = false;
+    for (int attempt = 1; attempt <= 6; ++attempt) {
+        TEST_ASSERT(viewerNet.connectToRemote(targetIdStr, "WrongPasswordAttempt"));
+        for (int w = 0; w < 40; ++w) {
+            auto st = viewerNet.viewerStats();
+            if (st.state == ViewerConnectionState::Error) {
+                if (st.statusMessage.find("Too many failed") != std::string::npos) {
+                    sawRateLimited = true;
+                }
+                break;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(30));
+        }
+        viewerNet.disconnectViewer();
+        if (sawRateLimited) break;
+    }
+    TEST_ASSERT(sawRateLimited);
+    hostNet.clearRateLimitRecords();
+
+    hostNet.stop();
+    viewerNet.stop();
+    std::filesystem::remove_all(tempDir, ec);
+}
+
+void testFileTransferEdgeCasesAndFavorites() {
+    std::cout << "[TEST 5] File Transfer .part Cleanup, SHA-256 Corruption Rejection & Favorite Desks...\n";
+
+    std::filesystem::path tempDir = std::filesystem::temp_directory_path() / "AeroDesk_Test_Edge";
+    std::error_code ec;
+    std::filesystem::remove_all(tempDir, ec);
+    std::filesystem::create_directories(tempDir, ec);
+
+    FileTransferManager ftm;
+    ftm.setReceiveDirectory(tempDir.string());
+
+    // 1. Mid-transfer cancel cleans up .part file
+    ftm.handleFileOffer(701, 8192, "partial_cancel.bin");
+    std::vector<uint8_t> chunkData(1024, 0x5A);
+    ftm.handleFileChunk(701, 0, chunkData.data(), chunkData.size());
+    TEST_ASSERT(std::filesystem::exists(tempDir / "partial_cancel.bin.part"));
+
+    ftm.handleFileCancel(701);
+    TEST_ASSERT(!std::filesystem::exists(tempDir / "partial_cancel.bin.part"));
+    TEST_ASSERT(!std::filesystem::exists(tempDir / "partial_cancel.bin"));
+
+    // 2. Corrupted SHA-256 on FileComplete deletes .part file and marks transfer Failed
+    ftm.handleFileOffer(702, 1024, "corrupt_check.bin");
+    ftm.handleFileChunk(702, 0, chunkData.data(), chunkData.size());
+    ftm.handleFileComplete(702, "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff");
+    TEST_ASSERT(!std::filesystem::exists(tempDir / "corrupt_check.bin.part"));
+    TEST_ASSERT(!std::filesystem::exists(tempDir / "corrupt_check.bin"));
+
+    std::filesystem::remove_all(tempDir, ec);
+
+    // 3. Pinned Favorite Desks & Recent Session removal persistence
+    IdentityManager favMgr(18);
+    favMgr.loadOrCreate();
+    favMgr.addOrUpdateRecentSession(482910375ULL, "Design-Workstation", "127.0.0.1:50990");
+    favMgr.toggleFavoriteSession(482910375ULL);
+
+    IdentityManager favReload(18);
+    favReload.loadOrCreate();
+    bool foundFav = false;
+    for (const auto& r : favReload.recentSessions()) {
+        if (r.deskId == 482910375ULL && r.isFavorite) {
+            foundFav = true;
+            break;
+        }
+    }
+    TEST_ASSERT(foundFav);
+    favReload.removeRecentSession(482910375ULL);
+    bool stillPresent = false;
+    for (const auto& r : favReload.recentSessions()) {
+        if (r.deskId == 482910375ULL) stillPresent = true;
+    }
+    TEST_ASSERT(!stillPresent);
+}
+
+void testAppSettingsAndAdaptiveFps() {
+    std::cout << "[TEST 6] AppSettings Persistence, Light/Dark Theme Config & Adaptive FPS Congestion Throttling...\n";
+
+    // 1. Verify clampTargetFps
+    TEST_ASSERT(clampTargetFps(10) == 15);
+    TEST_ASSERT(clampTargetFps(15) == 15);
+    TEST_ASSERT(clampTargetFps(28) == 30);
+    TEST_ASSERT(clampTargetFps(30) == 30);
+    TEST_ASSERT(clampTargetFps(45) == 30);
+    TEST_ASSERT(clampTargetFps(50) == 60);
+    TEST_ASSERT(clampTargetFps(60) == 60);
+    TEST_ASSERT(clampTargetFps(120) == 60);
+
+    // 2. Verify computeAdaptiveFpsCap automatic poor-network step-down (60 -> 30 -> 15 FPS)
+    // Healthy network (12ms RTT, 4ms send): keeps 60 FPS
+    TEST_ASSERT(computeAdaptiveFpsCap(60, true, 12, 4.0f) == 60);
+    // Moderate network congestion (110ms RTT or 42ms send): steps 60 FPS down to 30 FPS
+    TEST_ASSERT(computeAdaptiveFpsCap(60, true, 110, 10.0f) == 30);
+    TEST_ASSERT(computeAdaptiveFpsCap(60, true, 25, 42.0f) == 30);
+    // Severe network congestion (210ms RTT or 85ms send): drops to 15 FPS
+    TEST_ASSERT(computeAdaptiveFpsCap(60, true, 210, 10.0f) == 15);
+    TEST_ASSERT(computeAdaptiveFpsCap(60, true, 30, 85.0f) == 15);
+    TEST_ASSERT(computeAdaptiveFpsCap(30, true, 195, 12.0f) == 15);
+    // Adaptive disabled: honours user target FPS regardless of RTT/send time
+    TEST_ASSERT(computeAdaptiveFpsCap(60, false, 250, 95.0f) == 60);
+    TEST_ASSERT(computeAdaptiveFpsCap(30, false, 250, 95.0f) == 30);
+    TEST_ASSERT(computeAdaptiveFpsCap(15, true, 250, 95.0f) == 15);
+
+    // 3. Verify AppSettings round-trip save/load in IdentityManager
+    {
+        IdentityManager idSave(19);
+        idSave.loadOrCreate();
+        AppSettings s = idSave.settings();
+        s.darkTheme = true;
+        s.targetFps = 60;
+        s.adaptiveFps = false;
+        s.defaultQuality = QualityPreset::LowBandwidth;
+        s.defaultScaleMode = 1;
+        s.showRemoteCursor = false;
+        s.showSessionHud = false;
+        s.autoAcceptIncoming = true;
+        s.defaultPermissions = PERM_INPUT | PERM_CLIPBOARD;
+        s.lockWorkstationOnDisconnect = true;
+        idSave.updateSettings(s);
+    }
+    {
+        IdentityManager idLoad(19);
+        idLoad.loadOrCreate();
+        AppSettings loaded = idLoad.settings();
+        TEST_ASSERT(loaded.darkTheme == true);
+        TEST_ASSERT(loaded.targetFps == 60);
+        TEST_ASSERT(loaded.adaptiveFps == false);
+        TEST_ASSERT(loaded.defaultQuality == QualityPreset::LowBandwidth);
+        TEST_ASSERT(loaded.defaultScaleMode == 1);
+        TEST_ASSERT(loaded.showRemoteCursor == false);
+        TEST_ASSERT(loaded.showSessionHud == false);
+        TEST_ASSERT(loaded.autoAcceptIncoming == true);
+        TEST_ASSERT(loaded.defaultPermissions == (PERM_INPUT | PERM_CLIPBOARD));
+        TEST_ASSERT(loaded.lockWorkstationOnDisconnect == true);
+
+        // Reset to defaults and verify
+        idLoad.resetSettingsToDefault();
+        AppSettings def = idLoad.settings();
+        TEST_ASSERT(def.darkTheme == false);
+        TEST_ASSERT(def.targetFps == 30);
+        TEST_ASSERT(def.adaptiveFps == true);
+        TEST_ASSERT(def.defaultQuality == QualityPreset::Balanced);
+        TEST_ASSERT(def.defaultPermissions == PERM_ALL);
+    }
+}
+
+} // namespace
+
+int main() {
+    CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+
+    std::cout << "=========================================================\n";
+    std::cout << "   AeroDesk Automated Verification & Integration Suite   \n";
+    std::cout << "=========================================================\n";
+
+    testDeskIdAndCrypto();
+    testTileCodecRoundTrip();
+    testScreenCapturer();
+    testEndToEndSessionAndFileTransfer();
+    testFileTransferEdgeCasesAndFavorites();
+    testAppSettingsAndAdaptiveFps();
+
+    std::cout << "---------------------------------------------------------\n";
+    std::cout << "Assertions Passed: " << g_passed << " | Failed: " << g_failed << "\n";
+    std::cout << "=========================================================\n";
+
+    CoUninitialize();
+    return (g_failed == 0) ? 0 : 1;
+}
