@@ -106,3 +106,9 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1 -Test -Benchmark
 └── tests/
     └── test_suite.cpp                   # Automated C++20 + AVX2 integration test suite (106 assertions)
 ```
+
+---
+
+## License
+
+Licensed under the [MIT License](LICENSE). Copyright (c) 2026 oocs07.
