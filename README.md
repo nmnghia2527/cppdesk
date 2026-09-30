@@ -1,8 +1,14 @@
-# AeroDesk — Standalone High-Performance Windows Remote Desktop (`AeroDesk.exe`)
+<p align="center">
+  <img src="assets/icon.png" width="112" height="112" alt="AeroDesk App Icon" />
+</p>
+
+<h1 align="center">AeroDesk — Standalone Windows Remote Desktop (<code>AeroDesk.exe</code>)</h1>
+
+<p align="center">
+  <a href="https://github.com/oocs07/Remote-Desktop/releases/latest"><strong>⬇ Download Latest Release (<code>AeroDesk.exe</code> v2.0.0)</strong></a>
+</p>
 
 AeroDesk is a zero-install, hardware-accelerated Remote Desktop application for Windows distributed as a single portable executable (**`AeroDesk.exe`**). Built with **C++20** and hand-tuned **x86-64 AVX2 SIMD Assembly**, it delivers ultra-low-latency remote screen sharing, input control, clipboard synchronization, chunked file transfer, and live encrypted chat using a **9-Digit Desk ID** (`XXX XXX XXX`) and password or interactive approval.
-
-[**⬇ Download Latest Release (`AeroDesk.exe` v2.0.0)**](https://github.com/oocs07/Remote-Desktop/releases/latest)
 
 ---
 
@@ -10,7 +16,7 @@ AeroDesk is a zero-install, hardware-accelerated Remote Desktop application for 
 
 | Layer / Component | Language & Technology | Purpose & Measured Impact |
 | :--- | :--- | :--- |
-| **Standalone Desktop App (`AeroDesk.exe`)** | **C++20** (Win32, Direct2D, DirectWrite, DXGI, Windows CNG) | Single-file portable Host & Viewer GUI with custom Direct2D vector cursor, Light/Dark Crimson themes, and GPU screen capture. |
+| **Standalone Desktop App (`AeroDesk.exe`)** | **C++20** (Win32, Direct2D, DirectWrite, DXGI, Windows CNG) | Single-file portable Host & Viewer GUI with White & Blue / Black & Blue themes, VSync-locked animations, and GPU screen capture. |
 | **SIMD Hot-Loop Kernels (`src/simd/`)** | **x86-64 AVX2 Assembly (`.S`)** | 256-bit `ymm` vector instructions (`vmovdqu`, `vpcmpeqb`, `vpmovmskb`, `vpxor`) for 64×64 dirty-tile hashing/diffing (**~80 GB/s, ~20× faster than scalar C++**) and stream cipher XOR. |
 | **Dedicated Relay Server (`relay-dotnet/`)** | **C# / .NET 10 (`AeroDeskRelay`)** | Optional headless `async/await` Rendezvous & TCP Bridge server for cross-subnet 9-digit Desk ID routing. |
 | **Benchmark & Stress Harness (`scripts/`)** | **Python 3.14 (`benchmark_suite.py`)** | Automated verification and stress-testing harness for SIMD throughput and Relay concurrency. |

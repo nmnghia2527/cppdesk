@@ -188,7 +188,10 @@ bool AeroDeskWindow::create(HINSTANCE hInstance, int nCmdShow) {
     wc.lpfnWndProc = &AeroDeskWindow::WndProcStatic;
     wc.hInstance = hInstance;
     wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
-    wc.hIcon = LoadIcon(nullptr, IDI_APPLICATION);
+    HICON appIcon = LoadIconW(hInstance, MAKEINTRESOURCEW(101));
+    if (!appIcon) appIcon = LoadIcon(nullptr, IDI_APPLICATION);
+    wc.hIcon = appIcon;
+    wc.hIconSm = appIcon;
     wc.lpszClassName = L"AeroDeskMainWindowClass";
     RegisterClassExW(&wc);
 

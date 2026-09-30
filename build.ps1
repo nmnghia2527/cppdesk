@@ -61,8 +61,18 @@ $Libs = @(
     "-lshell32"
 )
 
+$Windres = "C:\msys64\ucrt64\bin\windres.exe"
+if (-not (Test-Path $Windres)) {
+    $Windres = "windres"
+}
+
 Write-Host "[1/3] Compiling AeroDesk.exe (C++20 + x86-64 AVX2 Assembly)..." -ForegroundColor Cyan
-& $Gpp @CommonFlags -mwindows @AppSources -o "AeroDesk.exe" @Libs
+& $Windres "src/aerodesk.rc" -O coff -o "src/aerodesk_res.o"
+if ($LASTEXITCODE -ne 0) {
+    throw "Failed to compile Win32 icon resource src/aerodesk.rc"
+}
+& $Gpp @CommonFlags -mwindows @AppSources "src/aerodesk_res.o" -o "AeroDesk.exe" @Libs
+Remove-Item "src/aerodesk_res.o" -ErrorAction SilentlyContinue
 if ($LASTEXITCODE -ne 0) {
     throw "Failed to compile AeroDesk.exe"
 }
