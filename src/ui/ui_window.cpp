@@ -422,10 +422,10 @@ LRESULT AeroDeskWindow::handleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
                 if (vStats.remoteAddress.find("127.0.0.1") != std::string::npos ||
                     vStats.remoteDeskId == identity_.deskId()) {
                     remoteInputEnabled_ = false;
-                    showToast("Connected on same PC! View-Only enabled to prevent cursor loop (Press F8 to toggle control).");
+                    showToast("Connected on same PC. View-Only enabled (Press F8 to toggle control).");
                 } else {
                     remoteInputEnabled_ = true;
-                    showToast("Encrypted session established with " + vStats.remoteHostname + " [SAS: " + vStats.securityFingerprint + "]");
+                    showToast("Connected to " + vStats.remoteHostname);
                 }
             } else if (vStats.state == ViewerConnectionState::Error &&
                        prevViewerState_ != ViewerConnectionState::Error) {
@@ -925,24 +925,23 @@ void AeroDeskWindow::drawTopNavBar(float width, float& outTopOffset) {
     if (identity_.instanceId() > 1) {
         brandTitle += " #" + std::to_string(identity_.instanceId());
     }
-    drawText(brandTitle, { 60.0f, 9.0f, 205.0f, 30.0f }, fmtSubheading_, COL_TEXT_PRIMARY);
+    drawText(brandTitle, { 60.0f, 9.0f, 200.0f, 30.0f }, fmtSubheading_, COL_TEXT_PRIMARY);
 
-    // Breathing emerald online dot + local endpoint subtitle
+    // Clean online status indicator
     drawPulseDot(65.0f, 38.5f, 3.6f, COL_SUCCESS);
-    std::string netSub = "Online • " + network_.localIpAddress() + ":" + std::to_string(network_.hostListenPort());
-    drawText(netSub, { 74.0f, 29.0f, 275.0f, 48.0f }, fmtSmall_, COL_TEXT_SECONDARY);
+    drawText("Online", { 74.0f, 29.0f, 200.0f, 48.0f }, fmtSmall_, COL_TEXT_SECONDARY);
 
-    // Center Segmented Pill Tab Switcher with Spring-Animated Sliding Pill
-    float tabStartX = 280.0f;
+    // Segmented Pill Tab Switcher
+    float tabStartX = 210.0f;
     auto vStats = network_.viewerStats();
     bool hasSession = (vStats.state != ViewerConnectionState::Disconnected);
 
-    UiRect dashTab = { tabStartX, 11.0f, tabStartX + 114.0f, 45.0f };
+    UiRect dashTab = { tabStartX, 11.0f, tabStartX + 110.0f, 45.0f };
     UiRect sessTab = hasSession
-        ? UiRect{ dashTab.right + 4.0f, 11.0f, dashTab.right + 190.0f, 45.0f }
+        ? UiRect{ dashTab.right + 4.0f, 11.0f, dashTab.right + 184.0f, 45.0f }
         : UiRect{ dashTab.right, 11.0f, dashTab.right, 45.0f };
     float settLeft = (hasSession ? sessTab.right : dashTab.right) + 4.0f;
-    UiRect settTab = { settLeft, 11.0f, settLeft + 106.0f, 45.0f };
+    UiRect settTab = { settLeft, 11.0f, settLeft + 104.0f, 45.0f };
 
     UiRect activeTargetRect = (activeTab_ == ActiveTab::Dashboard) ? dashTab :
                               (activeTab_ == ActiveTab::RemoteSession && hasSession) ? sessTab : settTab;
@@ -958,7 +957,6 @@ void AeroDeskWindow::drawTopNavBar(float width, float& outTopOffset) {
     fillRoundRect(trackRect, 9.5f, COL_SEC_BTN_BG);
     strokeRoundRect(trackRect, 9.5f, COL_BORDER, 1.0f);
 
-    // Draw the physical spring-sliding Blue active pill!
     UiRect slidingPill = { navPillLeft_, 11.0f, navPillRight_, 45.0f };
     fillRoundRect(slidingPill.offset(0.0f, 1.8f), 7.5f, withAlpha(COL_PRIMARY_RED, 0.22f));
     fillRoundRect(slidingPill, 7.5f, COL_PRIMARY_RED);
@@ -976,7 +974,7 @@ void AeroDeskWindow::drawTopNavBar(float width, float& outTopOffset) {
     if (hasSession) {
         std::string sessLabel = (vStats.remoteDeskId > 0)
             ? ("Session: " + CryptoUtils::formatDeskId(vStats.remoteDeskId))
-            : ("Session: " + vStats.statusMessage.substr(0, 14));
+            : "Active Session";
         bool onSess = (activeTab_ == ActiveTab::RemoteSession);
         drawButton("tab_session", sessTab, sessLabel,
                    rgba(255, 255, 255, 0.0f),
@@ -998,56 +996,27 @@ void AeroDeskWindow::drawTopNavBar(float width, float& outTopOffset) {
                }, fmtSmall_, false, D2D1::ColorF(0, 0, 0, 0),
                onSett ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
 
-    // Right Action Bar
-    auto hStatus = network_.hostSessionStatus();
-    std::string activeSas = !vStats.securityFingerprint.empty() ? vStats.securityFingerprint :
-                            !hStatus.securityFingerprint.empty() ? hStatus.securityFingerprint : "";
-
-    UiRect secBadge = { width - 154.0f, 11.0f, width - 16.0f, 45.0f };
-    std::string secLabel = activeSas.empty() ? "E2EE • 256-Bit" : ("SAS: " + activeSas);
-    drawButton("btn_nav_sec", secBadge, secLabel,
-               COL_BG_CARD_ALT, COL_SEC_BTN_HV, COL_TEXT_ACCENT,
-               7.5f, [this, activeSas]() {
-                   if (!activeSas.empty()) {
-                       ClipboardManager::setClipboardUtf8(activeSas);
-                       showToast("Copied Session Security Fingerprint (SAS: " + activeSas + ") to clipboard.");
-                   } else {
-                       showToast("All sessions use salted SHA-256 challenge-response & 256-bit stream encryption.");
-                   }
-               }, fmtSmall_, true, COL_BORDER_ALT, COL_PRIMARY_RED);
-
-    bool relayRunning = network_.isLocalRelayRunning();
-    std::string relayLabel = relayRunning
-        ? ("Relay: ON (" + std::to_string(network_.localRelayPeerCount()) + ")")
-        : "Relay: OFF";
-    UiRect relayBtn = { secBadge.left - 148.0f, 11.0f, secBadge.left - 8.0f, 45.0f };
-    drawButton("btn_relay_toggle", relayBtn, relayLabel,
-               relayRunning ? lerpColor(rgba(236, 253, 245), rgba(14, 42, 34), themeAnimT_) : COL_SEC_BTN_BG,
-               relayRunning ? lerpColor(rgba(209, 250, 229), rgba(20, 60, 48), themeAnimT_) : COL_SEC_BTN_HV,
-               relayRunning ? lerpColor(rgba(4, 120, 87), rgba(52, 211, 153), themeAnimT_) : COL_TEXT_PRIMARY,
-               7.5f, [this, relayRunning]() {
-                   if (relayRunning) {
-                       network_.stopLocalRelayServer();
-                       showToast("Stopped built-in Relay Server.");
-                   } else {
-                       if (network_.startLocalRelayServer(DEFAULT_RELAY_PORT)) {
-                           showToast("Built-in Relay Server started on port 50999.");
-                       } else {
-                           showToast("Port 50999 is already in use by another instance.", true);
-                       }
-                   }
-               }, fmtSmall_, true, relayRunning ? rgba(16, 185, 129, 0.5f) : COL_BORDER,
-               relayRunning ? lerpColor(rgba(4, 120, 87), rgba(52, 211, 153), themeAnimT_) : COL_TEXT_ACCENT);
+    // Right Action Bar (Minimal: Theme + Files & Chat)
+    bool isDark = identity_.settings().darkTheme;
+    UiRect themeBtn = { width - 96.0f, 11.0f, width - 18.0f, 45.0f };
+    drawButton("btn_nav_theme", themeBtn, isDark ? "Dark" : "Light",
+               COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY,
+               7.5f, [this]() {
+                   AppSettings s = identity_.settings();
+                   s.darkTheme = !s.darkTheme;
+                   identity_.updateSettings(s);
+                   applyWindowThemeAttribute();
+               }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
 
     auto transfers = network_.fileTransferManager().snapshotTransfers();
     uint32_t unreadChat = network_.unreadChatCount();
     std::string fileBtnLabel = "Files & Chat";
     if (unreadChat > 0) {
-        fileBtnLabel += " [" + std::to_string(unreadChat) + " new]";
+        fileBtnLabel += " (" + std::to_string(unreadChat) + ")";
     } else if (!transfers.empty()) {
         fileBtnLabel += " (" + std::to_string(transfers.size()) + ")";
     }
-    UiRect filesBtn = { relayBtn.left - 150.0f, 11.0f, relayBtn.left - 8.0f, 45.0f };
+    UiRect filesBtn = { themeBtn.left - 134.0f, 11.0f, themeBtn.left - 8.0f, 45.0f };
     drawButton("btn_drawer", filesBtn, fileBtnLabel,
                (showFileDrawer_ || unreadChat > 0) ? COL_PRIMARY_RED : COL_SEC_BTN_BG,
                (showFileDrawer_ || unreadChat > 0) ? COL_PRIMARY_RED_HV : COL_SEC_BTN_HV,
@@ -1060,18 +1029,6 @@ void AeroDeskWindow::drawTopNavBar(float width, float& outTopOffset) {
                    showFileDrawer_ = !showFileDrawer_;
                }, fmtSmall_, !(showFileDrawer_ || unreadChat > 0), COL_BORDER,
                (showFileDrawer_ || unreadChat > 0) ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
-
-    bool isDark = identity_.settings().darkTheme;
-    UiRect themeBtn = { filesBtn.left - 102.0f, 11.0f, filesBtn.left - 8.0f, 45.0f };
-    drawButton("btn_nav_theme", themeBtn, isDark ? "Dark Blue" : "Light Blue",
-               COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY,
-               7.5f, [this]() {
-                   AppSettings s = identity_.settings();
-                   s.darkTheme = !s.darkTheme;
-                   identity_.updateSettings(s);
-                   applyWindowThemeAttribute();
-                   showToast(s.darkTheme ? "Switched to Dark Mode (Black & Blue)." : "Switched to Light Mode (White & Blue).");
-               }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
 }
 
 // ---------------- Dashboard View ----------------
@@ -1085,7 +1042,7 @@ void AeroDeskWindow::drawDashboardView(const UiRect& bounds, float alpha) {
 
     float pad = 22.0f;
     float totalW = bounds.width() - pad * 2.0f;
-    float leftW = std::clamp(totalW * 0.40f, 380.0f, 475.0f);
+    float leftW = std::clamp(totalW * 0.40f, 380.0f, 465.0f);
 
     UiRect leftCol = UiRect{ bounds.left + pad, bounds.top + pad, bounds.left + pad + leftW, bounds.bottom - pad }.offset(0.0f, stagger1);
     UiRect rightCol = { leftCol.right + pad, bounds.top + pad, bounds.right - pad, bounds.bottom - pad };
@@ -1099,7 +1056,7 @@ void AeroDeskWindow::drawDashboardView(const UiRect& bounds, float alpha) {
 
     drawText("This Desk", { lx, curY, rx, curY + 26.0f }, fmtHeading_, withAlpha(COL_TEXT_PRIMARY, alpha));
     curY += 28.0f;
-    drawText("Share your 9-digit Address and One-Time Session Code to allow remote control.",
+    drawText("Share your ID and code to allow remote access.",
              { lx, curY, rx, curY + 20.0f }, fmtSmall_, withAlpha(COL_TEXT_SECONDARY, alpha));
     curY += 26.0f;
 
@@ -1108,7 +1065,7 @@ void AeroDeskWindow::drawDashboardView(const UiRect& bounds, float alpha) {
     fillRoundRect(idBox, 11.0f, withAlpha(COL_BG_CARD_ALT, alpha));
     strokeRoundRect(idBox, 11.0f, withAlpha(COL_BORDER_ALT, alpha), 1.4f);
 
-    drawText("YOUR AERODESK ADDRESS", { idBox.left + 16.0f, idBox.top + 8.0f, idBox.right - 16.0f, idBox.top + 24.0f },
+    drawText("YOUR DESK ID", { idBox.left + 16.0f, idBox.top + 8.0f, idBox.right - 16.0f, idBox.top + 24.0f },
              fmtSmall_, withAlpha(COL_TEXT_ACCENT, alpha));
     drawText(identity_.formattedDeskId(), { idBox.left + 16.0f, idBox.top + 25.0f, idBox.right - 115.0f, idBox.bottom - 8.0f },
              fmtHeroId_, withAlpha(COL_PRIMARY_RED, alpha));
@@ -1117,28 +1074,28 @@ void AeroDeskWindow::drawDashboardView(const UiRect& bounds, float alpha) {
     drawButton("btn_copy_id", copyIdBtn, "Copy ID",
                COL_PRIMARY_RED, COL_PRIMARY_RED_HV, COL_TEXT_ON_ACCENT, 7.5f, [this]() {
                    ClipboardManager::setClipboardUtf8(identity_.formattedDeskId());
-                   showToast("Copied Desk ID (" + identity_.formattedDeskId() + ") to clipboard!");
+                   showToast("Copied Desk ID to clipboard.");
                }, fmtSmall_);
 
     curY = idBox.bottom + 14.0f;
 
-    // One-Time Session Code & Salted Unattended Password Card
-    UiRect unattBox = { lx, curY, rx, curY + 166.0f };
+    // Session Code & Password Card
+    UiRect unattBox = { lx, curY, rx, curY + 164.0f };
     fillRoundRect(unattBox, 11.0f, withAlpha(COL_BG_SUBTLE, alpha));
     strokeRoundRect(unattBox, 11.0f, withAlpha(COL_BORDER, alpha));
 
     float ux = unattBox.left + 16.0f;
     float urx = unattBox.right - 16.0f;
     drawToggleSwitch("toggle_unattended", { ux, unattBox.top + 10.0f, urx, unattBox.top + 36.0f },
-                     identity_.unattendedEnabled(), "Allow Password / Session Code Authentication", [this]() {
+                     identity_.unattendedEnabled(), "Allow Password Access", [this]() {
                          identity_.setUnattendedEnabled(!identity_.unattendedEnabled());
-                         showToast(identity_.unattendedEnabled() ? "Password authentication enabled." : "Password authentication disabled.");
+                         showToast(identity_.unattendedEnabled() ? "Password access enabled." : "Password access disabled.");
                      });
 
-    // Dynamic One-Time Session Code Row
+    // Session Code Row
     float codeY = unattBox.top + 44.0f;
-    drawText("One-Time Code:", { ux, codeY, ux + 108.0f, codeY + 32.0f }, fmtSmall_, withAlpha(COL_TEXT_SECONDARY, alpha));
-    UiRect codeBadge = { ux + 110.0f, codeY, urx - 142.0f, codeY + 32.0f };
+    drawText("Session Code:", { ux, codeY, ux + 100.0f, codeY + 32.0f }, fmtSmall_, withAlpha(COL_TEXT_SECONDARY, alpha));
+    UiRect codeBadge = { ux + 102.0f, codeY, urx - 142.0f, codeY + 32.0f };
     fillRoundRect(codeBadge, 6.5f, COL_BG_CARD);
     strokeRoundRect(codeBadge, 6.5f, COL_BORDER_ALT);
     drawText(identity_.sessionCode(), codeBadge, fmtMono_, COL_PRIMARY_RED, DWRITE_TEXT_ALIGNMENT_CENTER);
@@ -1147,23 +1104,23 @@ void AeroDeskWindow::drawDashboardView(const UiRect& bounds, float alpha) {
     drawButton("btn_copy_code", copyCodeBtn, "Copy",
                COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 6.5f, [this]() {
                    ClipboardManager::setClipboardUtf8(identity_.sessionCode());
-                   showToast("Copied One-Time Session Code (" + identity_.sessionCode() + ") to clipboard!");
+                   showToast("Copied session code to clipboard.");
                }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
 
     UiRect regenCodeBtn = { copyCodeBtn.right + 6.0f, codeY, urx, codeY + 32.0f };
-    drawButton("btn_regen_code", regenCodeBtn, "Rotate",
+    drawButton("btn_regen_code", regenCodeBtn, "New",
                COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 6.5f, [this]() {
-                   std::string nc = identity_.regenerateSessionCode();
-                   showToast("Generated new One-Time Session Code: " + nc);
+                   identity_.regenerateSessionCode();
+                   showToast("Generated new session code.");
                }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
 
-    // Permanent Salted Unattended Password Row
-    drawText("Permanent Unattended Password (Stored as Salted SHA-256 Verifier):",
+    // Unattended Password Row
+    drawText("Unattended Password:",
              { ux, unattBox.top + 84.0f, urx, unattBox.top + 102.0f }, fmtSmall_, withAlpha(COL_TEXT_SECONDARY, alpha));
 
     UiRect passField = { ux, unattBox.top + 106.0f, urx - 142.0f, unattBox.top + 144.0f };
     drawTextField("field_local_pass", FocusedField::LocalPassword, passField,
-                  localPasswordEdit_, "Set new unattended password...", !showLocalPassword_);
+                  localPasswordEdit_, "Set password...", !showLocalPassword_);
 
     UiRect showPassBtn = { passField.right + 6.0f, passField.top, passField.right + 66.0f, passField.bottom };
     drawButton("btn_show_local_pass", showPassBtn, showLocalPassword_ ? "Hide" : "Show",
@@ -1176,15 +1133,15 @@ void AeroDeskWindow::drawDashboardView(const UiRect& bounds, float alpha) {
                COL_PRIMARY_RED, COL_PRIMARY_RED_HV, COL_TEXT_ON_ACCENT, 7.0f, [this]() {
                    if (!localPasswordEdit_.empty()) {
                        identity_.setUnattendedPassword(localPasswordEdit_);
-                       showToast("Saved Salted SHA-256 Unattended Password Verifier!");
+                       showToast("Password saved.");
                    } else {
-                       showToast("Type a password first before clicking Save.", true);
+                       showToast("Enter a password first.", true);
                    }
                }, fmtSmall_);
 
     curY = unattBox.bottom + 14.0f;
 
-    // Active Incoming Host Session Status Card
+    // Host Session Status Card
     auto hStatus = network_.hostSessionStatus();
     UiRect hostBox = { lx, curY, rx, leftCol.bottom - 18.0f };
     fillRoundRect(hostBox, 11.0f, withAlpha(hStatus.active ? COL_BG_CARD_ALT : COL_BG_SUBTLE, alpha));
@@ -1192,12 +1149,11 @@ void AeroDeskWindow::drawDashboardView(const UiRect& bounds, float alpha) {
 
     float hx = hostBox.left + 16.0f;
     float hrx = hostBox.right - 16.0f;
-    float hy = hostBox.top + 12.0f;
+    float hy = hostBox.top + 14.0f;
 
     if (hStatus.active) {
         drawPulseDot(hx + 5.0f, hy + 10.0f, 4.0f, COL_PRIMARY_RED, alpha);
-        std::string hdrLine = "ACTIVE ENCRYPTED SESSION • SAS: " + hStatus.securityFingerprint;
-        drawText(hdrLine, { hx + 15.0f, hy, hrx, hy + 20.0f }, fmtSmall_, COL_PRIMARY_RED);
+        drawText("ACTIVE SESSION", { hx + 15.0f, hy, hrx, hy + 20.0f }, fmtSmall_, COL_PRIMARY_RED);
         hy += 22.0f;
         std::string who = hStatus.viewerHostname + " (" + CryptoUtils::formatDeskId(hStatus.viewerDeskId) + ")";
         drawText(who, { hx, hy, hrx, hy + 24.0f }, fmtSubheading_, COL_TEXT_PRIMARY);
@@ -1205,43 +1161,38 @@ void AeroDeskWindow::drawDashboardView(const UiRect& bounds, float alpha) {
 
         uint8_t perms = hStatus.permissions;
         drawToggleSwitch("perm_host_input", { hx, hy, hrx, hy + 24.0f }, (perms & PERM_INPUT) != 0,
-                         "Allow Mouse & Keyboard Control", [this, perms]() {
+                         "Mouse & Keyboard", [this, perms]() {
                              network_.updateHostSessionPermissions(perms ^ PERM_INPUT);
                          });
         hy += 28.0f;
         drawToggleSwitch("perm_host_clip", { hx, hy, hrx, hy + 24.0f }, (perms & PERM_CLIPBOARD) != 0,
-                         "Allow Clipboard Synchronization", [this, perms]() {
+                         "Clipboard", [this, perms]() {
                              network_.updateHostSessionPermissions(perms ^ PERM_CLIPBOARD);
                          });
         hy += 28.0f;
         drawToggleSwitch("perm_host_file", { hx, hy, hrx, hy + 24.0f }, (perms & PERM_FILE_TRANSFER) != 0,
-                         "Allow File Transfer", [this, perms]() {
+                         "File Transfer", [this, perms]() {
                              network_.updateHostSessionPermissions(perms ^ PERM_FILE_TRANSFER);
                          });
         hy += 30.0f;
 
         if (hy + 32.0f <= hostBox.bottom - 8.0f) {
             UiRect discHostBtn = { hx, hy, hrx, hy + 32.0f };
-            drawButton("btn_disc_host", discHostBtn, "Disconnect Remote Viewer",
+            drawButton("btn_disc_host", discHostBtn, "Disconnect",
                        COL_DANGER, COL_DANGER_HV, COL_TEXT_ON_ACCENT, 7.0f, [this]() {
                            network_.disconnectHostClient();
                            showToast("Disconnected remote viewer.");
                        }, fmtSmall_);
         }
     } else {
-        drawPulseDot(hx + 5.0f, hy + 10.0f, 3.8f, COL_SUCCESS, alpha);
-        drawText("HOST SHIELD: READY & ENCRYPTED", { hx + 15.0f, hy, hrx, hy + 20.0f }, fmtSmall_, COL_TEXT_PRIMARY);
-        hy += 24.0f;
-        drawText("Awaiting incoming connection. Brute-force IP rate-limiting is active.", { hx, hy, hrx, hy + 20.0f }, fmtBody_, COL_TEXT_SECONDARY);
-        hy += 24.0f;
-        const auto& s = identity_.settings();
-        std::string modeLine = "• Stream Target: " + std::to_string(s.targetFps) + " FPS" +
-                               (s.adaptiveFps ? " (Auto-Drop on poor network: ON)" : " (Fixed FPS)");
-        drawText(modeLine, { hx, hy, hrx, hy + 20.0f }, fmtSmall_, COL_TEXT_ACCENT);
+        drawPulseDot(hx + 6.0f, hy + 12.0f, 4.0f, COL_SUCCESS, alpha);
+        drawText("Ready for connections", { hx + 18.0f, hy, hrx, hy + 24.0f }, fmtSubheading_, COL_TEXT_PRIMARY);
+        hy += 26.0f;
+        drawText("Your desktop is ready to share.", { hx, hy, hrx, hy + 20.0f }, fmtSmall_, COL_TEXT_SECONDARY);
     }
 
     // ========== RIGHT COLUMN: REMOTE DESK & DISCOVERY ==========
-    float topCardH = 224.0f;
+    float topCardH = 148.0f;
     UiRect connectCard = UiRect{ rightCol.left, rightCol.top, rightCol.right, rightCol.top + topCardH }.offset(0.0f, stagger2);
     drawCardSurface(connectCard, 14.0f, alpha, true);
 
@@ -1249,11 +1200,11 @@ void AeroDeskWindow::drawDashboardView(const UiRect& bounds, float alpha) {
     float crx = connectCard.right - 22.0f;
     float cy = connectCard.top + 18.0f;
 
-    drawText("Control a Remote Computer", { cx, cy, crx, cy + 26.0f }, fmtHeading_, COL_TEXT_PRIMARY);
+    drawText("Remote Desk", { cx, cy, crx, cy + 26.0f }, fmtHeading_, COL_TEXT_PRIMARY);
     cy += 26.0f;
-    drawText("Enter the 9-digit AeroDesk Address or IP:Port of the remote workstation:",
+    drawText("Enter a Desk ID to connect to another computer.",
              { cx, cy, crx, cy + 20.0f }, fmtSmall_, COL_TEXT_SECONDARY);
-    cy += 26.0f;
+    cy += 28.0f;
 
     float totalInputW = crx - cx;
     float idW = totalInputW * 0.44f;
@@ -1261,40 +1212,19 @@ void AeroDeskWindow::drawDashboardView(const UiRect& bounds, float alpha) {
 
     UiRect remoteIdField = { cx, cy, cx + idW, cy + 44.0f };
     drawTextField("field_remote_id", FocusedField::RemoteId, remoteIdField,
-                  remoteIdInput_, "Enter 9-digit ID or IP:Port", false);
+                  remoteIdInput_, "Enter 9-digit ID", false);
 
     UiRect remotePwField = { remoteIdField.right + 10.0f, cy, remoteIdField.right + 10.0f + pwW, cy + 44.0f };
     drawTextField("field_remote_pw", FocusedField::RemotePassword, remotePwField,
-                  remotePasswordInput_, "Password / Code (optional)", !showRemotePassword_);
+                  remotePasswordInput_, "Password or code", !showRemotePassword_);
 
     UiRect connectBtn = { remotePwField.right + 10.0f, cy, crx, cy + 44.0f };
-    drawButton("btn_connect", connectBtn, "Connect ->",
+    drawButton("btn_connect", connectBtn, "Connect",
                COL_PRIMARY_RED, COL_PRIMARY_RED_HV, COL_TEXT_ON_ACCENT, 8.0f, [this]() {
                    initiateConnection();
                });
 
-    cy += 54.0f;
-
-    // Relay configuration & Connection status row
-    drawText("Rendezvous / Relay Server:", { cx, cy, cx + 175.0f, cy + 34.0f }, fmtSmall_, COL_TEXT_SECONDARY);
-    UiRect relayField = { cx + 175.0f, cy, cx + 385.0f, cy + 34.0f };
-    drawTextField("field_relay_srv", FocusedField::RelayServer, relayField,
-                  relayServerEdit_, "127.0.0.1:50999", false);
-
-    UiRect saveRelayBtn = { relayField.right + 8.0f, cy, relayField.right + 75.0f, cy + 34.0f };
-    drawButton("btn_save_relay", saveRelayBtn, "Apply",
-               COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 6.5f, [this]() {
-                   identity_.setRelayServerAddress(relayServerEdit_);
-                   showToast("Relay server set to " + relayServerEdit_);
-               }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
-
-    auto vStats = network_.viewerStats();
-    std::string statusLine = "Status: " + vStats.statusMessage;
-    D2D1_COLOR_F stCol = (vStats.state == ViewerConnectionState::Connected) ? COL_SUCCESS :
-                         (vStats.state == ViewerConnectionState::Error) ? COL_DANGER : COL_TEXT_SECONDARY;
-    drawText(statusLine, { saveRelayBtn.right + 14.0f, cy, crx, cy + 34.0f }, fmtSmall_, stCol);
-
-    // ========== DISCOVERED PEERS, FAVORITES & RECENT DESKS GRID ==========
+    // ========== SAVED & NEARBY DESKS GRID ==========
     UiRect peersCard = UiRect{ rightCol.left, connectCard.bottom + 18.0f - stagger2, rightCol.right, rightCol.bottom }.offset(0.0f, stagger3);
     drawCardSurface(peersCard, 14.0f, alpha, false);
 
@@ -1305,12 +1235,12 @@ void AeroDeskWindow::drawDashboardView(const UiRect& bounds, float alpha) {
     auto discovered = network_.discoveredPeers();
     auto recents = identity_.recentSessions();
 
-    drawText("Favorite, Discovered & Recent Desks", { px, py, prx - 125.0f, py + 26.0f }, fmtHeading_, COL_TEXT_PRIMARY);
-    UiRect refreshBtn = { prx - 114.0f, py - 2.0f, prx, py + 28.0f };
-    drawButton("btn_refresh_lan", refreshBtn, "Scan Network",
+    drawText("Saved & Nearby Desks", { px, py, prx - 110.0f, py + 26.0f }, fmtHeading_, COL_TEXT_PRIMARY);
+    UiRect refreshBtn = { prx - 96.0f, py - 2.0f, prx, py + 28.0f };
+    drawButton("btn_refresh_lan", refreshBtn, "Refresh",
                COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 6.5f, [this]() {
                    network_.sendDiscoveryQuery(0);
-                   showToast("Broadcasted encrypted LAN discovery beacon.");
+                   showToast("Refreshing nearby desks...");
                }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
 
     py += 38.0f;
@@ -1369,10 +1299,10 @@ void AeroDeskWindow::drawDashboardView(const UiRect& bounds, float alpha) {
 
         float cyEmpty = emptyBox.centerY();
         drawPulseDot(emptyBox.centerX(), cyEmpty - 26.0f, 6.0f, COL_PRIMARY_RED, alpha);
-        drawText("Searching Local Network for AeroDesk Peers",
+        drawText("No desks found nearby",
                  { emptyBox.left + 24.0f, cyEmpty - 10.0f, emptyBox.right - 24.0f, cyEmpty + 16.0f },
                  fmtSubheading_, COL_TEXT_PRIMARY, DWRITE_TEXT_ALIGNMENT_CENTER);
-        drawText("Online workstations on your LAN appear here automatically, or enter any 9-digit AeroDesk ID above to connect.",
+        drawText("Computers on your local network will appear here automatically.",
                  { emptyBox.left + 24.0f, cyEmpty + 18.0f, emptyBox.right - 24.0f, cyEmpty + 44.0f },
                  fmtSmall_, COL_TEXT_SECONDARY, DWRITE_TEXT_ALIGNMENT_CENTER);
     } else {
@@ -1398,11 +1328,11 @@ void AeroDeskWindow::drawDashboardView(const UiRect& bounds, float alpha) {
 
             if (cardItems[i].isLive) {
                 drawPulseDot(cardR.left + 19.0f, cardR.top + 18.0f, 3.5f, COL_SUCCESS, alpha);
-                std::string badge = cardItems[i].isFavorite ? "★ FAVORITE • ONLINE" : "ONLINE ON LAN";
+                std::string badge = cardItems[i].isFavorite ? "★ FAVORITE" : "ONLINE";
                 drawText(badge, { cardR.left + 28.0f, cardR.top + 10.0f, cardR.right - 72.0f, cardR.top + 26.0f },
                          fmtSmall_, cardItems[i].isFavorite ? COL_PRIMARY_RED : COL_TEXT_SECONDARY);
             } else {
-                std::string badge = cardItems[i].isFavorite ? "★ FAVORITE DESK" : "○ RECENT DESK";
+                std::string badge = cardItems[i].isFavorite ? "★ FAVORITE" : "RECENT";
                 drawText(badge, { cardR.left + 14.0f, cardR.top + 10.0f, cardR.right - 72.0f, cardR.top + 26.0f },
                          fmtSmall_, cardItems[i].isFavorite ? COL_PRIMARY_RED : COL_TEXT_MUTED);
             }
@@ -1411,7 +1341,6 @@ void AeroDeskWindow::drawDashboardView(const UiRect& bounds, float alpha) {
             std::string peerHost = cardItems[i].hostname;
             std::string peerEp = cardItems[i].endpoint;
 
-            // Favorite Star toggle button
             if (peerId > 0) {
                 UiRect favBtn = { cardR.right - 64.0f, cardR.top + 7.0f, cardR.right - 38.0f, cardR.top + 27.0f };
                 drawButton("peer_fav_" + std::to_string(i), favBtn, cardItems[i].isFavorite ? "★" : "☆",
@@ -1423,14 +1352,13 @@ void AeroDeskWindow::drawDashboardView(const UiRect& bounds, float alpha) {
                            }, fmtSmall_);
             }
 
-            // Remove Recent entry button
             if (cardItems[i].isFromRecent && peerId > 0) {
                 UiRect delBtn = { cardR.right - 34.0f, cardR.top + 7.0f, cardR.right - 10.0f, cardR.top + 27.0f };
                 drawButton("peer_del_" + std::to_string(i), delBtn, "×",
                            COL_SEC_BTN_BG, COL_DANGER, COL_TEXT_SECONDARY,
                            5.0f, [this, peerId]() {
                                identity_.removeRecentSession(peerId);
-                               showToast("Removed desk from recent history.");
+                               showToast("Removed desk from history.");
                            }, fmtSmall_, false, D2D1::ColorF(0, 0, 0, 0), COL_TEXT_ON_ACCENT);
             }
 
@@ -1440,7 +1368,7 @@ void AeroDeskWindow::drawDashboardView(const UiRect& bounds, float alpha) {
             drawText(idFormatted, { cardR.left + 14.0f, cardR.top + 28.0f, cardR.right - 108.0f, cardR.top + 54.0f },
                      fmtSubheading_, lerpColor(COL_TEXT_PRIMARY, COL_PRIMARY_RED, cardHover * 0.7f));
 
-            std::string subInfo = peerHost + " (" + peerEp + ")";
+            std::string subInfo = peerHost.empty() ? peerEp : peerHost;
             drawText(subInfo, { cardR.left + 14.0f, cardR.top + 54.0f, cardR.right - 108.0f, cardR.bottom - 10.0f },
                      fmtSmall_, COL_TEXT_SECONDARY);
 
@@ -1469,34 +1397,23 @@ void AeroDeskWindow::drawRemoteSessionView(const UiRect& bounds, float alpha) {
     fillRoundRect(hudBar, 0.0f, COL_BG_CARD);
     fillRoundRect({ hudBar.left, hudBar.bottom - 1.0f, hudBar.right, hudBar.bottom }, 0.0f, COL_BORDER);
 
-    float bx = hudBar.left + 14.0f;
+    float bx = hudBar.left + 16.0f;
     std::string peerTitle = stats.remoteHostname.empty()
         ? CryptoUtils::formatDeskId(stats.remoteDeskId)
-        : (stats.remoteHostname + " (" + CryptoUtils::formatDeskId(stats.remoteDeskId) + ")");
-    drawText(peerTitle, { bx, hudBar.top, bx + 195.0f, hudBar.bottom }, fmtBodyBold_, COL_TEXT_PRIMARY);
-    bx += 198.0f;
+        : stats.remoteHostname;
+    drawText(peerTitle, { bx, hudBar.top, bx + 170.0f, hudBar.bottom }, fmtBodyBold_, COL_TEXT_PRIMARY);
+    bx += 174.0f;
 
+    drawPulseDot(bx + 4.0f, hudBar.centerY(), 3.6f, COL_SUCCESS, alpha);
     if (appSett.showSessionHud) {
-        drawPulseDot(bx + 4.0f, hudBar.centerY(), 3.6f, stats.networkThrottled ? COL_WARNING : COL_SUCCESS, alpha);
-        char metricBuf[140];
-        if (stats.networkThrottled) {
-            std::snprintf(metricBuf, sizeof(metricBuf), "%dx%d • %.0f/%u FPS [Poor Net] • %u ms • %.0f KB/s",
-                          stats.frameWidth, stats.frameHeight, stats.fps, stats.effectiveFpsCap, stats.rttMs, stats.kbps);
-        } else {
-            std::snprintf(metricBuf, sizeof(metricBuf), "%dx%d • %.0f FPS • %u ms • %.0f KB/s",
-                          stats.frameWidth, stats.frameHeight, stats.fps, stats.rttMs, stats.kbps);
-        }
-        drawText(metricBuf, { bx + 12.0f, hudBar.top, bx + 275.0f, hudBar.bottom }, fmtSmall_,
-                 stats.networkThrottled ? COL_WARNING : COL_TEXT_SECONDARY);
-        bx += 278.0f;
-
-        // Live Rolling RTT Sparkline Mini-Graph
-        UiRect sparkRect = { bx, hudBar.top + 10.0f, bx + 74.0f, hudBar.bottom - 10.0f };
-        drawSparkline(sparkRect, rttHistory_.data(), SPARKLINE_SAMPLES, 160.0f,
-                      stats.networkThrottled ? COL_WARNING : COL_PRIMARY_RED, alpha);
+        char fpsBuf[48];
+        std::snprintf(fpsBuf, sizeof(fpsBuf), "Connected • %.0f FPS", stats.fps);
+        drawText(fpsBuf, { bx + 13.0f, hudBar.top, bx + 165.0f, hudBar.bottom }, fmtSmall_, COL_TEXT_SECONDARY);
+    } else {
+        drawText("Connected", { bx + 13.0f, hudBar.top, bx + 110.0f, hudBar.bottom }, fmtSmall_, COL_TEXT_SECONDARY);
     }
 
-    // Right-aligned session controls (including Screenshot, Task Mgr, 15/30/60 FPS, Quality, Scale, Fullscreen, Disconnect)
+    // Right-aligned session controls
     float rx = hudBar.right - 12.0f;
 
     UiRect discBtn = { rx - 86.0f, hudBar.top + 7.0f, rx, hudBar.bottom - 7.0f };
@@ -1504,7 +1421,7 @@ void AeroDeskWindow::drawRemoteSessionView(const UiRect& bounds, float alpha) {
                COL_DANGER, COL_DANGER_HV, COL_TEXT_ON_ACCENT, 6.5f, [this]() {
                    network_.disconnectViewer();
                    switchTab(ActiveTab::Dashboard);
-                   showToast("Disconnected from remote session.");
+                   showToast("Disconnected.");
                }, fmtSmall_);
     rx = discBtn.left - 5.0f;
 
@@ -1515,8 +1432,8 @@ void AeroDeskWindow::drawRemoteSessionView(const UiRect& bounds, float alpha) {
                }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
     rx = fsBtn.left - 5.0f;
 
-    UiRect shotBtn = { rx - 56.0f, hudBar.top + 7.0f, rx, hudBar.bottom - 7.0f };
-    drawButton("sess_screenshot", shotBtn, "Shot",
+    UiRect shotBtn = { rx - 78.0f, hudBar.top + 7.0f, rx, hudBar.bottom - 7.0f };
+    drawButton("sess_screenshot", shotBtn, "Screenshot",
                COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 6.5f, [this]() {
                    saveRemoteScreenshot();
                }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
@@ -1526,7 +1443,7 @@ void AeroDeskWindow::drawRemoteSessionView(const UiRect& bounds, float alpha) {
     drawButton("sess_taskmgr", taskBtn, "Task Mgr",
                COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 6.5f, [this]() {
                    network_.sendSystemAction(SystemActionType::TaskManager);
-                   showToast("Sent Task Manager command to remote host.");
+                   showToast("Opened Task Manager on remote computer.");
                }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
     rx = taskBtn.left - 5.0f;
 
@@ -1541,27 +1458,9 @@ void AeroDeskWindow::drawRemoteSessionView(const UiRect& bounds, float alpha) {
                }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
     rx = scaleBtn.left - 5.0f;
 
-    // Live 15 / 30 / 60 FPS Selector Button in Session HUD
-    uint8_t curTargetFps = clampTargetFps(stats.targetFps);
-    std::string fpsLabel = stats.networkThrottled
-        ? ("FPS: " + std::to_string(stats.effectiveFpsCap) + "/" + std::to_string(curTargetFps) + " Auto")
-        : ("FPS: " + std::to_string(curTargetFps) + (stats.adaptiveFps ? " (Auto)" : ""));
-    UiRect fpsBtn = { rx - 102.0f, hudBar.top + 7.0f, rx, hudBar.bottom - 7.0f };
-    drawButton("sess_fps", fpsBtn, fpsLabel,
-               COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 6.5f, [this, curTargetFps]() {
-                   uint8_t nextFps = (curTargetFps == 15) ? 30 : (curTargetFps == 30 ? 60 : 15);
-                   AppSettings s = identity_.settings();
-                   s.targetFps = nextFps;
-                   identity_.updateSettings(s);
-                   network_.setSessionFpsConfig(nextFps, s.adaptiveFps);
-                   showToast("Remote stream target set to " + std::to_string(nextFps) + " FPS" +
-                             (s.adaptiveFps ? " (Auto-drop on poor connection enabled)." : "."));
-               }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
-    rx = fpsBtn.left - 5.0f;
-
-    std::string qualLabel = (stats.qualityPreset == QualityPreset::Ultra) ? "Quality: Ultra" :
+    std::string qualLabel = (stats.qualityPreset == QualityPreset::Ultra) ? "Quality: High" :
                             (stats.qualityPreset == QualityPreset::Balanced) ? "Quality: Bal" : "Quality: Fast";
-    UiRect qualBtn = { rx - 94.0f, hudBar.top + 7.0f, rx, hudBar.bottom - 7.0f };
+    UiRect qualBtn = { rx - 92.0f, hudBar.top + 7.0f, rx, hudBar.bottom - 7.0f };
     drawButton("sess_quality", qualBtn, qualLabel,
                COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 6.5f, [this, stats]() {
                    QualityPreset nextQ = (stats.qualityPreset == QualityPreset::Ultra) ? QualityPreset::Balanced :
@@ -1572,8 +1471,8 @@ void AeroDeskWindow::drawRemoteSessionView(const UiRect& bounds, float alpha) {
     rx = qualBtn.left - 5.0f;
 
     if (stats.monitorCount > 1) {
-        std::string monLabel = "Mon " + std::to_string(stats.activeMonitorIndex + 1) + "/" + std::to_string(stats.monitorCount);
-        UiRect monBtn = { rx - 74.0f, hudBar.top + 7.0f, rx, hudBar.bottom - 7.0f };
+        std::string monLabel = "Display " + std::to_string(stats.activeMonitorIndex + 1);
+        UiRect monBtn = { rx - 76.0f, hudBar.top + 7.0f, rx, hudBar.bottom - 7.0f };
         drawButton("sess_monitor", monBtn, monLabel,
                    COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 6.5f, [this, stats]() {
                        int nextMon = (stats.activeMonitorIndex + 1) % std::max(1, stats.monitorCount);
@@ -1584,9 +1483,9 @@ void AeroDeskWindow::drawRemoteSessionView(const UiRect& bounds, float alpha) {
 
     bool canControl = (stats.grantedPermissions & PERM_INPUT) != 0;
     bool inputActive = canControl && remoteInputEnabled_;
-    std::string inputLabel = !canControl ? "View-Only" :
-                             (inputActive ? "Control: ON (F8)" : "View-Only (F8)");
-    UiRect inputBtn = { rx - 110.0f, hudBar.top + 7.0f, rx, hudBar.bottom - 7.0f };
+    std::string inputLabel = !canControl ? "View Only" :
+                             (inputActive ? "Control: ON" : "View Only");
+    UiRect inputBtn = { rx - 96.0f, hudBar.top + 7.0f, rx, hudBar.bottom - 7.0f };
     drawButton("sess_input_toggle", inputBtn, inputLabel,
                inputActive ? COL_PRIMARY_RED : COL_SEC_BTN_BG,
                inputActive ? COL_PRIMARY_RED_HV : COL_SEC_BTN_HV,
@@ -1595,9 +1494,9 @@ void AeroDeskWindow::drawRemoteSessionView(const UiRect& bounds, float alpha) {
                    if (canControl) {
                        remoteInputEnabled_ = !remoteInputEnabled_;
                        if (!remoteInputEnabled_) network_.sendReleaseAllModifiers();
-                       showToast(remoteInputEnabled_ ? "Remote mouse & keyboard control ENABLED." : "Switched to View-Only mode.");
+                       showToast(remoteInputEnabled_ ? "Control enabled." : "View-only mode.");
                    } else {
-                       showToast("The remote host has disabled mouse & keyboard input for this session.", true);
+                       showToast("Remote control is disabled by the host.", true);
                    }
                }, fmtSmall_, !inputActive, COL_BORDER,
                inputActive ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
@@ -1686,7 +1585,7 @@ void AeroDeskWindow::drawSettingsView(const UiRect& bounds, float alpha) {
 
     const AppSettings s = identity_.settings();
 
-    // ==================== LEFT COLUMN: APPEARANCE, STREAMING FPS & DISPLAY ====================
+    // ==================== LEFT COLUMN: APPEARANCE & DISPLAY ====================
     drawCardSurface(leftCard, 14.0f, alpha, true);
 
     float lx = leftCard.left + 22.0f;
@@ -1694,24 +1593,24 @@ void AeroDeskWindow::drawSettingsView(const UiRect& bounds, float alpha) {
     float ly = leftCard.top + 18.0f;
     float innerW = lrx - lx;
 
-    drawText("Appearance, Frame Rate & Display", { lx, ly, lrx, ly + 26.0f }, fmtHeading_, COL_TEXT_PRIMARY);
+    drawText("Appearance & Display", { lx, ly, lrx, ly + 26.0f }, fmtHeading_, COL_TEXT_PRIMARY);
     ly += 26.0f;
-    drawText("Customize the Blue color theme, 15/30/60 FPS streaming rate, and adaptive network throttling.",
+    drawText("Theme, frame rate, and display preferences.",
              { lx, ly, lrx, ly + 18.0f }, fmtSmall_, COL_TEXT_SECONDARY);
     ly += 26.0f;
 
-    // 1. Color Theme (White & Blue vs Black & Blue)
+    // 1. Theme
     UiRect themeBox = { lx, ly, lrx, ly + 82.0f };
     fillRoundRect(themeBox, 10.0f, COL_BG_SUBTLE);
     strokeRoundRect(themeBox, 10.0f, COL_BORDER);
 
-    drawText("COLOR THEME (WHITE & BLUE / BLACK & BLUE)", { themeBox.left + 14.0f, themeBox.top + 8.0f, themeBox.right - 14.0f, themeBox.top + 24.0f },
+    drawText("THEME", { themeBox.left + 14.0f, themeBox.top + 8.0f, themeBox.right - 14.0f, themeBox.top + 24.0f },
              fmtSmall_, COL_TEXT_ACCENT);
     float halfBtnW = (innerW - 28.0f - 10.0f) * 0.5f;
     UiRect lightBtn = { themeBox.left + 14.0f, themeBox.top + 32.0f, themeBox.left + 14.0f + halfBtnW, themeBox.bottom - 10.0f };
     UiRect darkBtn  = { lightBtn.right + 10.0f, themeBox.top + 32.0f, themeBox.right - 14.0f, themeBox.bottom - 10.0f };
 
-    drawButton("sett_theme_light", lightBtn, "Light Mode (White & Blue)",
+    drawButton("sett_theme_light", lightBtn, "Light",
                !s.darkTheme ? COL_PRIMARY_RED : COL_SEC_BTN_BG,
                !s.darkTheme ? COL_PRIMARY_RED_HV : COL_SEC_BTN_HV,
                !s.darkTheme ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
@@ -1720,10 +1619,9 @@ void AeroDeskWindow::drawSettingsView(const UiRect& bounds, float alpha) {
                    ns.darkTheme = false;
                    identity_.updateSettings(ns);
                    applyWindowThemeAttribute();
-                   showToast("Applied Light Mode (Crisp White & Royal Blue).");
                }, fmtSmall_, s.darkTheme, COL_BORDER, !s.darkTheme ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
 
-    drawButton("sett_theme_dark", darkBtn, "Dark Mode (Black & Blue)",
+    drawButton("sett_theme_dark", darkBtn, "Dark",
                s.darkTheme ? COL_PRIMARY_RED : COL_SEC_BTN_BG,
                s.darkTheme ? COL_PRIMARY_RED_HV : COL_SEC_BTN_HV,
                s.darkTheme ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
@@ -1732,49 +1630,47 @@ void AeroDeskWindow::drawSettingsView(const UiRect& bounds, float alpha) {
                    ns.darkTheme = true;
                    identity_.updateSettings(ns);
                    applyWindowThemeAttribute();
-                   showToast("Applied Dark Mode (Pitch Black & Electric Blue).");
                }, fmtSmall_, !s.darkTheme, COL_BORDER, s.darkTheme ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
 
     ly = themeBox.bottom + 14.0f;
 
-    // 2. Remote Stream Frame Rate (15 FPS / 30 FPS / 60 FPS) + Automatic Network Drop
-    UiRect fpsBox = { lx, ly, lrx, ly + 150.0f };
-    fillRoundRect(fpsBox, 10.0f, COL_BG_CARD_ALT);
-    strokeRoundRect(fpsBox, 10.0f, COL_BORDER_ALT, 1.3f);
+    // 2. Frame Rate
+    UiRect fpsBox = { lx, ly, lrx, ly + 118.0f };
+    fillRoundRect(fpsBox, 10.0f, COL_BG_SUBTLE);
+    strokeRoundRect(fpsBox, 10.0f, COL_BORDER);
 
-    drawText("REMOTE CONTROL FRAME RATE & ADAPTIVE NETWORK THROTTLING",
+    drawText("FRAME RATE",
              { fpsBox.left + 14.0f, fpsBox.top + 8.0f, fpsBox.right - 14.0f, fpsBox.top + 24.0f },
              fmtSmall_, COL_TEXT_ACCENT);
 
     float thirdW = (innerW - 28.0f - 16.0f) / 3.0f;
     uint8_t curFps = clampTargetFps(s.targetFps);
-    UiRect fps15Btn = { fpsBox.left + 14.0f, fpsBox.top + 30.0f, fpsBox.left + 14.0f + thirdW, fpsBox.top + 68.0f };
-    UiRect fps30Btn = { fps15Btn.right + 8.0f, fpsBox.top + 30.0f, fps15Btn.right + 8.0f + thirdW, fpsBox.top + 68.0f };
-    UiRect fps60Btn = { fps30Btn.right + 8.0f, fpsBox.top + 30.0f, fpsBox.right - 14.0f, fpsBox.top + 68.0f };
+    UiRect fps15Btn = { fpsBox.left + 14.0f, fpsBox.top + 30.0f, fpsBox.left + 14.0f + thirdW, fpsBox.top + 66.0f };
+    UiRect fps30Btn = { fps15Btn.right + 8.0f, fpsBox.top + 30.0f, fps15Btn.right + 8.0f + thirdW, fpsBox.top + 66.0f };
+    UiRect fps60Btn = { fps30Btn.right + 8.0f, fpsBox.top + 30.0f, fpsBox.right - 14.0f, fpsBox.top + 66.0f };
 
     auto setFpsAction = [this](uint8_t fpsVal) {
         AppSettings ns = identity_.settings();
         ns.targetFps = fpsVal;
         identity_.updateSettings(ns);
         network_.setSessionFpsConfig(fpsVal, ns.adaptiveFps);
-        showToast("Target stream rate set to " + std::to_string(fpsVal) + " FPS.");
     };
 
-    drawButton("sett_fps_15", fps15Btn, "15 FPS (Low BW)",
+    drawButton("sett_fps_15", fps15Btn, "15 FPS",
                (curFps == 15) ? COL_PRIMARY_RED : COL_SEC_BTN_BG,
                (curFps == 15) ? COL_PRIMARY_RED_HV : COL_SEC_BTN_HV,
                (curFps == 15) ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
                7.5f, [setFpsAction]() { setFpsAction(15); }, fmtSmall_, curFps != 15, COL_BORDER,
                (curFps == 15) ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
 
-    drawButton("sett_fps_30", fps30Btn, "30 FPS (Balanced)",
+    drawButton("sett_fps_30", fps30Btn, "30 FPS",
                (curFps == 30) ? COL_PRIMARY_RED : COL_SEC_BTN_BG,
                (curFps == 30) ? COL_PRIMARY_RED_HV : COL_SEC_BTN_HV,
                (curFps == 30) ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
                7.5f, [setFpsAction]() { setFpsAction(30); }, fmtSmall_, curFps != 30, COL_BORDER,
                (curFps == 30) ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
 
-    drawButton("sett_fps_60", fps60Btn, "60 FPS (Ultra Smooth)",
+    drawButton("sett_fps_60", fps60Btn, "60 FPS",
                (curFps == 60) ? COL_PRIMARY_RED : COL_SEC_BTN_BG,
                (curFps == 60) ? COL_PRIMARY_RED_HV : COL_SEC_BTN_HV,
                (curFps == 60) ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
@@ -1782,36 +1678,29 @@ void AeroDeskWindow::drawSettingsView(const UiRect& bounds, float alpha) {
                (curFps == 60) ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
 
     drawToggleSwitch("sett_adaptive_fps", { fpsBox.left + 14.0f, fpsBox.top + 78.0f, fpsBox.right - 14.0f, fpsBox.top + 104.0f },
-                     s.adaptiveFps, "Auto-drop FPS when network connection is poor (60 -> 30 -> 15 FPS)", [this]() {
+                     s.adaptiveFps, "Adjust automatically on slow connections", [this]() {
                          AppSettings ns = identity_.settings();
                          ns.adaptiveFps = !ns.adaptiveFps;
                          identity_.updateSettings(ns);
                          network_.setSessionFpsConfig(ns.targetFps, ns.adaptiveFps);
-                         showToast(ns.adaptiveFps
-                             ? "Adaptive FPS enabled: Frame rate will automatically drop on poor connections."
-                             : "Adaptive FPS disabled: Frame rate locked to manual target.");
                      });
-
-    drawText("Monitors live RTT latency & TCP send backpressure to prevent input lag during network congestion.",
-             { fpsBox.left + 14.0f, fpsBox.top + 108.0f, fpsBox.right - 14.0f, fpsBox.bottom - 8.0f },
-             fmtSmall_, COL_TEXT_SECONDARY);
 
     ly = fpsBox.bottom + 14.0f;
 
-    // 3. Default Image Quality & Scaling Presets
-    UiRect qualBox = { lx, ly, lrx, ly + 132.0f };
+    // 3. Quality & Scaling
+    UiRect qualBox = { lx, ly, lrx, ly + 124.0f };
     fillRoundRect(qualBox, 10.0f, COL_BG_SUBTLE);
     strokeRoundRect(qualBox, 10.0f, COL_BORDER);
 
-    drawText("DEFAULT IMAGE QUALITY & SCALING MODE", { qualBox.left + 14.0f, qualBox.top + 8.0f, qualBox.right - 14.0f, qualBox.top + 24.0f },
-             fmtSmall_, COL_TEXT_SECONDARY);
+    drawText("QUALITY & SCALING", { qualBox.left + 14.0f, qualBox.top + 8.0f, qualBox.right - 14.0f, qualBox.top + 24.0f },
+             fmtSmall_, COL_TEXT_ACCENT);
 
     QualityPreset defQ = s.defaultQuality;
     UiRect qUltraBtn = { qualBox.left + 14.0f, qualBox.top + 28.0f, qualBox.left + 14.0f + thirdW, qualBox.top + 62.0f };
     UiRect qBalBtn   = { qUltraBtn.right + 8.0f, qualBox.top + 28.0f, qUltraBtn.right + 8.0f + thirdW, qualBox.top + 62.0f };
     UiRect qFastBtn  = { qBalBtn.right + 8.0f, qualBox.top + 28.0f, qualBox.right - 14.0f, qualBox.top + 62.0f };
 
-    auto setQualAction = [this](QualityPreset qp, const char* name) {
+    auto setQualAction = [this](QualityPreset qp) {
         AppSettings ns = identity_.settings();
         ns.defaultQuality = qp;
         identity_.updateSettings(ns);
@@ -1819,125 +1708,120 @@ void AeroDeskWindow::drawSettingsView(const UiRect& bounds, float alpha) {
         if (st.state == ViewerConnectionState::Connected) {
             network_.requestVideoSettings(qp, st.activeMonitorIndex, true, ns.targetFps, ns.adaptiveFps ? 1 : 0);
         }
-        showToast(std::string("Default image quality set to ") + name + ".");
     };
 
-    drawButton("sett_q_ultra", qUltraBtn, "Ultra (Lossless UI)",
+    drawButton("sett_q_ultra", qUltraBtn, "High",
                (defQ == QualityPreset::Ultra) ? COL_PRIMARY_RED : COL_SEC_BTN_BG,
                (defQ == QualityPreset::Ultra) ? COL_PRIMARY_RED_HV : COL_SEC_BTN_HV,
                (defQ == QualityPreset::Ultra) ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
-               7.0f, [setQualAction]() { setQualAction(QualityPreset::Ultra, "Ultra"); }, fmtSmall_, defQ != QualityPreset::Ultra, COL_BORDER,
+               7.0f, [setQualAction]() { setQualAction(QualityPreset::Ultra); }, fmtSmall_, defQ != QualityPreset::Ultra, COL_BORDER,
                (defQ == QualityPreset::Ultra) ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
 
-    drawButton("sett_q_bal", qBalBtn, "Balanced (Hybrid)",
+    drawButton("sett_q_bal", qBalBtn, "Balanced",
                (defQ == QualityPreset::Balanced) ? COL_PRIMARY_RED : COL_SEC_BTN_BG,
                (defQ == QualityPreset::Balanced) ? COL_PRIMARY_RED_HV : COL_SEC_BTN_HV,
                (defQ == QualityPreset::Balanced) ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
-               7.0f, [setQualAction]() { setQualAction(QualityPreset::Balanced, "Balanced"); }, fmtSmall_, defQ != QualityPreset::Balanced, COL_BORDER,
+               7.0f, [setQualAction]() { setQualAction(QualityPreset::Balanced); }, fmtSmall_, defQ != QualityPreset::Balanced, COL_BORDER,
                (defQ == QualityPreset::Balanced) ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
 
-    drawButton("sett_q_fast", qFastBtn, "Fast (JPEG Q50)",
+    drawButton("sett_q_fast", qFastBtn, "Fast",
                (defQ == QualityPreset::LowBandwidth) ? COL_PRIMARY_RED : COL_SEC_BTN_BG,
                (defQ == QualityPreset::LowBandwidth) ? COL_PRIMARY_RED_HV : COL_SEC_BTN_HV,
                (defQ == QualityPreset::LowBandwidth) ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
-               7.0f, [setQualAction]() { setQualAction(QualityPreset::LowBandwidth, "Fast"); }, fmtSmall_, defQ != QualityPreset::LowBandwidth, COL_BORDER,
+               7.0f, [setQualAction]() { setQualAction(QualityPreset::LowBandwidth); }, fmtSmall_, defQ != QualityPreset::LowBandwidth, COL_BORDER,
                (defQ == QualityPreset::LowBandwidth) ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
 
     uint8_t defScale = s.defaultScaleMode;
-    UiRect scFitBtn  = { qualBox.left + 14.0f, qualBox.top + 74.0f, qualBox.left + 14.0f + thirdW, qualBox.top + 108.0f };
-    UiRect scStrBtn  = { scFitBtn.right + 8.0f, qualBox.top + 74.0f, scFitBtn.right + 8.0f + thirdW, qualBox.top + 108.0f };
-    UiRect scOrigBtn = { scStrBtn.right + 8.0f, qualBox.top + 74.0f, qualBox.right - 14.0f, qualBox.top + 108.0f };
+    UiRect scFitBtn  = { qualBox.left + 14.0f, qualBox.top + 72.0f, qualBox.left + 14.0f + thirdW, qualBox.top + 106.0f };
+    UiRect scStrBtn  = { scFitBtn.right + 8.0f, qualBox.top + 72.0f, scFitBtn.right + 8.0f + thirdW, qualBox.top + 106.0f };
+    UiRect scOrigBtn = { scStrBtn.right + 8.0f, qualBox.top + 72.0f, qualBox.right - 14.0f, qualBox.top + 106.0f };
 
-    auto setScaleAction = [this](uint8_t scMode, const char* label) {
+    auto setScaleAction = [this](uint8_t scMode) {
         AppSettings ns = identity_.settings();
         ns.defaultScaleMode = scMode;
         identity_.updateSettings(ns);
         scaleMode_ = static_cast<ScaleMode>(scMode);
-        showToast(std::string("Canvas scaling mode set to ") + label + ".");
     };
 
-    drawButton("sett_sc_fit", scFitBtn, "Scale: Fit Aspect",
+    drawButton("sett_sc_fit", scFitBtn, "Fit",
                (defScale == 0) ? COL_PRIMARY_RED : COL_SEC_BTN_BG,
                (defScale == 0) ? COL_PRIMARY_RED_HV : COL_SEC_BTN_HV,
                (defScale == 0) ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
-               7.0f, [setScaleAction]() { setScaleAction(0, "Fit Aspect"); }, fmtSmall_, defScale != 0, COL_BORDER,
+               7.0f, [setScaleAction]() { setScaleAction(0); }, fmtSmall_, defScale != 0, COL_BORDER,
                (defScale == 0) ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
 
-    drawButton("sett_sc_str", scStrBtn, "Scale: Stretch",
+    drawButton("sett_sc_str", scStrBtn, "Stretch",
                (defScale == 1) ? COL_PRIMARY_RED : COL_SEC_BTN_BG,
                (defScale == 1) ? COL_PRIMARY_RED_HV : COL_SEC_BTN_HV,
                (defScale == 1) ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
-               7.0f, [setScaleAction]() { setScaleAction(1, "Stretch"); }, fmtSmall_, defScale != 1, COL_BORDER,
+               7.0f, [setScaleAction]() { setScaleAction(1); }, fmtSmall_, defScale != 1, COL_BORDER,
                (defScale == 1) ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
 
-    drawButton("sett_sc_orig", scOrigBtn, "Scale: Original 1:1",
+    drawButton("sett_sc_orig", scOrigBtn, "Actual Size",
                (defScale == 2) ? COL_PRIMARY_RED : COL_SEC_BTN_BG,
                (defScale == 2) ? COL_PRIMARY_RED_HV : COL_SEC_BTN_HV,
                (defScale == 2) ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
-               7.0f, [setScaleAction]() { setScaleAction(2, "Original 1:1"); }, fmtSmall_, defScale != 2, COL_BORDER,
+               7.0f, [setScaleAction]() { setScaleAction(2); }, fmtSmall_, defScale != 2, COL_BORDER,
                (defScale == 2) ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
 
     ly = qualBox.bottom + 14.0f;
 
-    // 4. Session Canvas Overlays
+    // 4. Session Display
     UiRect ovBox = { lx, ly, lrx, leftCard.bottom - 18.0f };
     fillRoundRect(ovBox, 10.0f, COL_BG_SUBTLE);
     strokeRoundRect(ovBox, 10.0f, COL_BORDER);
 
-    drawText("SESSION OVERLAYS & TELEMETRY", { ovBox.left + 14.0f, ovBox.top + 8.0f, ovBox.right - 14.0f, ovBox.top + 24.0f },
-             fmtSmall_, COL_TEXT_SECONDARY);
+    drawText("SESSION DISPLAY", { ovBox.left + 14.0f, ovBox.top + 8.0f, ovBox.right - 14.0f, ovBox.top + 24.0f },
+             fmtSmall_, COL_TEXT_ACCENT);
 
     drawToggleSwitch("sett_show_cursor", { ovBox.left + 14.0f, ovBox.top + 30.0f, ovBox.right - 14.0f, ovBox.top + 56.0f },
-                     s.showRemoteCursor, "Show Remote Cursor Indicator on Viewer Canvas", [this]() {
+                     s.showRemoteCursor, "Show remote cursor", [this]() {
                          AppSettings ns = identity_.settings();
                          ns.showRemoteCursor = !ns.showRemoteCursor;
                          identity_.updateSettings(ns);
                      });
 
     drawToggleSwitch("sett_show_hud", { ovBox.left + 14.0f, ovBox.top + 62.0f, ovBox.right - 14.0f, ovBox.top + 88.0f },
-                     s.showSessionHud, "Show Live Telemetry Metrics & Sparkline in Session Bar", [this]() {
+                     s.showSessionHud, "Show frame rate in session bar", [this]() {
                          AppSettings ns = identity_.settings();
                          ns.showSessionHud = !ns.showSessionHud;
                          identity_.updateSettings(ns);
                      });
 
-    // ==================== RIGHT COLUMN: SECURITY, HOST PERMISSIONS & NETWORK ====================
+    // ==================== RIGHT COLUMN: ACCESS & NETWORK ====================
     drawCardSurface(rightCard, 14.0f, alpha, true);
 
     float rx = rightCard.left + 22.0f;
     float rrx = rightCard.right - 22.0f;
     float ry = rightCard.top + 18.0f;
 
-    drawText("Security, Host Permissions & Network", { rx, ry, rrx, ry + 26.0f }, fmtHeading_, COL_TEXT_PRIMARY);
+    drawText("Access & Network", { rx, ry, rrx, ry + 26.0f }, fmtHeading_, COL_TEXT_PRIMARY);
     ry += 26.0f;
-    drawText("Configure incoming session behavior, default viewer permissions, privacy, and relay routing.",
+    drawText("Permissions, privacy, and connection settings.",
              { rx, ry, rrx, ry + 18.0f }, fmtSmall_, COL_TEXT_SECONDARY);
     ry += 26.0f;
 
-    // 1. Incoming Session Behavior & Default Permissions
+    // 1. Permissions
     UiRect permBox = { rx, ry, rrx, ry + 198.0f };
     fillRoundRect(permBox, 10.0f, COL_BG_SUBTLE);
     strokeRoundRect(permBox, 10.0f, COL_BORDER);
 
-    drawText("INCOMING CONNECTION APPROVAL & DEFAULT PERMISSIONS",
+    drawText("PERMISSIONS",
              { permBox.left + 14.0f, permBox.top + 8.0f, permBox.right - 14.0f, permBox.top + 24.0f },
              fmtSmall_, COL_TEXT_ACCENT);
 
     float py = permBox.top + 30.0f;
     drawToggleSwitch("sett_auto_accept", { permBox.left + 14.0f, py, permBox.right - 14.0f, py + 26.0f },
-                     s.autoAcceptIncoming, "Auto-Accept Incoming Connections Without Confirmation Popup", [this]() {
+                     s.autoAcceptIncoming, "Automatically accept incoming connections", [this]() {
                          AppSettings ns = identity_.settings();
                          ns.autoAcceptIncoming = !ns.autoAcceptIncoming;
                          identity_.updateSettings(ns);
                          network_.setAutoAcceptIncoming(ns.autoAcceptIncoming, ns.defaultPermissions);
-                         showToast(ns.autoAcceptIncoming
-                             ? "Auto-Accept enabled for incoming connections."
-                             : "Interactive Accept/Decline modal required for passwordless requests.");
                      });
     py += 32.0f;
 
     drawToggleSwitch("sett_def_perm_input", { permBox.left + 14.0f, py, permBox.right - 14.0f, py + 26.0f },
-                     (s.defaultPermissions & PERM_INPUT) != 0, "Default Permission: Allow Remote Mouse & Keyboard Control", [this]() {
+                     (s.defaultPermissions & PERM_INPUT) != 0, "Allow mouse and keyboard control", [this]() {
                          AppSettings ns = identity_.settings();
                          ns.defaultPermissions ^= PERM_INPUT;
                          identity_.updateSettings(ns);
@@ -1946,7 +1830,7 @@ void AeroDeskWindow::drawSettingsView(const UiRect& bounds, float alpha) {
     py += 32.0f;
 
     drawToggleSwitch("sett_def_perm_clip", { permBox.left + 14.0f, py, permBox.right - 14.0f, py + 26.0f },
-                     (s.defaultPermissions & PERM_CLIPBOARD) != 0, "Default Permission: Allow Bidirectional Clipboard Sync", [this]() {
+                     (s.defaultPermissions & PERM_CLIPBOARD) != 0, "Allow clipboard sharing", [this]() {
                          AppSettings ns = identity_.settings();
                          ns.defaultPermissions ^= PERM_CLIPBOARD;
                          identity_.updateSettings(ns);
@@ -1955,7 +1839,7 @@ void AeroDeskWindow::drawSettingsView(const UiRect& bounds, float alpha) {
     py += 32.0f;
 
     drawToggleSwitch("sett_def_perm_file", { permBox.left + 14.0f, py, permBox.right - 14.0f, py + 26.0f },
-                     (s.defaultPermissions & PERM_FILE_TRANSFER) != 0, "Default Permission: Allow File Transfers", [this]() {
+                     (s.defaultPermissions & PERM_FILE_TRANSFER) != 0, "Allow file transfers", [this]() {
                          AppSettings ns = identity_.settings();
                          ns.defaultPermissions ^= PERM_FILE_TRANSFER;
                          identity_.updateSettings(ns);
@@ -1964,58 +1848,64 @@ void AeroDeskWindow::drawSettingsView(const UiRect& bounds, float alpha) {
     py += 32.0f;
 
     drawToggleSwitch("sett_lock_disc", { permBox.left + 14.0f, py, permBox.right - 14.0f, py + 26.0f },
-                     s.lockWorkstationOnDisconnect, "Privacy: Lock Windows Workstation When Host Session Ends", [this]() {
+                     s.lockWorkstationOnDisconnect, "Lock computer when session ends", [this]() {
                          AppSettings ns = identity_.settings();
                          ns.lockWorkstationOnDisconnect = !ns.lockWorkstationOnDisconnect;
                          identity_.updateSettings(ns);
-                         showToast(ns.lockWorkstationOnDisconnect
-                             ? "Workstation will automatically lock when an incoming session ends."
-                             : "Automatic workstation lock disabled.");
                      });
 
     ry = permBox.bottom + 14.0f;
 
-    // 2. Network & Relay Configuration
-    UiRect netBox = { rx, ry, rrx, ry + 112.0f };
+    // 2. Network & Relay
+    UiRect netBox = { rx, ry, rrx, ry + 92.0f };
     fillRoundRect(netBox, 10.0f, COL_BG_SUBTLE);
     strokeRoundRect(netBox, 10.0f, COL_BORDER);
 
-    drawText("NETWORK & RENDEZVOUS / RELAY SERVER",
+    drawText("NETWORK",
              { netBox.left + 14.0f, netBox.top + 8.0f, netBox.right - 14.0f, netBox.top + 24.0f },
-             fmtSmall_, COL_TEXT_SECONDARY);
+             fmtSmall_, COL_TEXT_ACCENT);
 
-    drawText("Host Port: " + std::to_string(network_.hostListenPort()) + "  •  LAN IP: " + network_.localIpAddress(),
-             { netBox.left + 14.0f, netBox.top + 28.0f, netBox.right - 14.0f, netBox.top + 48.0f },
-             fmtBodyBold_, COL_TEXT_PRIMARY);
-
-    UiRect settRelayField = { netBox.left + 14.0f, netBox.top + 56.0f, netBox.right - 110.0f, netBox.top + 94.0f };
+    UiRect settRelayField = { netBox.left + 14.0f, netBox.top + 34.0f, netBox.right - 196.0f, netBox.top + 72.0f };
     drawTextField("field_relay_srv_sett", FocusedField::RelayServer, settRelayField,
-                  relayServerEdit_, "127.0.0.1:50999", false);
+                  relayServerEdit_, "Relay server address", false);
 
-    UiRect applyRelayBtn = { settRelayField.right + 8.0f, netBox.top + 56.0f, netBox.right - 14.0f, netBox.top + 94.0f };
-    drawButton("sett_apply_relay", applyRelayBtn, "Save Relay",
+    UiRect applyRelayBtn = { settRelayField.right + 8.0f, netBox.top + 34.0f, settRelayField.right + 82.0f, netBox.top + 72.0f };
+    drawButton("sett_apply_relay", applyRelayBtn, "Save",
                COL_PRIMARY_RED, COL_PRIMARY_RED_HV, COL_TEXT_ON_ACCENT, 7.0f, [this]() {
                    identity_.setRelayServerAddress(relayServerEdit_);
-                   showToast("Saved Relay Server address: " + relayServerEdit_);
+                   showToast("Relay server saved.");
                }, fmtSmall_);
+
+    bool relayRunning = network_.isLocalRelayRunning();
+    UiRect localRelayBtn = { applyRelayBtn.right + 8.0f, netBox.top + 34.0f, netBox.right - 14.0f, netBox.top + 72.0f };
+    drawButton("sett_toggle_relay", localRelayBtn, relayRunning ? "Relay: ON" : "Relay: OFF",
+               relayRunning ? COL_PRIMARY_RED : COL_SEC_BTN_BG,
+               relayRunning ? COL_PRIMARY_RED_HV : COL_SEC_BTN_HV,
+               relayRunning ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
+               7.0f, [this, relayRunning]() {
+                   if (relayRunning) {
+                       network_.stopLocalRelayServer();
+                       showToast("Local relay stopped.");
+                   } else if (network_.startLocalRelayServer(DEFAULT_RELAY_PORT)) {
+                       showToast("Local relay started.");
+                   } else {
+                       showToast("Relay port is already in use.", true);
+                   }
+               }, fmtSmall_, !relayRunning, COL_BORDER, relayRunning ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
 
     ry = netBox.bottom + 14.0f;
 
-    // 3. Storage, History & Reset Actions
+    // 3. Data & Reset Actions
     UiRect maintBox = { rx, ry, rrx, rightCard.bottom - 18.0f };
     fillRoundRect(maintBox, 10.0f, COL_BG_SUBTLE);
     strokeRoundRect(maintBox, 10.0f, COL_BORDER);
 
-    drawText("STORAGE & APPLICATION MAINTENANCE",
+    drawText("DATA",
              { maintBox.left + 14.0f, maintBox.top + 8.0f, maintBox.right - 14.0f, maintBox.top + 24.0f },
-             fmtSmall_, COL_TEXT_SECONDARY);
-
-    drawText("Config File: " + identity_.configFilePath(),
-             { maintBox.left + 14.0f, maintBox.top + 28.0f, maintBox.right - 14.0f, maintBox.top + 48.0f },
-             fmtSmall_, COL_TEXT_MUTED);
+             fmtSmall_, COL_TEXT_ACCENT);
 
     float mThirdW = (rrx - rx - 28.0f - 16.0f) / 3.0f;
-    float btnTop = maintBox.top + 56.0f;
+    float btnTop = maintBox.top + 34.0f;
     float btnBot = std::min(btnTop + 38.0f, maintBox.bottom - 10.0f);
 
     UiRect openRecvBtn = { maintBox.left + 14.0f, btnTop, maintBox.left + 14.0f + mThirdW, btnBot };
@@ -2027,24 +1917,24 @@ void AeroDeskWindow::drawSettingsView(const UiRect& bounds, float alpha) {
                    network_.fileTransferManager().openReceiveDirectoryInExplorer();
                }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
 
-    drawButton("sett_clear_recents", clearRecBtn, "Clear Recent Desks",
+    drawButton("sett_clear_recents", clearRecBtn, "Clear History",
                COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 7.0f, [this]() {
                    identity_.clearRecentSessions();
-                   showToast("Cleared recent desks history.");
+                   showToast("History cleared.");
                }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
 
-    drawButton("sett_reset_defaults", resetBtn, "Reset Defaults",
+    drawButton("sett_reset_defaults", resetBtn, "Reset Settings",
                COL_SEC_BTN_BG, COL_DANGER, COL_TEXT_PRIMARY, 7.0f, [this]() {
                    identity_.resetSettingsToDefault();
                    applyWindowThemeAttribute();
                    scaleMode_ = ScaleMode::FitAspect;
                    network_.setAutoAcceptIncoming(false, PERM_ALL);
                    network_.setSessionFpsConfig(30, true);
-                   showToast("All settings restored to factory defaults.");
+                   showToast("Settings restored to defaults.");
                }, fmtSmall_, true, COL_BORDER, COL_TEXT_ON_ACCENT);
 }
 
-// ---------------- File Transfer, Clipboard & Live Encrypted Chat Drawer ----------------
+// ---------------- File Transfer, Clipboard & Chat Drawer ----------------
 
 void AeroDeskWindow::drawFileTransferDrawer(const UiRect& bounds, float slideProgress) {
     float slideOffsetX = bounds.width() * (1.0f - slideProgress);
@@ -2058,20 +1948,20 @@ void AeroDeskWindow::drawFileTransferDrawer(const UiRect& bounds, float slidePro
     float rx = r.right - 18.0f;
     float y = r.top + 14.0f;
 
-    // Segmented Drawer Switcher: [Files & Clip] | [Live Chat]
+    // Segmented Drawer Switcher: [Files] | [Chat]
     float halfTabW = (rx - x - 36.0f - 6.0f) * 0.5f;
     UiRect tabFiles = { x, y, x + halfTabW, y + 32.0f };
     UiRect tabChat  = { tabFiles.right + 6.0f, y, tabFiles.right + 6.0f + halfTabW, y + 32.0f };
 
     bool onFiles = (drawerTab_ == DrawerTab::FilesAndClip);
-    drawButton("drawer_tab_files", tabFiles, "Files & Clip",
+    drawButton("drawer_tab_files", tabFiles, "Files",
                onFiles ? COL_PRIMARY_RED : COL_SEC_BTN_BG,
                onFiles ? COL_PRIMARY_RED_HV : COL_SEC_BTN_HV,
                onFiles ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
                6.5f, [this]() { drawerTab_ = DrawerTab::FilesAndClip; }, fmtSmall_);
 
     uint32_t unread = network_.unreadChatCount();
-    std::string chatTabLbl = unread > 0 ? ("Live Chat (" + std::to_string(unread) + ")") : "Live Chat";
+    std::string chatTabLbl = unread > 0 ? ("Chat (" + std::to_string(unread) + ")") : "Chat";
     drawButton("drawer_tab_chat", tabChat, chatTabLbl,
                !onFiles ? COL_PRIMARY_RED : COL_SEC_BTN_BG,
                !onFiles ? COL_PRIMARY_RED_HV : COL_SEC_BTN_HV,
@@ -2082,13 +1972,13 @@ void AeroDeskWindow::drawFileTransferDrawer(const UiRect& bounds, float slidePro
                }, fmtSmall_);
 
     UiRect closeBtn = { rx - 28.0f, y + 2.0f, rx, y + 30.0f };
-    drawButton("drawer_close", closeBtn, "X", COL_SEC_BTN_BG, COL_DANGER, COL_TEXT_SECONDARY, 6.0f, [this]() {
+    drawButton("drawer_close", closeBtn, "×", COL_SEC_BTN_BG, COL_DANGER, COL_TEXT_SECONDARY, 6.0f, [this]() {
         showFileDrawer_ = false;
     }, fmtSmall_, false, D2D1::ColorF(0, 0, 0, 0), COL_TEXT_ON_ACCENT);
     y += 42.0f;
 
     if (drawerTab_ == DrawerTab::FilesAndClip) {
-        drawText("Drag & drop files anywhere on this window or use the buttons below:",
+        drawText("Drag and drop files into the window or use the buttons below.",
                  { x, y, rx, y + 18.0f }, fmtSmall_, COL_TEXT_SECONDARY);
         y += 24.0f;
 
@@ -2100,21 +1990,21 @@ void AeroDeskWindow::drawFileTransferDrawer(const UiRect& bounds, float slidePro
                    }, fmtSmall_);
 
         UiRect openDirBtn = { sendFileBtn.right + 8.0f, y, rx, y + 36.0f };
-        drawButton("drawer_open_dir", openDirBtn, "Received Folder",
+        drawButton("drawer_open_dir", openDirBtn, "Received Files",
                    COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 7.0f, [this]() {
                        network_.fileTransferManager().openReceiveDirectoryInExplorer();
                    }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
         y += 44.0f;
 
         UiRect syncClipBtn = { x, y, rx, y + 34.0f };
-        drawButton("drawer_sync_clip", syncClipBtn, "Push Local Clipboard Text to Peer",
+        drawButton("drawer_sync_clip", syncClipBtn, "Sync Clipboard",
                    COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 7.0f, [this]() {
                        network_.pushLocalClipboardNow();
-                       showToast("Encrypted clipboard text pushed to connected peer.");
+                       showToast("Clipboard synced.");
                    }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
         y += 42.0f;
 
-        drawText("ENCRYPTED TRANSFER QUEUE (SHA-256 VERIFIED)", { x, y, rx - 60.0f, y + 18.0f }, fmtSmall_, COL_TEXT_MUTED);
+        drawText("TRANSFERS", { x, y, rx - 60.0f, y + 18.0f }, fmtSmall_, COL_TEXT_MUTED);
         UiRect clrBtn = { rx - 56.0f, y - 2.0f, rx, y + 20.0f };
         drawButton("drawer_clear_done", clrBtn, "Clear", COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_SECONDARY, 5.0f, [this]() {
             network_.fileTransferManager().clearCompleted();
@@ -2123,7 +2013,7 @@ void AeroDeskWindow::drawFileTransferDrawer(const UiRect& bounds, float slidePro
 
         auto items = network_.fileTransferManager().snapshotTransfers();
         if (items.empty()) {
-            drawText("No file transfers in this session yet.", { x, y + 20.0f, rx, y + 50.0f },
+            drawText("No file transfers yet.", { x, y + 20.0f, rx, y + 50.0f },
                      fmtSmall_, COL_TEXT_MUTED, DWRITE_TEXT_ALIGNMENT_CENTER);
         } else {
             for (size_t i = 0; i < items.size() && i < 16; ++i) {
@@ -2138,7 +2028,7 @@ void AeroDeskWindow::drawFileTransferDrawer(const UiRect& bounds, float slidePro
                 fillRoundRect(card, 8.0f, COL_BG_SUBTLE);
                 strokeRoundRect(card, 8.0f, COL_BORDER);
 
-                std::string dirPrefix = it.isOutgoing ? "[UP] " : "[DOWN] ";
+                std::string dirPrefix = it.isOutgoing ? "↑ " : "↓ ";
                 drawText(dirPrefix + it.fileName, { card.left + 10.0f, card.top + 6.0f, card.right - 70.0f, card.top + 24.0f },
                          fmtBodyBold_, COL_TEXT_PRIMARY);
                 drawText(it.statusText, { card.left + 10.0f, card.top + 24.0f, card.right - 70.0f, card.top + 40.0f },
@@ -2151,7 +2041,7 @@ void AeroDeskWindow::drawFileTransferDrawer(const UiRect& bounds, float slidePro
                     drawButton("xfer_cancel_" + std::to_string(tid), cancelBtn, "Cancel",
                                COL_SEC_BTN_BG, COL_DANGER, COL_TEXT_PRIMARY, 5.5f, [this, tid]() {
                                    network_.cancelFileTransfer(tid);
-                                   showToast("Cancelled file transfer.");
+                                   showToast("Transfer cancelled.");
                                }, fmtSmall_, true, COL_BORDER, COL_TEXT_ON_ACCENT);
                 }
 
@@ -2167,8 +2057,8 @@ void AeroDeskWindow::drawFileTransferDrawer(const UiRect& bounds, float slidePro
             }
         }
     } else {
-        // ==================== LIVE ENCRYPTED SESSION CHAT ====================
-        drawText("End-to-end encrypted instant messaging with connected peer:",
+        // ==================== SESSION CHAT ====================
+        drawText("Messages",
                  { x, y, rx, y + 18.0f }, fmtSmall_, COL_TEXT_SECONDARY);
         y += 24.0f;
 
@@ -2178,7 +2068,7 @@ void AeroDeskWindow::drawFileTransferDrawer(const UiRect& bounds, float slidePro
 
         auto msgs = network_.chatMessages();
         if (msgs.empty()) {
-            drawText("No messages yet. Say hello to the remote workstation below!",
+            drawText("No messages yet.",
                      { chatBox.left + 14.0f, chatBox.centerY() - 14.0f, chatBox.right - 14.0f, chatBox.centerY() + 14.0f },
                      fmtSmall_, COL_TEXT_MUTED, DWRITE_TEXT_ALIGNMENT_CENTER);
         } else {
@@ -2205,7 +2095,7 @@ void AeroDeskWindow::drawFileTransferDrawer(const UiRect& bounds, float slidePro
 
         UiRect chatField = { x, r.bottom - 50.0f, rx - 76.0f, r.bottom - 12.0f };
         drawTextField("field_chat_input", FocusedField::ChatInput, chatField,
-                      chatInput_, "Type message & press Enter...", false);
+                      chatInput_, "Type a message...", false);
 
         UiRect sendChatBtn = { chatField.right + 6.0f, chatField.top, rx, chatField.bottom };
         drawButton("btn_send_chat", sendChatBtn, "Send",
@@ -2242,48 +2132,48 @@ void AeroDeskWindow::drawIncomingApprovalModal(float width, float height, float 
     float mrx = modal.right - 26.0f;
     float my = modal.top + 22.0f;
 
-    drawText("Incoming Connection Request", { mx, my, mrx, my + 28.0f }, fmtHeading_, COL_TEXT_PRIMARY);
+    drawText("Connection Request", { mx, my, mrx, my + 28.0f }, fmtHeading_, COL_TEXT_PRIMARY);
     my += 32.0f;
 
     std::string callerLine = req.callerHostname + " (" + CryptoUtils::formatDeskId(req.callerDeskId) + ")";
     drawText(callerLine, { mx, my, mrx, my + 24.0f }, fmtSubheading_, COL_PRIMARY_RED);
     my += 24.0f;
 
-    drawText("Source IP: " + req.callerIp + " is requesting access to your desktop.",
+    drawText("Wants to connect to your desktop.",
              { mx, my, mrx, my + 20.0f }, fmtSmall_, COL_TEXT_SECONDARY);
     my += 30.0f;
 
     drawToggleSwitch("modal_perm_input", { mx, my, mrx, my + 26.0f }, (modalPermissions_ & PERM_INPUT) != 0,
-                     "Allow Mouse & Keyboard Control", [this]() {
+                     "Allow mouse and keyboard control", [this]() {
                          modalPermissions_ ^= PERM_INPUT;
                      });
     my += 32.0f;
 
     drawToggleSwitch("modal_perm_clip", { mx, my, mrx, my + 26.0f }, (modalPermissions_ & PERM_CLIPBOARD) != 0,
-                     "Allow Clipboard Synchronization", [this]() {
+                     "Allow clipboard sharing", [this]() {
                          modalPermissions_ ^= PERM_CLIPBOARD;
                      });
     my += 32.0f;
 
     drawToggleSwitch("modal_perm_file", { mx, my, mrx, my + 26.0f }, (modalPermissions_ & PERM_FILE_TRANSFER) != 0,
-                     "Allow File Transfer", [this]() {
+                     "Allow file transfers", [this]() {
                          modalPermissions_ ^= PERM_FILE_TRANSFER;
                      });
     my += 42.0f;
 
     float btnW = (mrx - mx - 14.0f) * 0.5f;
     UiRect acceptBtn = { mx, my, mx + btnW, my + 44.0f };
-    drawButton("modal_accept", acceptBtn, "Accept Connection",
+    drawButton("modal_accept", acceptBtn, "Accept",
                COL_PRIMARY_RED, COL_PRIMARY_RED_HV, COL_TEXT_ON_ACCENT, 8.0f, [this]() {
                    network_.respondToIncomingRequest(true, modalPermissions_);
-                   showToast("Accepted incoming remote desktop session!");
+                   showToast("Connection accepted.");
                });
 
     UiRect rejectBtn = { acceptBtn.right + 14.0f, my, mrx, my + 44.0f };
     drawButton("modal_reject", rejectBtn, "Decline",
                COL_SEC_BTN_BG, COL_DANGER, COL_TEXT_PRIMARY, 8.0f, [this]() {
                    network_.respondToIncomingRequest(false, 0);
-                   showToast("Declined incoming connection request.", true);
+                   showToast("Connection declined.", true);
                }, nullptr, true, COL_BORDER, COL_TEXT_ON_ACCENT);
 
     renderTarget_->SetTransform(D2D1::Matrix3x2F::Identity());
@@ -2446,10 +2336,10 @@ void AeroDeskWindow::onCharInput(wchar_t ch) {
             initiateConnection();
         } else if (focusedField_ == FocusedField::LocalPassword && !localPasswordEdit_.empty()) {
             identity_.setUnattendedPassword(localPasswordEdit_);
-            showToast("Saved Salted SHA-256 Unattended Password Verifier!");
+            showToast("Password saved.");
         } else if (focusedField_ == FocusedField::RelayServer && !relayServerEdit_.empty()) {
             identity_.setRelayServerAddress(relayServerEdit_);
-            showToast("Relay server updated!");
+            showToast("Relay server saved.");
         } else if (focusedField_ == FocusedField::ChatInput) {
             sendChatFromInput();
         }
@@ -2497,7 +2387,7 @@ void AeroDeskWindow::onKeyEvent(uint16_t vk, uint16_t scan, bool isDown, bool is
         if (vk == VK_F8 && activeTab_ == ActiveTab::RemoteSession) {
             remoteInputEnabled_ = !remoteInputEnabled_;
             if (!remoteInputEnabled_) network_.sendReleaseAllModifiers();
-            showToast(remoteInputEnabled_ ? "Remote Input Control: ON (F8)" : "Remote Input Control: View-Only (F8)");
+            showToast(remoteInputEnabled_ ? "Control enabled (F8)" : "View-only mode (F8)");
             return;
         }
     }
@@ -2523,9 +2413,9 @@ void AeroDeskWindow::onDropFiles(HDROP hDrop) {
     if (sentCount > 0) {
         drawerTab_ = DrawerTab::FilesAndClip;
         showFileDrawer_ = true;
-        showToast("Queued " + std::to_string(sentCount) + " file(s) for SHA-256 verified transfer!");
+        showToast("Sending " + std::to_string(sentCount) + " file(s).");
     } else {
-        showToast("Connect to a remote peer first before dropping files.", true);
+        showToast("Connect to a remote desk first before sending files.", true);
     }
 }
 
@@ -2533,7 +2423,7 @@ void AeroDeskWindow::onDropFiles(HDROP hDrop) {
 
 void AeroDeskWindow::initiateConnection() {
     if (remoteIdInput_.empty()) {
-        showToast("Please enter a 9-digit AeroDesk ID or IP:Port to connect.", true);
+        showToast("Enter a 9-digit Desk ID to connect.", true);
         return;
     }
     network_.connectToRemote(remoteIdInput_, remotePasswordInput_);
@@ -2555,16 +2445,16 @@ void AeroDeskWindow::openSendFileDialog() {
         if (network_.sendFile(fileBuf) > 0) {
             drawerTab_ = DrawerTab::FilesAndClip;
             showFileDrawer_ = true;
-            showToast("Started sending file: " + std::string(fileBuf));
+            showToast("Sending file...");
         } else {
-            showToast("No active remote session to send file.", true);
+            showToast("No active session to send file.", true);
         }
     }
 }
 
 void AeroDeskWindow::saveRemoteScreenshot() {
     if (frameBufferBgra_.empty() || frameBufferW_ <= 0 || frameBufferH_ <= 0) {
-        showToast("No remote video frame available to capture yet.", true);
+        showToast("No video frame available yet.", true);
         return;
     }
 
@@ -2598,9 +2488,9 @@ void AeroDeskWindow::saveRemoteScreenshot() {
         out.write(reinterpret_cast<const char*>(&bih), sizeof(bih));
         out.write(reinterpret_cast<const char*>(frameBufferBgra_.data()), imgSize);
         out.close();
-        showToast("Saved remote screenshot: " + fileName);
+        showToast("Saved screenshot: " + fileName);
     } else {
-        showToast("Failed to save screenshot to disk.", true);
+        showToast("Failed to save screenshot.", true);
     }
 }
 
@@ -2610,7 +2500,7 @@ void AeroDeskWindow::sendChatFromInput() {
         chatInput_.clear();
         InvalidateRect(hwnd_, nullptr, FALSE);
     } else {
-        showToast("Connect to a remote peer first to send encrypted chat messages.", true);
+        showToast("Connect to a remote desk first to send messages.", true);
     }
 }
 
