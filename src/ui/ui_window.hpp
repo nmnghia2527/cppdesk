@@ -79,13 +79,17 @@ struct ClickRegion {
 };
 
 struct WidgetAnimState {
-    float hoverT   = 0.0f; // 0..1 smooth hover state
-    float pressT   = 0.0f; // 0..1 smooth mouse-down compression
-    float focusT   = 0.0f; // 0..1 smooth textbox focus ring
-    float toggleT  = 0.0f; // 0..1 smooth switch knob position
-    float rippleT  = 1.0f; // 0..1 click ripple progress (1.0 = inactive)
-    float rippleX  = 0.0f;
-    float rippleY  = 0.0f;
+    float hoverT    = 0.0f;
+    float hoverVel  = 0.0f;
+    float pressT    = 0.0f;
+    float pressVel  = 0.0f;
+    float focusT    = 0.0f;
+    float focusVel  = 0.0f;
+    float toggleT   = 0.0f;
+    float toggleVel = 0.0f;
+    float rippleT   = 1.0f;
+    float rippleX   = 0.0f;
+    float rippleY   = 0.0f;
     bool  toggleInitialized = false;
 };
 
@@ -109,7 +113,7 @@ private:
     void switchTab(ActiveTab newTab);
     void onPaint();
 
-    // Lightweight animation step (returns true if any interactive animation is in motion)
+    // Second-order macOS spring animation step (returns true if any spring is in motion)
     bool stepAnimations(float dt);
 
     // Rendering views
@@ -121,11 +125,14 @@ private:
     void drawIncomingApprovalModal(float width, float height, float modalProgress);
     void drawToastBanner(float width, float height, float toastProgress);
 
-    // Primitive drawing helpers
+    // Primitive drawing & vector icon helpers
     void drawCardShadow(const UiRect& r, float radius, float intensity = 1.0f);
-    void drawCardSurface(const UiRect& r, float radius, float alpha, bool accentHeader = true);
+    void drawCardSurface(const UiRect& r, float radius, float alpha, bool accentHeader = false);
     void drawPulseDot(float cx, float cy, float baseRadius, D2D1_COLOR_F color, float alpha = 1.0f);
     void drawSparkline(const UiRect& r, const float* values, size_t count, float maxVal, D2D1_COLOR_F color, float alpha = 1.0f);
+    void drawIconStar(float cx, float cy, float radius, bool filled, D2D1_COLOR_F color);
+    void drawIconClose(float cx, float cy, float halfSize, D2D1_COLOR_F color, float strokeWidth = 1.6f);
+    void drawIconTheme(float cx, float cy, float radius, bool isDark, D2D1_COLOR_F color);
     void fillRoundRect(const UiRect& r, float radius, D2D1_COLOR_F color);
     void strokeRoundRect(const UiRect& r, float radius, D2D1_COLOR_F color, float strokeWidth = 1.0f);
     void drawText(const std::string& utf8, const UiRect& r, IDWriteTextFormat* fmt, D2D1_COLOR_F color,
@@ -211,13 +218,13 @@ private:
     CursorState             remoteCursor_{};
     UiRect                  renderedCanvasRect_{};
 
-    // Rolling network telemetry history for live Sparkline graph
+    // Rolling network telemetry history
     static constexpr size_t SPARKLINE_SAMPLES = 36;
     std::array<float, SPARKLINE_SAMPLES> rttHistory_{};
     std::array<float, SPARKLINE_SAMPLES> fpsHistory_{};
     uint64_t                lastTelemetrySampleTick_ = 0;
 
-    // Hit-test regions & VSync Animation Engine state
+    // Hit-test regions & macOS Spring Physics Animation Engine state
     std::vector<ClickRegion>                        clickRegions_;
     std::unordered_map<std::string, WidgetAnimState> widgetAnims_;
     std::string             hoveredWidgetId_;
@@ -230,27 +237,38 @@ private:
     bool                    mouseLeftDown_ = false;
     uint64_t                lastMouseSendTick_ = 0;
 
-    // Global layout, sliding nav pill & seamless tab viewport animations
+    // High-precision timing & second-order spring states (pos + velocity)
     int64_t                 qpcFreq_ = 0;
     int64_t                 lastQpcCounter_ = 0;
     float                   lastDt_ = 0.016f;
     bool                    inlineAnimActive_ = false;
     float                   animTimeSec_ = 0.0f;
-    float                   viewportPos_ = 0.0f;       // Continuous 0.0 (Dashboard) <-> 1.0 (Session) <-> 2.0 (Settings)
-    float                   dashViewAnimT_ = 1.0f;     // 1.0 when Dashboard active
-    float                   sessViewAnimT_ = 0.0f;     // 1.0 when RemoteSession active
-    float                   settingsViewAnimT_ = 0.0f; // 1.0 when Settings active
-    float                   tabEnterStaggerT_ = 1.0f;  // 0..1 card entrance choreography
-    float                   navPillLeft_ = 280.0f;     // Spring-animated sliding nav pill left edge
-    float                   navPillRight_ = 394.0f;    // Spring-animated sliding nav pill right edge
-    float                   targetPillLeft_ = 280.0f;
-    float                   targetPillRight_ = 394.0f;
+
+    float                   viewportPos_ = 0.0f;
+    float                   viewportVel_ = 0.0f;
+    float                   dashViewAnimT_ = 1.0f;
+    float                   sessViewAnimT_ = 0.0f;
+    float                   settingsViewAnimT_ = 0.0f;
+    float                   tabEnterStaggerT_ = 1.0f;
+    float                   tabEnterStaggerVel_ = 0.0f;
+
+    // Liquid macOS segmented control pill (independent left/right edge springs)
+    float                   navPillLeft_ = 400.0f;
+    float                   navPillRight_ = 510.0f;
+    float                   navPillVelL_ = 0.0f;
+    float                   navPillVelR_ = 0.0f;
+    float                   targetPillLeft_ = 400.0f;
+    float                   targetPillRight_ = 510.0f;
     bool                    navPillInit_ = false;
 
-    float                   themeAnimT_ = 0.0f;        // 0.0 = Light (White & Blue), 1.0 = Dark (Black & Blue)
-    float                   drawerAnimT_ = 0.0f;       // 0.0 = Closed, 1.0 = Open
-    float                   modalAnimT_ = 0.0f;        // 0.0 = Hidden, 1.0 = Visible
-    float                   toastAnimT_ = 0.0f;        // 0.0 = Hidden, 1.0 = Visible
+    float                   themeAnimT_ = 0.0f;
+    float                   themeAnimVel_ = 0.0f;
+    float                   drawerAnimT_ = 0.0f;
+    float                   drawerAnimVel_ = 0.0f;
+    float                   modalAnimT_ = 0.0f;
+    float                   modalAnimVel_ = 0.0f;
+    float                   toastAnimT_ = 0.0f;
+    float                   toastAnimVel_ = 0.0f;
     float                   transferProgSmooth_[16]{};
 
     // Toast notification

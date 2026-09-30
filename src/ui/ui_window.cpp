@@ -14,6 +14,9 @@
 #ifndef DWMWA_USE_IMMERSIVE_DARK_MODE
 #define DWMWA_USE_IMMERSIVE_DARK_MODE 20
 #endif
+#ifndef DWMWA_WINDOW_CORNER_PREFERENCE
+#define DWMWA_WINDOW_CORNER_PREFERENCE 33
+#endif
 
 namespace aerodesk {
 
@@ -37,9 +40,40 @@ D2D1_COLOR_F lerpColor(const D2D1_COLOR_F& a, const D2D1_COLOR_F& b, float t) {
     );
 }
 
+// Second-order damped harmonic oscillator (macOS CoreAnimation CASpringAnimation physics)
+bool stepSpring(float& pos, float& vel, float target, float omega, float zeta, float dt, float eps = 0.0012f) {
+    float diff = pos - target;
+    if (std::fabs(diff) <= eps && std::fabs(vel) <= eps * 8.0f) {
+        if (pos != target || vel != 0.0f) {
+            pos = target;
+            vel = 0.0f;
+            return true;
+        }
+        return false;
+    }
+
+    // Sub-step integration for unconditional stability across variable frame times
+    int steps = (dt > 0.008f) ? static_cast<int>(std::ceil(dt / 0.008f)) : 1;
+    steps = std::clamp(steps, 1, 6);
+    float subDt = dt / static_cast<float>(steps);
+
+    for (int i = 0; i < steps; ++i) {
+        float disp = pos - target;
+        float accel = (-omega * omega * disp) - (2.0f * zeta * omega * vel);
+        vel += accel * subDt;
+        pos += vel * subDt;
+    }
+
+    if (std::fabs(pos - target) <= eps && std::fabs(vel) <= eps * 8.0f) {
+        pos = target;
+        vel = 0.0f;
+    }
+    return true;
+}
+
 bool stepExp(float& current, float target, float speed, float dt) {
     float diff = target - current;
-    if (std::fabs(diff) <= 0.004f) {
+    if (std::fabs(diff) <= 0.003f) {
         if (current != target) {
             current = target;
             return true;
@@ -56,19 +90,13 @@ float smoothStepEase(float t) {
     return t * t * (3.0f - 2.0f * t);
 }
 
-float cubicOutEase(float t) {
-    t = std::clamp(t, 0.0f, 1.0f);
-    float inv = 1.0f - t;
-    return 1.0f - (inv * inv * inv);
-}
-
-// ---------------- Dynamic Light (White & Blue) & Dark (Black & Blue) Theme Palette ----------------
-D2D1_COLOR_F COL_BG_MAIN          = rgba(248, 250, 252);
+// ---------------- Dynamic Light (White & Blue) & Dark (Black & Blue) macOS Palette ----------------
+D2D1_COLOR_F COL_BG_MAIN          = rgba(245, 247, 250);
 D2D1_COLOR_F COL_BG_NAV           = rgba(255, 255, 255);
 D2D1_COLOR_F COL_BG_CARD          = rgba(255, 255, 255);
-D2D1_COLOR_F COL_BG_SUBTLE        = rgba(241, 245, 249);
+D2D1_COLOR_F COL_BG_SUBTLE        = rgba(244, 246, 250);
 D2D1_COLOR_F COL_BG_CARD_ALT      = rgba(239, 246, 255);
-D2D1_COLOR_F COL_BG_INPUT         = rgba(248, 250, 252);
+D2D1_COLOR_F COL_BG_INPUT         = rgba(244, 246, 250);
 D2D1_COLOR_F COL_BG_INPUT_FOCUS   = rgba(255, 255, 255);
 D2D1_COLOR_F COL_BORDER           = rgba(226, 232, 240);
 D2D1_COLOR_F COL_BORDER_ALT       = rgba(191, 219, 254);
@@ -77,12 +105,12 @@ D2D1_COLOR_F COL_BORDER_FOCUS     = rgba(37, 99, 235);
 D2D1_COLOR_F COL_PRIMARY_RED      = rgba(37, 99, 235);
 D2D1_COLOR_F COL_PRIMARY_RED_HV   = rgba(29, 78, 216);
 D2D1_COLOR_F COL_SEC_BTN_BG       = rgba(241, 245, 249);
-D2D1_COLOR_F COL_SEC_BTN_HV       = rgba(219, 234, 254);
+D2D1_COLOR_F COL_SEC_BTN_HV       = rgba(226, 236, 252);
 
 D2D1_COLOR_F COL_SUCCESS          = rgba(16, 185, 129);
 D2D1_COLOR_F COL_WARNING          = rgba(245, 158, 11);
 D2D1_COLOR_F COL_DANGER           = rgba(220, 38, 38);
-D2D1_COLOR_F COL_DANGER_HV        = rgba(153, 27, 27);
+D2D1_COLOR_F COL_DANGER_HV        = rgba(185, 28, 28);
 
 D2D1_COLOR_F COL_TEXT_PRIMARY     = rgba(15, 23, 42);
 D2D1_COLOR_F COL_TEXT_SECONDARY   = rgba(71, 85, 105);
@@ -94,30 +122,30 @@ D2D1_COLOR_F COL_STAGE_BG         = rgba(226, 232, 240);
 void updateActivePalette(float darkT) {
     darkT = std::clamp(darkT, 0.0f, 1.0f);
 
-    // 60% Dominant Surfaces: Crisp White (#F8FAFC / #FFFFFF) <-> Pitch Black (#05070B / #0A0E17)
-    COL_BG_MAIN        = lerpColor(rgba(248, 250, 252), rgba(5, 7, 11), darkT);
-    COL_BG_NAV         = lerpColor(rgba(255, 255, 255), rgba(10, 14, 23), darkT);
-    COL_BG_CARD        = lerpColor(rgba(255, 255, 255), rgba(11, 16, 27), darkT);
-    COL_BG_SUBTLE      = lerpColor(rgba(241, 245, 249), rgba(15, 23, 42), darkT);
+    // 60% Dominant Surfaces: Crisp White (#F5F7FA / #FFFFFF) <-> Pitch Black (#05070B / #0B0F17)
+    COL_BG_MAIN        = lerpColor(rgba(245, 247, 250), rgba(5, 7, 11), darkT);
+    COL_BG_NAV         = lerpColor(rgba(255, 255, 255), rgba(9, 13, 21), darkT);
+    COL_BG_CARD        = lerpColor(rgba(255, 255, 255), rgba(11, 16, 26), darkT);
+    COL_BG_SUBTLE      = lerpColor(rgba(244, 246, 250), rgba(16, 23, 38), darkT);
 
-    // 30% Secondary Surfaces & Borders: Ice Blue (#EFF6FF) <-> Deep Midnight Blue-Black (#0C1930)
-    COL_BG_CARD_ALT    = lerpColor(rgba(239, 246, 255), rgba(12, 25, 48), darkT);
-    COL_BG_INPUT       = lerpColor(rgba(248, 250, 252), rgba(8, 12, 20), darkT);
-    COL_BG_INPUT_FOCUS = lerpColor(rgba(255, 255, 255), rgba(15, 23, 42), darkT);
-    COL_BORDER         = lerpColor(rgba(226, 232, 240), rgba(30, 41, 59), darkT);
+    // 30% Secondary Surfaces & Hairline Borders: Soft Ice Blue <-> Midnight Blue-Black
+    COL_BG_CARD_ALT    = lerpColor(rgba(239, 246, 255), rgba(13, 25, 48), darkT);
+    COL_BG_INPUT       = lerpColor(rgba(244, 246, 250), rgba(8, 12, 20), darkT);
+    COL_BG_INPUT_FOCUS = lerpColor(rgba(255, 255, 255), rgba(15, 22, 36), darkT);
+    COL_BORDER         = lerpColor(rgba(226, 232, 240), rgba(28, 39, 56), darkT);
     COL_BORDER_ALT     = lerpColor(rgba(191, 219, 254), rgba(30, 58, 138), darkT);
     COL_BORDER_FOCUS   = lerpColor(rgba(37, 99, 235),   rgba(59, 130, 246), darkT);
 
-    // 10% Signature Accent: Royal Blue (#2563EB) in Light Mode <-> Electric Blue (#3B82F6) in Dark Mode
+    // 10% Signature Accent: Royal Blue (#2563EB) <-> Electric Blue (#3B82F6)
     COL_PRIMARY_RED    = lerpColor(rgba(37, 99, 235),   rgba(59, 130, 246), darkT);
     COL_PRIMARY_RED_HV = lerpColor(rgba(29, 78, 216),   rgba(96, 165, 250), darkT);
-    COL_SEC_BTN_BG     = lerpColor(rgba(241, 245, 249), rgba(17, 25, 40), darkT);
-    COL_SEC_BTN_HV     = lerpColor(rgba(219, 234, 254), rgba(23, 37, 84), darkT);
+    COL_SEC_BTN_BG     = lerpColor(rgba(241, 245, 249), rgba(18, 26, 41), darkT);
+    COL_SEC_BTN_HV     = lerpColor(rgba(224, 236, 254), rgba(24, 38, 76), darkT);
 
-    // Typography Hierarchy
+    // Typography Hierarchy (>= 4.5:1 WCAG contrast in both modes)
     COL_TEXT_PRIMARY   = lerpColor(rgba(15, 23, 42),    rgba(248, 250, 252), darkT);
     COL_TEXT_SECONDARY = lerpColor(rgba(71, 85, 105),   rgba(148, 163, 184), darkT);
-    COL_TEXT_MUTED     = lerpColor(rgba(148, 163, 184), rgba(100, 116, 139), darkT);
+    COL_TEXT_MUTED     = lerpColor(rgba(130, 144, 165), rgba(100, 116, 139), darkT);
     COL_TEXT_ACCENT    = lerpColor(rgba(29, 78, 216),   rgba(96, 165, 250), darkT);
     COL_TEXT_ON_ACCENT = rgba(255, 255, 255);
     COL_STAGE_BG       = lerpColor(rgba(226, 232, 240), rgba(3, 5, 8), darkT);
@@ -160,6 +188,8 @@ void AeroDeskWindow::applyWindowThemeAttribute() {
     if (!hwnd_) return;
     BOOL dark = identity_.settings().darkTheme ? TRUE : FALSE;
     DwmSetWindowAttribute(hwnd_, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark, sizeof(dark));
+    DWORD cornerPref = 2; // DWMWCP_ROUND (native rounded window corners)
+    DwmSetWindowAttribute(hwnd_, DWMWA_WINDOW_CORNER_PREFERENCE, &cornerPref, sizeof(cornerPref));
 }
 
 void AeroDeskWindow::switchTab(ActiveTab newTab) {
@@ -169,6 +199,7 @@ void AeroDeskWindow::switchTab(ActiveTab newTab) {
     }
     activeTab_ = newTab;
     tabEnterStaggerT_ = 0.0f;
+    tabEnterStaggerVel_ = 0.0f;
     if (newTab == ActiveTab::RemoteSession) {
         focusedField_ = FocusedField::RemoteCanvas;
     } else if (newTab == ActiveTab::Dashboard && focusedField_ == FocusedField::RemoteCanvas) {
@@ -195,9 +226,9 @@ bool AeroDeskWindow::create(HINSTANCE hInstance, int nCmdShow) {
     wc.lpszClassName = L"AeroDeskMainWindowClass";
     RegisterClassExW(&wc);
 
-    std::string title = "AeroDesk — Remote Desktop [ID: " + identity_.formattedDeskId() + "]";
+    std::string title = "AeroDesk";
     if (identity_.instanceId() > 1) {
-        title += " (Instance #" + std::to_string(identity_.instanceId()) + ")";
+        title += " #" + std::to_string(identity_.instanceId());
     }
     std::wstring wTitle = utf8ToWide(title);
 
@@ -209,8 +240,8 @@ bool AeroDeskWindow::create(HINSTANCE hInstance, int nCmdShow) {
         WS_OVERLAPPEDWINDOW,
         100 + offset,
         70 + offset,
-        1240,
-        770,
+        1220,
+        760,
         nullptr,
         nullptr,
         hInstance,
@@ -227,7 +258,6 @@ bool AeroDeskWindow::create(HINSTANCE hInstance, int nCmdShow) {
     ShowWindow(hwnd_, nCmdShow);
     UpdateWindow(hwnd_);
 
-    // Background polling timer; active animations are driven at native VSync inside onPaint()
     SetTimer(hwnd_, 1, 32, nullptr);
     return true;
 }
@@ -262,11 +292,11 @@ bool AeroDeskWindow::initGraphics() {
         }
     };
 
-    createFmt(L"Segoe UI", DWRITE_FONT_WEIGHT_BOLD, 32.0f, &fmtHeroId_);
-    createFmt(L"Segoe UI", DWRITE_FONT_WEIGHT_BOLD, 19.0f, &fmtHeading_);
-    createFmt(L"Segoe UI", DWRITE_FONT_WEIGHT_SEMI_BOLD, 15.0f, &fmtSubheading_);
-    createFmt(L"Segoe UI", DWRITE_FONT_WEIGHT_NORMAL, 13.5f, &fmtBody_);
-    createFmt(L"Segoe UI", DWRITE_FONT_WEIGHT_SEMI_BOLD, 13.5f, &fmtBodyBold_);
+    createFmt(L"Segoe UI", DWRITE_FONT_WEIGHT_BOLD, 33.0f, &fmtHeroId_);
+    createFmt(L"Segoe UI", DWRITE_FONT_WEIGHT_SEMI_BOLD, 18.5f, &fmtHeading_);
+    createFmt(L"Segoe UI", DWRITE_FONT_WEIGHT_SEMI_BOLD, 14.5f, &fmtSubheading_);
+    createFmt(L"Segoe UI", DWRITE_FONT_WEIGHT_NORMAL, 13.0f, &fmtBody_);
+    createFmt(L"Segoe UI", DWRITE_FONT_WEIGHT_SEMI_BOLD, 13.0f, &fmtBodyBold_);
     createFmt(L"Segoe UI", DWRITE_FONT_WEIGHT_SEMI_BOLD, 11.5f, &fmtSmall_);
     createFmt(L"Consolas", DWRITE_FONT_WEIGHT_BOLD, 14.0f, &fmtMono_);
 
@@ -298,44 +328,40 @@ bool AeroDeskWindow::stepAnimations(float dt) {
     bool active = false;
     animTimeSec_ += dt;
 
-    // 1. Snappy Tab Entrance & Directional Viewport Position
+    // 1. macOS Spring Viewport & Stagger Choreography
     float targetViewport = (activeTab_ == ActiveTab::Dashboard) ? 0.0f :
                            (activeTab_ == ActiveTab::RemoteSession) ? 1.0f : 2.0f;
-    if (stepExp(viewportPos_, targetViewport, 26.0f, dt)) active = true;
+    if (stepSpring(viewportPos_, viewportVel_, targetViewport, 25.0f, 0.82f, dt)) active = true;
+    if (stepSpring(tabEnterStaggerT_, tabEnterStaggerVel_, 1.0f, 22.0f, 0.78f, dt)) active = true;
 
-    float wantDash = (activeTab_ == ActiveTab::Dashboard) ? 1.0f : 0.0f;
-    float wantSess = (activeTab_ == ActiveTab::RemoteSession) ? 1.0f : 0.0f;
-    float wantSett = (activeTab_ == ActiveTab::Settings) ? 1.0f : 0.0f;
-    if (stepExp(dashViewAnimT_, wantDash, 26.0f, dt)) active = true;
-    if (stepExp(sessViewAnimT_, wantSess, 26.0f, dt)) active = true;
-    if (stepExp(settingsViewAnimT_, wantSett, 26.0f, dt)) active = true;
-    if (stepExp(tabEnterStaggerT_, 1.0f, 20.0f, dt)) active = true;
-
-    // 2. Sliding Navigation Pill Indicator
+    // 2. Liquid macOS Segmented Control Pill (leading edge moves faster than trailing edge)
     if (navPillInit_) {
-        if (stepExp(navPillLeft_, targetPillLeft_, 28.0f, dt)) active = true;
-        if (stepExp(navPillRight_, targetPillRight_, 28.0f, dt)) active = true;
+        bool movingRight = (targetPillLeft_ >= navPillLeft_);
+        float omegaL = movingRight ? 24.0f : 32.0f;
+        float omegaR = movingRight ? 32.0f : 24.0f;
+        if (stepSpring(navPillLeft_, navPillVelL_, targetPillLeft_, omegaL, 0.78f, dt, 0.15f)) active = true;
+        if (stepSpring(navPillRight_, navPillVelR_, targetPillRight_, omegaR, 0.78f, dt, 0.15f)) active = true;
     }
 
-    // 3. Smooth Light (White & Blue) <-> Dark (Black & Blue) Theme transition
+    // 3. Smooth Light <-> Dark Mode Transition
     float wantTheme = identity_.settings().darkTheme ? 1.0f : 0.0f;
-    if (stepExp(themeAnimT_, wantTheme, 22.0f, dt)) active = true;
+    if (stepSpring(themeAnimT_, themeAnimVel_, wantTheme, 20.0f, 0.92f, dt)) active = true;
 
-    // 4. Slide-out File, Clipboard & Live Chat drawer transition
+    // 4. Floating Side Sheet Drawer Spring
     float targetDrawer = showFileDrawer_ ? 1.0f : 0.0f;
-    if (stepExp(drawerAnimT_, targetDrawer, 24.0f, dt)) active = true;
+    if (stepSpring(drawerAnimT_, drawerAnimVel_, targetDrawer, 26.0f, 0.80f, dt)) active = true;
 
-    // 5. Incoming Connection Approval Modal scale & fade transition
+    // 5. Sheet Modal Spring (with subtle macOS pop overshoot)
     bool modalNow = network_.pendingIncomingRequest().active;
     float targetModal = modalNow ? 1.0f : 0.0f;
-    if (stepExp(modalAnimT_, targetModal, 24.0f, dt)) active = true;
+    if (stepSpring(modalAnimT_, modalAnimVel_, targetModal, 28.0f, 0.74f, dt)) active = true;
 
-    // 6. Toast Notification Banner slide & fade transition
+    // 6. Dynamic Island / Capsule Toast Spring
     bool toastVisible = (!toastText_.empty() && GetTickCount64() <= toastExpireTick_);
     float targetToast = toastVisible ? 1.0f : 0.0f;
-    if (stepExp(toastAnimT_, targetToast, 22.0f, dt)) active = true;
+    if (stepSpring(toastAnimT_, toastAnimVel_, targetToast, 28.0f, 0.72f, dt)) active = true;
 
-    // 7. Per-widget hover, press, and click ripple animations
+    // 7. Per-widget macOS tactile hover & press springs
     for (auto& kv : widgetAnims_) {
         const std::string& id = kv.first;
         WidgetAnimState& st = kv.second;
@@ -343,11 +369,11 @@ bool AeroDeskWindow::stepAnimations(float dt) {
         float wantHover = (id == hoveredWidgetId_) ? 1.0f : 0.0f;
         float wantPress = (mouseLeftDown_ && id == pressedWidgetId_ && id == hoveredWidgetId_) ? 1.0f : 0.0f;
 
-        if (stepExp(st.hoverT, wantHover, 24.0f, dt)) active = true;
-        if (stepExp(st.pressT, wantPress, 30.0f, dt)) active = true;
+        if (stepSpring(st.hoverT, st.hoverVel, wantHover, 28.0f, 0.84f, dt)) active = true;
+        if (stepSpring(st.pressT, st.pressVel, wantPress, 36.0f, 0.70f, dt)) active = true;
 
         if (st.rippleT < 1.0f) {
-            st.rippleT = std::min(1.0f, st.rippleT + dt * 3.2f);
+            st.rippleT = std::min(1.0f, st.rippleT + dt * 3.4f);
             active = true;
         }
     }
@@ -409,6 +435,7 @@ LRESULT AeroDeskWindow::handleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
                 D2D1_SIZE_U sz = D2D1::SizeU(rc.right - rc.left, rc.bottom - rc.top);
                 renderTarget_->Resize(sz);
             }
+            navPillInit_ = false;
             InvalidateRect(hwnd_, nullptr, FALSE);
             return 0;
         }
@@ -422,7 +449,7 @@ LRESULT AeroDeskWindow::handleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
                 if (vStats.remoteAddress.find("127.0.0.1") != std::string::npos ||
                     vStats.remoteDeskId == identity_.deskId()) {
                     remoteInputEnabled_ = false;
-                    showToast("Connected on same PC. View-Only enabled (Press F8 to toggle control).");
+                    showToast("Connected on same PC. View-Only enabled (F8 to toggle).");
                 } else {
                     remoteInputEnabled_ = true;
                     showToast("Connected to " + vStats.remoteHostname);
@@ -434,18 +461,6 @@ LRESULT AeroDeskWindow::handleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
             }
             prevViewerState_ = vStats.state;
 
-            // Sample rolling network telemetry every 500ms for Sparkline graph
-            if (tickNow - lastTelemetrySampleTick_ >= 500) {
-                lastTelemetrySampleTick_ = tickNow;
-                for (size_t i = 0; i + 1 < SPARKLINE_SAMPLES; ++i) {
-                    rttHistory_[i] = rttHistory_[i + 1];
-                    fpsHistory_[i] = fpsHistory_[i + 1];
-                }
-                rttHistory_[SPARKLINE_SAMPLES - 1] = static_cast<float>(vStats.rttMs);
-                fpsHistory_[SPARKLINE_SAMPLES - 1] = vStats.fps;
-            }
-
-            // Notify on incoming encrypted chat messages when chat drawer is closed
             uint32_t unreadChat = network_.unreadChatCount();
             if (showFileDrawer_ && drawerTab_ == DrawerTab::LiveChat && unreadChat > 0) {
                 network_.markChatRead();
@@ -454,7 +469,7 @@ LRESULT AeroDeskWindow::handleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
             if (unreadChat > lastSeenUnreadChat_) {
                 auto msgs = network_.chatMessages();
                 if (!msgs.empty() && !msgs.back().fromLocal) {
-                    showToast("Chat from " + msgs.back().senderName + ": " + msgs.back().text);
+                    showToast(msgs.back().senderName + ": " + msgs.back().text);
                 }
             }
             lastSeenUnreadChat_ = unreadChat;
@@ -554,30 +569,31 @@ LRESULT AeroDeskWindow::handleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
     return DefWindowProcW(hwnd_, msg, wParam, lParam);
 }
 
-// ---------------- Primitive Drawing & Animation Helpers ----------------
+// ---------------- Primitive Drawing, Vector Icons & macOS Surface Helpers ----------------
 
 void AeroDeskWindow::drawCardShadow(const UiRect& r, float radius, float intensity) {
     if (!renderTarget_ || !solidBrush_ || intensity <= 0.01f) return;
-    float shadowScale = 1.0f + 2.2f * themeAnimT_;
-    fillRoundRect(r.offset(0.0f, 3.0f).inflate(1.5f, 1.5f), radius + 1.5f, rgba(5, 8, 15, 0.032f * shadowScale * intensity));
-    fillRoundRect(r.offset(0.0f, 1.2f).inflate(0.5f, 0.5f), radius + 0.5f, rgba(5, 8, 15, 0.042f * shadowScale * intensity));
+    float shadowScale = 1.0f + 2.4f * std::clamp(themeAnimT_, 0.0f, 1.0f);
+    fillRoundRect(r.offset(0.0f, 5.0f).inflate(2.5f, 2.5f), radius + 2.5f, rgba(5, 8, 18, 0.022f * shadowScale * intensity));
+    fillRoundRect(r.offset(0.0f, 2.5f).inflate(1.0f, 1.0f), radius + 1.0f, rgba(5, 8, 18, 0.032f * shadowScale * intensity));
+    fillRoundRect(r.offset(0.0f, 1.0f), radius, rgba(5, 8, 18, 0.028f * shadowScale * intensity));
 }
 
-void AeroDeskWindow::drawCardSurface(const UiRect& r, float radius, float alpha, bool accentHeader) {
+void AeroDeskWindow::drawCardSurface(const UiRect& r, float radius, float alpha, bool /*accentHeader*/) {
     drawCardShadow(r, radius, alpha);
     fillRoundRect(r, radius, withAlpha(COL_BG_CARD, alpha));
-    strokeRoundRect(r, radius, withAlpha(COL_BORDER, alpha), 1.2f);
+    strokeRoundRect(r, radius, withAlpha(COL_BORDER, alpha), 1.0f);
 
-    if (accentHeader) {
-        fillRoundRect({ r.left + 22.0f, r.top, r.left + 104.0f, r.top + 3.5f }, 1.8f, withAlpha(COL_PRIMARY_RED, alpha));
-    }
+    // Subtle macOS top inner specular highlight
+    float specAlpha = lerpColor(rgba(255, 255, 255, 0.75f), rgba(255, 255, 255, 0.05f), themeAnimT_).a * alpha;
+    fillRoundRect({ r.left + 14.0f, r.top + 0.8f, r.right - 14.0f, r.top + 1.8f }, 0.5f, rgba(255, 255, 255, specAlpha));
 }
 
 void AeroDeskWindow::drawPulseDot(float cx, float cy, float baseRadius, D2D1_COLOR_F color, float alpha) {
     if (!renderTarget_ || !solidBrush_ || alpha <= 0.01f) return;
-    float wave = 0.5f + 0.5f * std::sin(animTimeSec_ * 2.6f);
-    float haloRadius = baseRadius + 1.5f + 2.6f * wave;
-    float haloAlpha = (0.24f - 0.16f * wave) * alpha;
+    float wave = 0.5f + 0.5f * std::sin(animTimeSec_ * 2.2f);
+    float haloRadius = baseRadius + 1.2f + 2.2f * wave;
+    float haloAlpha = (0.20f - 0.12f * wave) * alpha;
 
     solidBrush_->SetColor(withAlpha(color, haloAlpha));
     renderTarget_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), haloRadius, haloRadius), solidBrush_);
@@ -588,7 +604,6 @@ void AeroDeskWindow::drawPulseDot(float cx, float cy, float baseRadius, D2D1_COL
 
 void AeroDeskWindow::drawSparkline(const UiRect& r, const float* values, size_t count, float maxVal, D2D1_COLOR_F color, float alpha) {
     if (!renderTarget_ || !solidBrush_ || count < 2 || maxVal <= 0.001f) return;
-
     fillRoundRect(r, 4.0f, withAlpha(COL_BG_SUBTLE, alpha * 0.85f));
     strokeRoundRect(r, 4.0f, withAlpha(COL_BORDER, alpha * 0.85f), 1.0f);
 
@@ -602,6 +617,69 @@ void AeroDeskWindow::drawSparkline(const UiRect& r, const float* values, size_t 
         D2D1_POINT_2F p0 = D2D1::Point2F(r.left + 3.0f + i * stepX, r.bottom - 3.0f - n0 * innerH);
         D2D1_POINT_2F p1 = D2D1::Point2F(r.left + 3.0f + (i + 1) * stepX, r.bottom - 3.0f - n1 * innerH);
         renderTarget_->DrawLine(p0, p1, solidBrush_, 1.5f);
+    }
+}
+
+void AeroDeskWindow::drawIconStar(float cx, float cy, float radius, bool filled, D2D1_COLOR_F color) {
+    if (!renderTarget_ || !solidBrush_ || !d2dFactory_) return;
+    ID2D1PathGeometry* geo = nullptr;
+    if (FAILED(d2dFactory_->CreatePathGeometry(&geo)) || !geo) return;
+
+    ID2D1GeometrySink* sink = nullptr;
+    if (SUCCEEDED(geo->Open(&sink)) && sink) {
+        constexpr float PI = 3.14159265f;
+        float innerR = radius * 0.42f;
+        D2D1_POINT_2F pts[10];
+        for (int i = 0; i < 10; ++i) {
+            float angle = -PI * 0.5f + i * (PI / 5.0f);
+            float r = (i % 2 == 0) ? radius : innerR;
+            pts[i] = D2D1::Point2F(cx + r * std::cos(angle), cy + r * std::sin(angle));
+        }
+        sink->BeginFigure(pts[0], filled ? D2D1_FIGURE_BEGIN_FILLED : D2D1_FIGURE_BEGIN_HOLLOW);
+        sink->AddLines(&pts[1], 9);
+        sink->EndFigure(D2D1_FIGURE_END_CLOSED);
+        sink->Close();
+        sink->Release();
+
+        solidBrush_->SetColor(color);
+        if (filled) {
+            renderTarget_->FillGeometry(geo, solidBrush_);
+        }
+        renderTarget_->DrawGeometry(geo, solidBrush_, 1.3f);
+    }
+    geo->Release();
+}
+
+void AeroDeskWindow::drawIconClose(float cx, float cy, float halfSize, D2D1_COLOR_F color, float strokeWidth) {
+    if (!renderTarget_ || !solidBrush_) return;
+    solidBrush_->SetColor(color);
+    renderTarget_->DrawLine(D2D1::Point2F(cx - halfSize, cy - halfSize), D2D1::Point2F(cx + halfSize, cy + halfSize), solidBrush_, strokeWidth);
+    renderTarget_->DrawLine(D2D1::Point2F(cx + halfSize, cy - halfSize), D2D1::Point2F(cx - halfSize, cy + halfSize), solidBrush_, strokeWidth);
+}
+
+void AeroDeskWindow::drawIconTheme(float cx, float cy, float radius, bool isDark, D2D1_COLOR_F color) {
+    if (!renderTarget_ || !solidBrush_) return;
+    solidBrush_->SetColor(color);
+    if (!isDark) {
+        // Sun icon (circle + 8 rays)
+        float coreR = radius * 0.52f;
+        renderTarget_->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), coreR, coreR), solidBrush_, 1.5f);
+        constexpr float PI = 3.14159265f;
+        for (int i = 0; i < 8; ++i) {
+            float a = i * (PI * 0.25f);
+            float r0 = radius * 0.74f;
+            float r1 = radius * 1.02f;
+            renderTarget_->DrawLine(
+                D2D1::Point2F(cx + r0 * std::cos(a), cy + r0 * std::sin(a)),
+                D2D1::Point2F(cx + r1 * std::cos(a), cy + r1 * std::sin(a)),
+                solidBrush_, 1.4f
+            );
+        }
+    } else {
+        // Crescent indicator (outer ring + inner offset circle)
+        renderTarget_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), radius * 0.78f, radius * 0.78f), solidBrush_);
+        solidBrush_->SetColor(COL_SEC_BTN_BG);
+        renderTarget_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx + radius * 0.32f, cy - radius * 0.24f), radius * 0.62f, radius * 0.62f), solidBrush_);
     }
 }
 
@@ -652,45 +730,38 @@ void AeroDeskWindow::drawButton(
 {
     WidgetAnimState& anim = widgetAnims_[id];
 
-    float liftY = (-1.0f * anim.hoverT) + (1.2f * anim.pressT);
-    float shrink = 0.7f * anim.pressT;
-    UiRect animRect = r.offset(0.0f, liftY).inflate(-shrink, -shrink * 0.5f);
+    // Symmetrical macOS tactile spring scale (hover expands 1.2%, press squishes 3.5%)
+    float hT = std::clamp(anim.hoverT, 0.0f, 1.2f);
+    float pT = std::clamp(anim.pressT, -0.25f, 1.25f);
+    float scaleDelta = (0.012f * hT) - (0.036f * pT);
+    float dx = r.width() * scaleDelta * 0.5f;
+    float dy = r.height() * scaleDelta * 0.5f;
+    float liftY = (-0.8f * hT) + (0.8f * pT);
+    UiRect animRect = r.inflate(dx, dy).offset(0.0f, liftY);
 
-    if (anim.hoverT > 0.02f && bgColor.a > 0.05f) {
-        fillRoundRect(animRect.offset(0.0f, 2.0f), radius, withAlpha(COL_PRIMARY_RED, 0.14f * anim.hoverT * (1.0f - anim.pressT)));
+    if (hT > 0.02f && bgColor.a > 0.05f) {
+        fillRoundRect(animRect.offset(0.0f, 2.0f), radius, withAlpha(COL_PRIMARY_RED, 0.12f * hT * std::max(0.0f, 1.0f - pT)));
     }
 
-    D2D1_COLOR_F curBg = lerpColor(bgColor, hoverColor, anim.hoverT);
-    if (anim.pressT > 0.01f) {
-        curBg = lerpColor(curBg, rgba(15, 23, 42, curBg.a), 0.10f * anim.pressT);
+    D2D1_COLOR_F curBg = lerpColor(bgColor, hoverColor, std::clamp(hT, 0.0f, 1.0f));
+    if (pT > 0.01f) {
+        curBg = lerpColor(curBg, rgba(15, 23, 42, curBg.a), 0.12f * std::clamp(pT, 0.0f, 1.0f));
     }
     if (curBg.a > 0.005f) {
         fillRoundRect(animRect, radius, curBg);
     }
 
-    if (anim.rippleT < 1.0f && renderTarget_ && solidBrush_) {
-        float maxRad = std::hypot(animRect.width(), animRect.height());
-        float curRad = maxRad * smoothStepEase(anim.rippleT);
-        float rippleAlpha = (1.0f - anim.rippleT) * 0.16f;
-
-        renderTarget_->PushAxisAlignedClip(
-            D2D1::RectF(animRect.left, animRect.top, animRect.right, animRect.bottom),
-            D2D1_ANTIALIAS_MODE_PER_PRIMITIVE
-        );
-        solidBrush_->SetColor(rgba(255, 255, 255, rippleAlpha));
-        renderTarget_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(anim.rippleX, anim.rippleY), curRad, curRad), solidBrush_);
-        renderTarget_->PopAxisAlignedClip();
-    }
-
     if (hasBorder) {
-        strokeRoundRect(animRect, radius, lerpColor(borderColor, COL_BORDER_FOCUS, anim.hoverT * 0.65f), 1.2f);
+        strokeRoundRect(animRect, radius, lerpColor(borderColor, COL_BORDER_FOCUS, std::clamp(hT, 0.0f, 1.0f) * 0.55f), 1.0f);
     }
 
     D2D1_COLOR_F targetTxtCol = (hoverTextColor.a >= 0.0f) ? hoverTextColor : textColor;
-    D2D1_COLOR_F curTxtCol = lerpColor(textColor, targetTxtCol, anim.hoverT);
+    D2D1_COLOR_F curTxtCol = lerpColor(textColor, targetTxtCol, std::clamp(hT, 0.0f, 1.0f));
 
-    drawText(label, animRect, fmt ? fmt : fmtBodyBold_, curTxtCol,
-             DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+    if (!label.empty()) {
+        drawText(label, animRect, fmt ? fmt : fmtBodyBold_, curTxtCol,
+                 DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+    }
 
     if (onClick) {
         clickRegions_.push_back({ r, id, std::move(onClick), false });
@@ -709,32 +780,33 @@ void AeroDeskWindow::drawTextField(
     bool focused = (focusedField_ == fieldType);
 
     float targetFocus = focused ? 1.0f : 0.0f;
-    if (stepExp(anim.focusT, targetFocus, 24.0f, lastDt_)) {
+    if (stepSpring(anim.focusT, anim.focusVel, targetFocus, 28.0f, 0.80f, lastDt_)) {
         inlineAnimActive_ = true;
     }
 
-    if (anim.focusT > 0.01f) {
-        UiRect glowR = r.inflate(2.2f * anim.focusT, 2.2f * anim.focusT);
-        fillRoundRect(glowR, 9.5f, withAlpha(COL_PRIMARY_RED, 0.16f * anim.focusT));
+    float fT = std::clamp(anim.focusT, 0.0f, 1.2f);
+    if (fT > 0.01f) {
+        UiRect glowR = r.inflate(2.8f * fT, 2.8f * fT);
+        fillRoundRect(glowR, 11.5f, withAlpha(COL_PRIMARY_RED, 0.15f * std::clamp(fT, 0.0f, 1.0f)));
     }
 
-    D2D1_COLOR_F bg = lerpColor(COL_BG_INPUT, COL_BG_INPUT_FOCUS, std::max(anim.focusT, anim.hoverT * 0.5f));
-    fillRoundRect(r, 7.5f, bg);
+    D2D1_COLOR_F bg = lerpColor(COL_BG_INPUT, COL_BG_INPUT_FOCUS, std::max(std::clamp(fT, 0.0f, 1.0f), std::clamp(anim.hoverT, 0.0f, 1.0f) * 0.5f));
+    fillRoundRect(r, 9.0f, bg);
 
     D2D1_COLOR_F bdr = lerpColor(
-        lerpColor(COL_BORDER, COL_BORDER_ALT, anim.hoverT * 0.7f),
+        lerpColor(COL_BORDER, COL_BORDER_ALT, std::clamp(anim.hoverT, 0.0f, 1.0f) * 0.7f),
         COL_BORDER_FOCUS,
-        anim.focusT
+        std::clamp(fT, 0.0f, 1.0f)
     );
-    strokeRoundRect(r, 7.5f, bdr, 1.2f + 0.6f * anim.focusT);
+    strokeRoundRect(r, 9.0f, bdr, 1.0f + 0.6f * std::clamp(fT, 0.0f, 1.0f));
 
-    UiRect textR = { r.left + 12.0f, r.top + 2.0f, r.right - 12.0f, r.bottom - 2.0f };
+    UiRect textR = { r.left + 13.0f, r.top + 2.0f, r.right - 13.0f, r.bottom - 2.0f };
     if (value.empty() && !focused) {
         drawText(placeholder, textR, fmtBody_, COL_TEXT_MUTED, DWRITE_TEXT_ALIGNMENT_LEADING);
     } else {
         std::string display = maskPassword ? std::string(value.size(), '*') : value;
         if (focused) {
-            float caretWave = 0.5f + 0.5f * std::sin(animTimeSec_ * 6.0f);
+            float caretWave = 0.5f + 0.5f * std::sin(animTimeSec_ * 5.8f);
             if (caretWave > 0.35f) {
                 display.push_back('|');
             }
@@ -758,43 +830,42 @@ void AeroDeskWindow::drawToggleSwitch(
     float targetToggle = checked ? 1.0f : 0.0f;
     if (!anim.toggleInitialized) {
         anim.toggleT = targetToggle;
+        anim.toggleVel = 0.0f;
         anim.toggleInitialized = true;
     } else {
-        if (stepExp(anim.toggleT, targetToggle, 24.0f, lastDt_)) {
+        if (stepSpring(anim.toggleT, anim.toggleVel, targetToggle, 28.0f, 0.74f, lastDt_)) {
             inlineAnimActive_ = true;
         }
     }
 
+    // macOS System Settings style: label on the left, capsule switch on the right
     float swW = 40.0f;
     float swH = 22.0f;
     float swTop = r.top + (r.height() - swH) * 0.5f;
-    UiRect pill = { r.left, swTop, r.left + swW, swTop + swH };
+    UiRect pill = { r.right - swW, swTop, r.right, swTop + swH };
 
+    UiRect lblRect = { r.left, r.top, pill.left - 12.0f, r.bottom };
+    float hT = std::clamp(anim.hoverT, 0.0f, 1.0f);
+    drawText(label, lblRect, fmtBody_, lerpColor(COL_TEXT_PRIMARY, COL_TEXT_ACCENT, hT * 0.55f), DWRITE_TEXT_ALIGNMENT_LEADING);
+
+    float tClamped = std::clamp(anim.toggleT, 0.0f, 1.0f);
     D2D1_COLOR_F offBase = lerpColor(rgba(203, 213, 225), rgba(30, 41, 59), themeAnimT_);
-    D2D1_COLOR_F offHover = lerpColor(rgba(148, 163, 184), rgba(51, 65, 85), themeAnimT_);
-    D2D1_COLOR_F offCol = lerpColor(offBase, offHover, anim.hoverT);
-    D2D1_COLOR_F onCol  = lerpColor(COL_PRIMARY_RED, COL_PRIMARY_RED_HV, anim.hoverT);
-    fillRoundRect(pill, swH * 0.5f, lerpColor(offCol, onCol, anim.toggleT));
+    D2D1_COLOR_F offHover = lerpColor(rgba(165, 180, 200), rgba(51, 65, 85), themeAnimT_);
+    D2D1_COLOR_F offCol = lerpColor(offBase, offHover, hT);
+    D2D1_COLOR_F onCol  = lerpColor(COL_PRIMARY_RED, COL_PRIMARY_RED_HV, hT);
+    fillRoundRect(pill, swH * 0.5f, lerpColor(offCol, onCol, tClamped));
 
-    if (anim.hoverT > 0.02f) {
-        strokeRoundRect(pill.inflate(1.5f, 1.5f), (swH + 3.0f) * 0.5f, withAlpha(COL_PRIMARY_RED, 0.20f * anim.hoverT), 1.2f);
-    }
-
-    float knobR = 8.0f + 0.6f * anim.hoverT - 0.6f * anim.pressT;
+    // macOS liquid thumb stretch when pressed or moving at high velocity
+    float knobR = 8.4f;
+    float stretch = (1.8f * std::clamp(anim.pressT, 0.0f, 1.0f)) + std::min(2.6f, std::fabs(anim.toggleVel) * 0.32f);
     float knobLeftX  = pill.left + 11.0f;
     float knobRightX = pill.right - 11.0f;
-    float knobCx = knobLeftX + (knobRightX - knobLeftX) * smoothStepEase(anim.toggleT);
+    float knobCx = knobLeftX + (knobRightX - knobLeftX) * anim.toggleT;
     float knobCy = swTop + swH * 0.5f;
 
-    if (renderTarget_ && solidBrush_) {
-        solidBrush_->SetColor(rgba(15, 23, 42, 0.18f));
-        renderTarget_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(knobCx, knobCy + 1.2f), knobR, knobR), solidBrush_);
-        solidBrush_->SetColor(rgba(255, 255, 255));
-        renderTarget_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(knobCx, knobCy), knobR, knobR), solidBrush_);
-    }
-
-    UiRect lblRect = { pill.right + 12.0f, r.top, r.right, r.bottom };
-    drawText(label, lblRect, fmtBody_, lerpColor(COL_TEXT_PRIMARY, COL_TEXT_ACCENT, anim.hoverT * 0.65f), DWRITE_TEXT_ALIGNMENT_LEADING);
+    UiRect knobRect = { knobCx - knobR - stretch * 0.5f, knobCy - knobR, knobCx + knobR + stretch * 0.5f, knobCy + knobR };
+    fillRoundRect(knobRect.offset(0.0f, 1.2f), knobR, rgba(15, 23, 42, 0.18f));
+    fillRoundRect(knobRect, knobR, rgba(255, 255, 255));
 
     if (onToggle) {
         clickRegions_.push_back({ r, id, std::move(onToggle), false });
@@ -806,7 +877,6 @@ void AeroDeskWindow::drawToggleSwitch(
 void AeroDeskWindow::onPaint() {
     if (!d2dFactory_) return;
 
-    // Step animations using high-precision QPC right before drawing for VSync-locked smoothness
     LARGE_INTEGER now{};
     QueryPerformanceCounter(&now);
     float dt = (qpcFreq_ > 0)
@@ -846,14 +916,19 @@ void AeroDeskWindow::onPaint() {
 
     UiRect contentBounds = { 0.0f, topOffset, width, height };
 
-    // Fast, single-active-view slide + fade transition (zero dual-view DirectWrite overdraw)
+    // macOS Spring Viewport Glide + Scale Choreography
     float targetIdx = (activeTab_ == ActiveTab::Dashboard) ? 0.0f :
                       (activeTab_ == ActiveTab::RemoteSession) ? 1.0f : 2.0f;
-    float slideX = (targetIdx - viewportPos_) * 28.0f;
-    float enterAlpha = std::clamp(0.35f + 0.65f * cubicOutEase(tabEnterStaggerT_), 0.0f, 1.0f);
+    float slideX = (targetIdx - viewportPos_) * 42.0f;
+    float viewScale = 0.982f + 0.018f * std::clamp(tabEnterStaggerT_, 0.0f, 1.08f);
+    float enterAlpha = std::clamp(0.30f + 0.70f * smoothStepEase(tabEnterStaggerT_), 0.0f, 1.0f);
 
-    if (std::fabs(slideX) > 0.25f) {
-        renderTarget_->SetTransform(D2D1::Matrix3x2F::Translation(slideX, 0.0f));
+    if (std::fabs(slideX) > 0.15f || std::fabs(viewScale - 1.0f) > 0.001f) {
+        D2D1_POINT_2F center = D2D1::Point2F(contentBounds.centerX(), contentBounds.centerY());
+        renderTarget_->SetTransform(
+            D2D1::Matrix3x2F::Scale(viewScale, viewScale, center) *
+            D2D1::Matrix3x2F::Translation(slideX, 0.0f)
+        );
     }
 
     if (activeTab_ == ActiveTab::Dashboard) {
@@ -866,24 +941,27 @@ void AeroDeskWindow::onPaint() {
 
     renderTarget_->SetTransform(D2D1::Matrix3x2F::Identity());
 
-    // Smooth slide-out File, Clipboard & Live Chat drawer
-    if (drawerAnimT_ > 0.005f) {
-        float drawerW = std::min(410.0f, width * 0.44f);
-        UiRect drawerBounds = { width - drawerW, topOffset, width, height };
-        drawFileTransferDrawer(drawerBounds, cubicOutEase(drawerAnimT_));
+    // Floating macOS Side Sheet Drawer
+    if (drawerAnimT_ > 0.004f) {
+        float scrimAlpha = std::clamp(drawerAnimT_, 0.0f, 1.0f) * 0.18f;
+        fillRoundRect(contentBounds, 0.0f, rgba(5, 8, 15, scrimAlpha));
+
+        float drawerW = std::min(395.0f, width * 0.42f);
+        UiRect drawerBounds = { width - drawerW - 14.0f, topOffset + 12.0f, width - 14.0f, height - 14.0f };
+        drawFileTransferDrawer(drawerBounds, drawerAnimT_);
     }
 
-    // Smooth scale-in Incoming Approval modal
-    if (modalAnimT_ > 0.005f) {
-        drawIncomingApprovalModal(width, height, cubicOutEase(modalAnimT_));
+    // macOS Sheet Modal with spring overshoot
+    if (modalAnimT_ > 0.004f) {
+        drawIncomingApprovalModal(width, height, modalAnimT_);
     }
 
-    // Smooth slide-up Toast Notification
-    if (toastAnimT_ > 0.005f) {
-        drawToastBanner(width, height, cubicOutEase(toastAnimT_));
+    // Floating Capsule Toast
+    if (toastAnimT_ > 0.004f) {
+        drawToastBanner(width, height, toastAnimT_);
     }
 
-    // Update live hover target & text-input flag after regions are populated
+    // Live hover detection
     std::string newHoverId;
     bool newIsText = false;
     for (auto it = clickRegions_.rbegin(); it != clickRegions_.rend(); ++it) {
@@ -901,47 +979,52 @@ void AeroDeskWindow::onPaint() {
         discardDeviceResources();
     }
 
-    // Self-schedule next VSync frame immediately while any animation is in motion
     if (animMoving || inlineAnimActive_) {
         InvalidateRect(hwnd_, nullptr, FALSE);
     }
 }
 
+// ---------------- macOS Unified Top Toolbar ----------------
+
 void AeroDeskWindow::drawTopNavBar(float width, float& outTopOffset) {
-    float navH = 56.0f;
+    float navH = 58.0f;
     outTopOffset = navH;
 
     UiRect navRect = { 0.0f, 0.0f, width, navH };
     fillRoundRect(navRect, 0.0f, COL_BG_NAV);
     fillRoundRect({ 0.0f, navH - 1.0f, width, navH }, 0.0f, COL_BORDER);
 
-    // Signature Blue Brand Badge
-    UiRect logoBadge = { 18.0f, 12.0f, 50.0f, 44.0f };
-    fillRoundRect(logoBadge.offset(0.0f, 2.0f), 8.5f, withAlpha(COL_PRIMARY_RED, 0.24f));
-    fillRoundRect(logoBadge, 8.5f, COL_PRIMARY_RED);
+    // Left: Minimal Squircle Brand Badge + Online Dot
+    UiRect logoBadge = { 20.0f, 13.0f, 52.0f, 45.0f };
+    fillRoundRect(logoBadge.offset(0.0f, 2.0f), 9.5f, withAlpha(COL_PRIMARY_RED, 0.22f));
+    fillRoundRect(logoBadge, 9.5f, COL_PRIMARY_RED);
     drawText("AD", logoBadge, fmtBodyBold_, COL_TEXT_ON_ACCENT, DWRITE_TEXT_ALIGNMENT_CENTER);
 
     std::string brandTitle = "AeroDesk";
     if (identity_.instanceId() > 1) {
         brandTitle += " #" + std::to_string(identity_.instanceId());
     }
-    drawText(brandTitle, { 60.0f, 9.0f, 200.0f, 30.0f }, fmtSubheading_, COL_TEXT_PRIMARY);
+    drawText(brandTitle, { 62.0f, 10.0f, 200.0f, 31.0f }, fmtSubheading_, COL_TEXT_PRIMARY);
 
-    // Clean online status indicator
-    drawPulseDot(65.0f, 38.5f, 3.6f, COL_SUCCESS);
-    drawText("Online", { 74.0f, 29.0f, 200.0f, 48.0f }, fmtSmall_, COL_TEXT_SECONDARY);
+    drawPulseDot(67.0f, 39.5f, 3.4f, COL_SUCCESS);
+    drawText("Online", { 76.0f, 30.0f, 180.0f, 48.0f }, fmtSmall_, COL_TEXT_SECONDARY);
 
-    // Segmented Pill Tab Switcher
-    float tabStartX = 210.0f;
+    // Center: Dead-Center macOS Segmented Control Track + Liquid Spring Pill
     auto vStats = network_.viewerStats();
     bool hasSession = (vStats.state != ViewerConnectionState::Disconnected);
 
-    UiRect dashTab = { tabStartX, 11.0f, tabStartX + 110.0f, 45.0f };
+    float dashW = 108.0f;
+    float sessW = hasSession ? 172.0f : 0.0f;
+    float settW = 102.0f;
+    float totalTabsW = dashW + (hasSession ? (sessW + 4.0f) : 0.0f) + 4.0f + settW;
+    float tabStartX = std::max(195.0f, (width - totalTabsW) * 0.5f);
+
+    UiRect dashTab = { tabStartX, 12.0f, tabStartX + dashW, 46.0f };
     UiRect sessTab = hasSession
-        ? UiRect{ dashTab.right + 4.0f, 11.0f, dashTab.right + 184.0f, 45.0f }
-        : UiRect{ dashTab.right, 11.0f, dashTab.right, 45.0f };
+        ? UiRect{ dashTab.right + 4.0f, 12.0f, dashTab.right + 4.0f + sessW, 46.0f }
+        : UiRect{ dashTab.right, 12.0f, dashTab.right, 46.0f };
     float settLeft = (hasSession ? sessTab.right : dashTab.right) + 4.0f;
-    UiRect settTab = { settLeft, 11.0f, settLeft + 104.0f, 45.0f };
+    UiRect settTab = { settLeft, 12.0f, settLeft + settW, 46.0f };
 
     UiRect activeTargetRect = (activeTab_ == ActiveTab::Dashboard) ? dashTab :
                               (activeTab_ == ActiveTab::RemoteSession && hasSession) ? sessTab : settTab;
@@ -950,37 +1033,39 @@ void AeroDeskWindow::drawTopNavBar(float width, float& outTopOffset) {
     if (!navPillInit_) {
         navPillLeft_ = targetPillLeft_;
         navPillRight_ = targetPillRight_;
+        navPillVelL_ = 0.0f;
+        navPillVelR_ = 0.0f;
         navPillInit_ = true;
     }
 
-    UiRect trackRect = { dashTab.left - 3.0f, 8.0f, settTab.right + 3.0f, 48.0f };
-    fillRoundRect(trackRect, 9.5f, COL_SEC_BTN_BG);
-    strokeRoundRect(trackRect, 9.5f, COL_BORDER, 1.0f);
+    UiRect trackRect = { dashTab.left - 3.5f, 8.5f, settTab.right + 3.5f, 49.5f };
+    fillRoundRect(trackRect, 11.0f, COL_SEC_BTN_BG);
+    strokeRoundRect(trackRect, 11.0f, COL_BORDER, 1.0f);
 
-    UiRect slidingPill = { navPillLeft_, 11.0f, navPillRight_, 45.0f };
-    fillRoundRect(slidingPill.offset(0.0f, 1.8f), 7.5f, withAlpha(COL_PRIMARY_RED, 0.22f));
-    fillRoundRect(slidingPill, 7.5f, COL_PRIMARY_RED);
+    UiRect slidingPill = { navPillLeft_, 12.0f, navPillRight_, 46.0f };
+    fillRoundRect(slidingPill.offset(0.0f, 1.8f), 8.5f, withAlpha(COL_PRIMARY_RED, 0.24f));
+    fillRoundRect(slidingPill, 8.5f, COL_PRIMARY_RED);
 
     bool onDash = (activeTab_ == ActiveTab::Dashboard);
     drawButton("tab_dash", dashTab, "Dashboard",
                rgba(255, 255, 255, 0.0f),
                onDash ? rgba(255, 255, 255, 0.08f) : COL_SEC_BTN_HV,
                onDash ? COL_TEXT_ON_ACCENT : COL_TEXT_SECONDARY,
-               7.5f, [this]() {
+               8.5f, [this]() {
                    switchTab(ActiveTab::Dashboard);
                }, fmtSmall_, false, D2D1::ColorF(0, 0, 0, 0),
                onDash ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
 
     if (hasSession) {
         std::string sessLabel = (vStats.remoteDeskId > 0)
-            ? ("Session: " + CryptoUtils::formatDeskId(vStats.remoteDeskId))
-            : "Active Session";
+            ? ("Session • " + CryptoUtils::formatDeskId(vStats.remoteDeskId))
+            : "Session";
         bool onSess = (activeTab_ == ActiveTab::RemoteSession);
         drawButton("tab_session", sessTab, sessLabel,
                    rgba(255, 255, 255, 0.0f),
                    onSess ? rgba(255, 255, 255, 0.08f) : COL_SEC_BTN_HV,
                    onSess ? COL_TEXT_ON_ACCENT : COL_TEXT_SECONDARY,
-                   7.5f, [this]() {
+                   8.5f, [this]() {
                        switchTab(ActiveTab::RemoteSession);
                    }, fmtSmall_, false, D2D1::ColorF(0, 0, 0, 0),
                    onSess ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
@@ -991,22 +1076,23 @@ void AeroDeskWindow::drawTopNavBar(float width, float& outTopOffset) {
                rgba(255, 255, 255, 0.0f),
                onSett ? rgba(255, 255, 255, 0.08f) : COL_SEC_BTN_HV,
                onSett ? COL_TEXT_ON_ACCENT : COL_TEXT_SECONDARY,
-               7.5f, [this]() {
+               8.5f, [this]() {
                    switchTab(ActiveTab::Settings);
                }, fmtSmall_, false, D2D1::ColorF(0, 0, 0, 0),
                onSett ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
 
-    // Right Action Bar (Minimal: Theme + Files & Chat)
+    // Right: Minimal Theme Icon Pill + Files & Chat Pill
     bool isDark = identity_.settings().darkTheme;
-    UiRect themeBtn = { width - 96.0f, 11.0f, width - 18.0f, 45.0f };
-    drawButton("btn_nav_theme", themeBtn, isDark ? "Dark" : "Light",
+    UiRect themeBtn = { width - 56.0f, 12.0f, width - 20.0f, 46.0f };
+    drawButton("btn_nav_theme", themeBtn, "",
                COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY,
-               7.5f, [this]() {
+               9.0f, [this]() {
                    AppSettings s = identity_.settings();
                    s.darkTheme = !s.darkTheme;
                    identity_.updateSettings(s);
                    applyWindowThemeAttribute();
                }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
+    drawIconTheme(themeBtn.centerX(), themeBtn.centerY(), 7.5f, isDark, COL_TEXT_PRIMARY);
 
     auto transfers = network_.fileTransferManager().snapshotTransfers();
     uint32_t unreadChat = network_.unreadChatCount();
@@ -1016,12 +1102,12 @@ void AeroDeskWindow::drawTopNavBar(float width, float& outTopOffset) {
     } else if (!transfers.empty()) {
         fileBtnLabel += " (" + std::to_string(transfers.size()) + ")";
     }
-    UiRect filesBtn = { themeBtn.left - 134.0f, 11.0f, themeBtn.left - 8.0f, 45.0f };
+    UiRect filesBtn = { themeBtn.left - 126.0f, 12.0f, themeBtn.left - 8.0f, 46.0f };
     drawButton("btn_drawer", filesBtn, fileBtnLabel,
                (showFileDrawer_ || unreadChat > 0) ? COL_PRIMARY_RED : COL_SEC_BTN_BG,
                (showFileDrawer_ || unreadChat > 0) ? COL_PRIMARY_RED_HV : COL_SEC_BTN_HV,
                (showFileDrawer_ || unreadChat > 0) ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
-               7.5f, [this, unreadChat]() {
+               9.0f, [this, unreadChat]() {
                    if (!showFileDrawer_ && unreadChat > 0) {
                        drawerTab_ = DrawerTab::LiveChat;
                        network_.markChatRead();
@@ -1031,129 +1117,133 @@ void AeroDeskWindow::drawTopNavBar(float width, float& outTopOffset) {
                (showFileDrawer_ || unreadChat > 0) ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
 }
 
-// ---------------- Dashboard View ----------------
+// ---------------- Minimalistic macOS Dashboard View ----------------
 
 void AeroDeskWindow::drawDashboardView(const UiRect& bounds, float alpha) {
     if (alpha <= 0.01f) return;
 
-    float stagger1 = (1.0f - cubicOutEase(std::clamp(tabEnterStaggerT_ * 1.25f, 0.0f, 1.0f))) * 10.0f;
-    float stagger2 = (1.0f - cubicOutEase(std::clamp((tabEnterStaggerT_ - 0.08f) * 1.25f, 0.0f, 1.0f))) * 12.0f;
-    float stagger3 = (1.0f - cubicOutEase(std::clamp((tabEnterStaggerT_ - 0.16f) * 1.25f, 0.0f, 1.0f))) * 14.0f;
+    float s1 = std::clamp(tabEnterStaggerT_, 0.0f, 1.15f);
+    float s2 = std::clamp((tabEnterStaggerT_ - 0.06f) * 1.12f, 0.0f, 1.15f);
+    float s3 = std::clamp((tabEnterStaggerT_ - 0.12f) * 1.15f, 0.0f, 1.15f);
 
-    float pad = 22.0f;
+    float stagger1 = (1.0f - s1) * 14.0f;
+    float stagger2 = (1.0f - s2) * 16.0f;
+    float stagger3 = (1.0f - s3) * 18.0f;
+
+    float pad = 24.0f;
     float totalW = bounds.width() - pad * 2.0f;
-    float leftW = std::clamp(totalW * 0.40f, 380.0f, 465.0f);
+    float leftW = std::clamp(totalW * 0.39f, 380.0f, 456.0f);
 
     UiRect leftCol = UiRect{ bounds.left + pad, bounds.top + pad, bounds.left + pad + leftW, bounds.bottom - pad }.offset(0.0f, stagger1);
     UiRect rightCol = { leftCol.right + pad, bounds.top + pad, bounds.right - pad, bounds.bottom - pad };
 
     // ========== LEFT COLUMN: THIS DESK ==========
-    drawCardSurface(leftCol, 14.0f, alpha, true);
+    drawCardSurface(leftCol, 16.0f, alpha);
 
-    float lx = leftCol.left + 22.0f;
-    float rx = leftCol.right - 22.0f;
-    float curY = leftCol.top + 20.0f;
+    float lx = leftCol.left + 24.0f;
+    float rx = leftCol.right - 24.0f;
+    float curY = leftCol.top + 22.0f;
 
     drawText("This Desk", { lx, curY, rx, curY + 26.0f }, fmtHeading_, withAlpha(COL_TEXT_PRIMARY, alpha));
-    curY += 28.0f;
+    curY += 26.0f;
     drawText("Share your ID and code to allow remote access.",
              { lx, curY, rx, curY + 20.0f }, fmtSmall_, withAlpha(COL_TEXT_SECONDARY, alpha));
-    curY += 26.0f;
+    curY += 28.0f;
 
-    // Hero Desk ID Box
-    UiRect idBox = { lx, curY, rx, curY + 84.0f };
-    fillRoundRect(idBox, 11.0f, withAlpha(COL_BG_CARD_ALT, alpha));
-    strokeRoundRect(idBox, 11.0f, withAlpha(COL_BORDER_ALT, alpha), 1.4f);
+    // Hero Desk ID Card
+    UiRect idBox = { lx, curY, rx, curY + 86.0f };
+    fillRoundRect(idBox, 13.0f, withAlpha(COL_BG_CARD_ALT, alpha));
+    strokeRoundRect(idBox, 13.0f, withAlpha(COL_BORDER_ALT, alpha), 1.2f);
 
-    drawText("YOUR DESK ID", { idBox.left + 16.0f, idBox.top + 8.0f, idBox.right - 16.0f, idBox.top + 24.0f },
+    drawText("YOUR DESK ID", { idBox.left + 18.0f, idBox.top + 10.0f, idBox.right - 18.0f, idBox.top + 24.0f },
              fmtSmall_, withAlpha(COL_TEXT_ACCENT, alpha));
-    drawText(identity_.formattedDeskId(), { idBox.left + 16.0f, idBox.top + 25.0f, idBox.right - 115.0f, idBox.bottom - 8.0f },
+    drawText(identity_.formattedDeskId(), { idBox.left + 18.0f, idBox.top + 26.0f, idBox.right - 108.0f, idBox.bottom - 8.0f },
              fmtHeroId_, withAlpha(COL_PRIMARY_RED, alpha));
 
-    UiRect copyIdBtn = { idBox.right - 106.0f, idBox.top + 24.0f, idBox.right - 14.0f, idBox.bottom - 16.0f };
+    UiRect copyIdBtn = { idBox.right - 98.0f, idBox.top + 25.0f, idBox.right - 16.0f, idBox.bottom - 17.0f };
     drawButton("btn_copy_id", copyIdBtn, "Copy ID",
-               COL_PRIMARY_RED, COL_PRIMARY_RED_HV, COL_TEXT_ON_ACCENT, 7.5f, [this]() {
+               COL_PRIMARY_RED, COL_PRIMARY_RED_HV, COL_TEXT_ON_ACCENT, 8.5f, [this]() {
                    ClipboardManager::setClipboardUtf8(identity_.formattedDeskId());
-                   showToast("Copied Desk ID to clipboard.");
+                   showToast("Copied Desk ID");
                }, fmtSmall_);
 
-    curY = idBox.bottom + 14.0f;
+    curY = idBox.bottom + 16.0f;
 
-    // Session Code & Password Card
-    UiRect unattBox = { lx, curY, rx, curY + 164.0f };
-    fillRoundRect(unattBox, 11.0f, withAlpha(COL_BG_SUBTLE, alpha));
-    strokeRoundRect(unattBox, 11.0f, withAlpha(COL_BORDER, alpha));
+    // macOS Inset Group: Access & Password
+    UiRect unattBox = { lx, curY, rx, curY + 166.0f };
+    fillRoundRect(unattBox, 13.0f, withAlpha(COL_BG_SUBTLE, alpha));
+    strokeRoundRect(unattBox, 13.0f, withAlpha(COL_BORDER, alpha), 1.0f);
 
     float ux = unattBox.left + 16.0f;
     float urx = unattBox.right - 16.0f;
-    drawToggleSwitch("toggle_unattended", { ux, unattBox.top + 10.0f, urx, unattBox.top + 36.0f },
+    drawToggleSwitch("toggle_unattended", { ux, unattBox.top + 10.0f, urx, unattBox.top + 38.0f },
                      identity_.unattendedEnabled(), "Allow Password Access", [this]() {
                          identity_.setUnattendedEnabled(!identity_.unattendedEnabled());
-                         showToast(identity_.unattendedEnabled() ? "Password access enabled." : "Password access disabled.");
                      });
 
+    fillRoundRect({ ux, unattBox.top + 42.0f, urx, unattBox.top + 43.0f }, 0.0f, withAlpha(COL_BORDER, 0.7f * alpha));
+
     // Session Code Row
-    float codeY = unattBox.top + 44.0f;
-    drawText("Session Code:", { ux, codeY, ux + 100.0f, codeY + 32.0f }, fmtSmall_, withAlpha(COL_TEXT_SECONDARY, alpha));
-    UiRect codeBadge = { ux + 102.0f, codeY, urx - 142.0f, codeY + 32.0f };
-    fillRoundRect(codeBadge, 6.5f, COL_BG_CARD);
-    strokeRoundRect(codeBadge, 6.5f, COL_BORDER_ALT);
+    float codeY = unattBox.top + 50.0f;
+    drawText("Session Code", { ux, codeY, ux + 96.0f, codeY + 32.0f }, fmtBody_, withAlpha(COL_TEXT_SECONDARY, alpha));
+    UiRect codeBadge = { ux + 100.0f, codeY, urx - 134.0f, codeY + 32.0f };
+    fillRoundRect(codeBadge, 7.5f, COL_BG_CARD);
+    strokeRoundRect(codeBadge, 7.5f, COL_BORDER);
     drawText(identity_.sessionCode(), codeBadge, fmtMono_, COL_PRIMARY_RED, DWRITE_TEXT_ALIGNMENT_CENTER);
 
     UiRect copyCodeBtn = { codeBadge.right + 6.0f, codeY, codeBadge.right + 66.0f, codeY + 32.0f };
     drawButton("btn_copy_code", copyCodeBtn, "Copy",
-               COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 6.5f, [this]() {
+               COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 7.5f, [this]() {
                    ClipboardManager::setClipboardUtf8(identity_.sessionCode());
-                   showToast("Copied session code to clipboard.");
+                   showToast("Copied session code");
                }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
 
     UiRect regenCodeBtn = { copyCodeBtn.right + 6.0f, codeY, urx, codeY + 32.0f };
     drawButton("btn_regen_code", regenCodeBtn, "New",
-               COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 6.5f, [this]() {
+               COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 7.5f, [this]() {
                    identity_.regenerateSessionCode();
-                   showToast("Generated new session code.");
                }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
 
-    // Unattended Password Row
-    drawText("Unattended Password:",
-             { ux, unattBox.top + 84.0f, urx, unattBox.top + 102.0f }, fmtSmall_, withAlpha(COL_TEXT_SECONDARY, alpha));
+    fillRoundRect({ ux, codeY + 40.0f, urx, codeY + 41.0f }, 0.0f, withAlpha(COL_BORDER, 0.7f * alpha));
 
-    UiRect passField = { ux, unattBox.top + 106.0f, urx - 142.0f, unattBox.top + 144.0f };
+    // Unattended Password Row
+    float passY = codeY + 49.0f;
+    UiRect passField = { ux, passY, urx - 134.0f, passY + 36.0f };
     drawTextField("field_local_pass", FocusedField::LocalPassword, passField,
-                  localPasswordEdit_, "Set password...", !showLocalPassword_);
+                  localPasswordEdit_, "Unattended password...", !showLocalPassword_);
 
     UiRect showPassBtn = { passField.right + 6.0f, passField.top, passField.right + 66.0f, passField.bottom };
     drawButton("btn_show_local_pass", showPassBtn, showLocalPassword_ ? "Hide" : "Show",
-               COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 7.0f, [this]() {
+               COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 7.5f, [this]() {
                    showLocalPassword_ = !showLocalPassword_;
                }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
 
     UiRect savePassBtn = { showPassBtn.right + 6.0f, passField.top, urx, passField.bottom };
     drawButton("btn_save_local_pass", savePassBtn, "Save",
-               COL_PRIMARY_RED, COL_PRIMARY_RED_HV, COL_TEXT_ON_ACCENT, 7.0f, [this]() {
+               COL_PRIMARY_RED, COL_PRIMARY_RED_HV, COL_TEXT_ON_ACCENT, 7.5f, [this]() {
                    if (!localPasswordEdit_.empty()) {
                        identity_.setUnattendedPassword(localPasswordEdit_);
-                       showToast("Password saved.");
+                       showToast("Password saved");
                    } else {
-                       showToast("Enter a password first.", true);
+                       showToast("Enter a password first", true);
                    }
                }, fmtSmall_);
 
-    curY = unattBox.bottom + 14.0f;
+    curY = unattBox.bottom + 16.0f;
 
-    // Host Session Status Card
+    // Host Session Status Box
     auto hStatus = network_.hostSessionStatus();
-    UiRect hostBox = { lx, curY, rx, leftCol.bottom - 18.0f };
-    fillRoundRect(hostBox, 11.0f, withAlpha(hStatus.active ? COL_BG_CARD_ALT : COL_BG_SUBTLE, alpha));
-    strokeRoundRect(hostBox, 11.0f, withAlpha(hStatus.active ? COL_BORDER_ALT : COL_BORDER, alpha));
+    UiRect hostBox = { lx, curY, rx, leftCol.bottom - 22.0f };
+    fillRoundRect(hostBox, 13.0f, withAlpha(hStatus.active ? COL_BG_CARD_ALT : COL_BG_SUBTLE, alpha));
+    strokeRoundRect(hostBox, 13.0f, withAlpha(hStatus.active ? COL_BORDER_ALT : COL_BORDER, alpha), 1.0f);
 
-    float hx = hostBox.left + 16.0f;
-    float hrx = hostBox.right - 16.0f;
+    float hx = hostBox.left + 18.0f;
+    float hrx = hostBox.right - 18.0f;
     float hy = hostBox.top + 14.0f;
 
     if (hStatus.active) {
         drawPulseDot(hx + 5.0f, hy + 10.0f, 4.0f, COL_PRIMARY_RED, alpha);
-        drawText("ACTIVE SESSION", { hx + 15.0f, hy, hrx, hy + 20.0f }, fmtSmall_, COL_PRIMARY_RED);
+        drawText("ACTIVE SESSION", { hx + 16.0f, hy, hrx, hy + 20.0f }, fmtSmall_, COL_PRIMARY_RED);
         hy += 22.0f;
         std::string who = hStatus.viewerHostname + " (" + CryptoUtils::formatDeskId(hStatus.viewerDeskId) + ")";
         drawText(who, { hx, hy, hrx, hy + 24.0f }, fmtSubheading_, COL_TEXT_PRIMARY);
@@ -1179,29 +1269,29 @@ void AeroDeskWindow::drawDashboardView(const UiRect& bounds, float alpha) {
         if (hy + 32.0f <= hostBox.bottom - 8.0f) {
             UiRect discHostBtn = { hx, hy, hrx, hy + 32.0f };
             drawButton("btn_disc_host", discHostBtn, "Disconnect",
-                       COL_DANGER, COL_DANGER_HV, COL_TEXT_ON_ACCENT, 7.0f, [this]() {
+                       COL_DANGER, COL_DANGER_HV, COL_TEXT_ON_ACCENT, 8.0f, [this]() {
                            network_.disconnectHostClient();
-                           showToast("Disconnected remote viewer.");
+                           showToast("Disconnected viewer");
                        }, fmtSmall_);
         }
     } else {
-        drawPulseDot(hx + 6.0f, hy + 12.0f, 4.0f, COL_SUCCESS, alpha);
-        drawText("Ready for connections", { hx + 18.0f, hy, hrx, hy + 24.0f }, fmtSubheading_, COL_TEXT_PRIMARY);
-        hy += 26.0f;
-        drawText("Your desktop is ready to share.", { hx, hy, hrx, hy + 20.0f }, fmtSmall_, COL_TEXT_SECONDARY);
+        float midY = hostBox.centerY();
+        drawPulseDot(hx + 6.0f, midY - 10.0f, 4.2f, COL_SUCCESS, alpha);
+        drawText("Ready for connections", { hx + 18.0f, midY - 22.0f, hrx, midY + 2.0f }, fmtSubheading_, COL_TEXT_PRIMARY);
+        drawText("Your desktop is ready to share.", { hx + 18.0f, midY + 2.0f, hrx, midY + 24.0f }, fmtSmall_, COL_TEXT_SECONDARY);
     }
 
-    // ========== RIGHT COLUMN: REMOTE DESK & DISCOVERY ==========
+    // ========== RIGHT COLUMN: REMOTE DESK & SAVED/NEARBY DESKS ==========
     float topCardH = 148.0f;
     UiRect connectCard = UiRect{ rightCol.left, rightCol.top, rightCol.right, rightCol.top + topCardH }.offset(0.0f, stagger2);
-    drawCardSurface(connectCard, 14.0f, alpha, true);
+    drawCardSurface(connectCard, 16.0f, alpha);
 
-    float cx = connectCard.left + 22.0f;
-    float crx = connectCard.right - 22.0f;
-    float cy = connectCard.top + 18.0f;
+    float cx = connectCard.left + 24.0f;
+    float crx = connectCard.right - 24.0f;
+    float cy = connectCard.top + 20.0f;
 
     drawText("Remote Desk", { cx, cy, crx, cy + 26.0f }, fmtHeading_, COL_TEXT_PRIMARY);
-    cy += 26.0f;
+    cy += 25.0f;
     drawText("Enter a Desk ID to connect to another computer.",
              { cx, cy, crx, cy + 20.0f }, fmtSmall_, COL_TEXT_SECONDARY);
     cy += 28.0f;
@@ -1210,35 +1300,35 @@ void AeroDeskWindow::drawDashboardView(const UiRect& bounds, float alpha) {
     float idW = totalInputW * 0.44f;
     float pwW = totalInputW * 0.34f;
 
-    UiRect remoteIdField = { cx, cy, cx + idW, cy + 44.0f };
+    UiRect remoteIdField = { cx, cy, cx + idW, cy + 42.0f };
     drawTextField("field_remote_id", FocusedField::RemoteId, remoteIdField,
                   remoteIdInput_, "Enter 9-digit ID", false);
 
-    UiRect remotePwField = { remoteIdField.right + 10.0f, cy, remoteIdField.right + 10.0f + pwW, cy + 44.0f };
+    UiRect remotePwField = { remoteIdField.right + 10.0f, cy, remoteIdField.right + 10.0f + pwW, cy + 42.0f };
     drawTextField("field_remote_pw", FocusedField::RemotePassword, remotePwField,
                   remotePasswordInput_, "Password or code", !showRemotePassword_);
 
-    UiRect connectBtn = { remotePwField.right + 10.0f, cy, crx, cy + 44.0f };
+    UiRect connectBtn = { remotePwField.right + 10.0f, cy, crx, cy + 42.0f };
     drawButton("btn_connect", connectBtn, "Connect",
-               COL_PRIMARY_RED, COL_PRIMARY_RED_HV, COL_TEXT_ON_ACCENT, 8.0f, [this]() {
+               COL_PRIMARY_RED, COL_PRIMARY_RED_HV, COL_TEXT_ON_ACCENT, 9.0f, [this]() {
                    initiateConnection();
                });
 
     // ========== SAVED & NEARBY DESKS GRID ==========
     UiRect peersCard = UiRect{ rightCol.left, connectCard.bottom + 18.0f - stagger2, rightCol.right, rightCol.bottom }.offset(0.0f, stagger3);
-    drawCardSurface(peersCard, 14.0f, alpha, false);
+    drawCardSurface(peersCard, 16.0f, alpha);
 
-    float px = peersCard.left + 22.0f;
-    float prx = peersCard.right - 22.0f;
-    float py = peersCard.top + 18.0f;
+    float px = peersCard.left + 24.0f;
+    float prx = peersCard.right - 24.0f;
+    float py = peersCard.top + 20.0f;
 
     auto discovered = network_.discoveredPeers();
     auto recents = identity_.recentSessions();
 
     drawText("Saved & Nearby Desks", { px, py, prx - 110.0f, py + 26.0f }, fmtHeading_, COL_TEXT_PRIMARY);
-    UiRect refreshBtn = { prx - 96.0f, py - 2.0f, prx, py + 28.0f };
+    UiRect refreshBtn = { prx - 92.0f, py - 2.0f, prx, py + 28.0f };
     drawButton("btn_refresh_lan", refreshBtn, "Refresh",
-               COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 6.5f, [this]() {
+               COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 7.5f, [this]() {
                    network_.sendDiscoveryQuery(0);
                    showToast("Refreshing nearby desks...");
                }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
@@ -1255,7 +1345,6 @@ void AeroDeskWindow::drawDashboardView(const UiRect& bounds, float alpha) {
     };
     std::vector<PeerCardItem> cardItems;
 
-    // 1. Add Favorites first
     for (const auto& r : recents) {
         if (!r.isFavorite) continue;
         bool liveNow = false;
@@ -1270,7 +1359,6 @@ void AeroDeskWindow::drawDashboardView(const UiRect& bounds, float alpha) {
         cardItems.push_back({ r.deskId, r.hostname, ep, liveNow, true, true });
     }
 
-    // 2. Add Live Discovered LAN peers not already in Favorites
     for (const auto& d : discovered) {
         bool already = false;
         for (const auto& c : cardItems) {
@@ -1281,7 +1369,6 @@ void AeroDeskWindow::drawDashboardView(const UiRect& bounds, float alpha) {
         }
     }
 
-    // 3. Add remaining Recent Desks
     for (const auto& r : recents) {
         bool already = false;
         for (const auto& c : cardItems) {
@@ -1293,17 +1380,17 @@ void AeroDeskWindow::drawDashboardView(const UiRect& bounds, float alpha) {
     }
 
     if (cardItems.empty()) {
-        UiRect emptyBox = { px, py + 6.0f, prx, peersCard.bottom - 22.0f };
-        fillRoundRect(emptyBox, 11.0f, COL_BG_SUBTLE);
-        strokeRoundRect(emptyBox, 11.0f, COL_BORDER);
+        UiRect emptyBox = { px, py + 4.0f, prx, peersCard.bottom - 24.0f };
+        fillRoundRect(emptyBox, 13.0f, COL_BG_SUBTLE);
+        strokeRoundRect(emptyBox, 13.0f, COL_BORDER);
 
         float cyEmpty = emptyBox.centerY();
-        drawPulseDot(emptyBox.centerX(), cyEmpty - 26.0f, 6.0f, COL_PRIMARY_RED, alpha);
+        drawPulseDot(emptyBox.centerX(), cyEmpty - 24.0f, 5.5f, COL_PRIMARY_RED, alpha);
         drawText("No desks found nearby",
-                 { emptyBox.left + 24.0f, cyEmpty - 10.0f, emptyBox.right - 24.0f, cyEmpty + 16.0f },
+                 { emptyBox.left + 24.0f, cyEmpty - 8.0f, emptyBox.right - 24.0f, cyEmpty + 16.0f },
                  fmtSubheading_, COL_TEXT_PRIMARY, DWRITE_TEXT_ALIGNMENT_CENTER);
         drawText("Computers on your local network will appear here automatically.",
-                 { emptyBox.left + 24.0f, cyEmpty + 18.0f, emptyBox.right - 24.0f, cyEmpty + 44.0f },
+                 { emptyBox.left + 24.0f, cyEmpty + 18.0f, emptyBox.right - 24.0f, cyEmpty + 42.0f },
                  fmtSmall_, COL_TEXT_SECONDARY, DWRITE_TEXT_ALIGNMENT_CENTER);
     } else {
         int cols = 2;
@@ -1316,23 +1403,25 @@ void AeroDeskWindow::drawDashboardView(const UiRect& bounds, float alpha) {
             int col = static_cast<int>(i) % cols;
             float itemLeft = px + col * (cardW + gap);
             float itemTop = py + row * (cardH + gap);
-            if (itemTop + cardH > peersCard.bottom - 14.0f) break;
+            if (itemTop + cardH > peersCard.bottom - 16.0f) break;
 
             std::string cardBtnId = "peer_conn_" + std::to_string(i);
-            float cardHover = widgetAnims_[cardBtnId].hoverT;
+            float cardHover = std::clamp(widgetAnims_[cardBtnId].hoverT, 0.0f, 1.15f);
 
-            UiRect cardR = UiRect{ itemLeft, itemTop, itemLeft + cardW, itemTop + cardH }.offset(0.0f, -1.5f * cardHover);
-            drawCardShadow(cardR, 10.0f, 0.45f + 0.55f * cardHover);
-            fillRoundRect(cardR, 10.0f, lerpColor(COL_BG_SUBTLE, COL_BG_CARD, 0.5f + 0.5f * cardHover));
-            strokeRoundRect(cardR, 10.0f, lerpColor(cardItems[i].isFavorite ? COL_BORDER_ALT : COL_BORDER, COL_PRIMARY_RED, cardHover * 0.65f), 1.2f);
+            UiRect cardR = UiRect{ itemLeft, itemTop, itemLeft + cardW, itemTop + cardH }
+                .inflate(cardW * 0.006f * cardHover, cardH * 0.006f * cardHover)
+                .offset(0.0f, -1.8f * cardHover);
+            drawCardShadow(cardR, 12.0f, 0.4f + 0.6f * cardHover);
+            fillRoundRect(cardR, 12.0f, lerpColor(COL_BG_SUBTLE, COL_BG_CARD, 0.5f + 0.5f * std::clamp(cardHover, 0.0f, 1.0f)));
+            strokeRoundRect(cardR, 12.0f, lerpColor(cardItems[i].isFavorite ? COL_BORDER_ALT : COL_BORDER, COL_PRIMARY_RED, std::clamp(cardHover, 0.0f, 1.0f) * 0.6f), 1.0f);
 
             if (cardItems[i].isLive) {
-                drawPulseDot(cardR.left + 19.0f, cardR.top + 18.0f, 3.5f, COL_SUCCESS, alpha);
-                std::string badge = cardItems[i].isFavorite ? "★ FAVORITE" : "ONLINE";
+                drawPulseDot(cardR.left + 19.0f, cardR.top + 18.0f, 3.4f, COL_SUCCESS, alpha);
+                std::string badge = cardItems[i].isFavorite ? "FAVORITE • ONLINE" : "ONLINE";
                 drawText(badge, { cardR.left + 28.0f, cardR.top + 10.0f, cardR.right - 72.0f, cardR.top + 26.0f },
                          fmtSmall_, cardItems[i].isFavorite ? COL_PRIMARY_RED : COL_TEXT_SECONDARY);
             } else {
-                std::string badge = cardItems[i].isFavorite ? "★ FAVORITE" : "RECENT";
+                std::string badge = cardItems[i].isFavorite ? "FAVORITE" : "RECENT";
                 drawText(badge, { cardR.left + 14.0f, cardR.top + 10.0f, cardR.right - 72.0f, cardR.top + 26.0f },
                          fmtSmall_, cardItems[i].isFavorite ? COL_PRIMARY_RED : COL_TEXT_MUTED);
             }
@@ -1341,41 +1430,47 @@ void AeroDeskWindow::drawDashboardView(const UiRect& bounds, float alpha) {
             std::string peerHost = cardItems[i].hostname;
             std::string peerEp = cardItems[i].endpoint;
 
+            // Vector Star Favorite button
             if (peerId > 0) {
                 UiRect favBtn = { cardR.right - 64.0f, cardR.top + 7.0f, cardR.right - 38.0f, cardR.top + 27.0f };
-                drawButton("peer_fav_" + std::to_string(i), favBtn, cardItems[i].isFavorite ? "★" : "☆",
-                           COL_SEC_BTN_BG, COL_SEC_BTN_HV,
-                           cardItems[i].isFavorite ? COL_PRIMARY_RED : COL_TEXT_SECONDARY,
-                           5.0f, [this, peerId, peerHost, peerEp]() {
+                drawButton("peer_fav_" + std::to_string(i), favBtn, "",
+                           COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_SECONDARY,
+                           6.0f, [this, peerId, peerHost, peerEp]() {
                                identity_.addOrUpdateRecentSession(peerId, peerHost, peerEp);
                                identity_.toggleFavoriteSession(peerId);
                            }, fmtSmall_);
+                drawIconStar(favBtn.centerX(), favBtn.centerY(), 5.8f, cardItems[i].isFavorite,
+                             cardItems[i].isFavorite ? COL_PRIMARY_RED : COL_TEXT_SECONDARY);
             }
 
+            // Vector Close button for recent items
             if (cardItems[i].isFromRecent && peerId > 0) {
+                std::string delId = "peer_del_" + std::to_string(i);
                 UiRect delBtn = { cardR.right - 34.0f, cardR.top + 7.0f, cardR.right - 10.0f, cardR.top + 27.0f };
-                drawButton("peer_del_" + std::to_string(i), delBtn, "×",
+                drawButton(delId, delBtn, "",
                            COL_SEC_BTN_BG, COL_DANGER, COL_TEXT_SECONDARY,
-                           5.0f, [this, peerId]() {
+                           6.0f, [this, peerId]() {
                                identity_.removeRecentSession(peerId);
-                               showToast("Removed desk from history.");
                            }, fmtSmall_, false, D2D1::ColorF(0, 0, 0, 0), COL_TEXT_ON_ACCENT);
+                float delHover = std::clamp(widgetAnims_[delId].hoverT, 0.0f, 1.0f);
+                drawIconClose(delBtn.centerX(), delBtn.centerY(), 3.6f,
+                              lerpColor(COL_TEXT_SECONDARY, COL_TEXT_ON_ACCENT, delHover), 1.5f);
             }
 
             std::string idFormatted = (peerId > 0)
                 ? CryptoUtils::formatDeskId(peerId)
                 : peerEp;
             drawText(idFormatted, { cardR.left + 14.0f, cardR.top + 28.0f, cardR.right - 108.0f, cardR.top + 54.0f },
-                     fmtSubheading_, lerpColor(COL_TEXT_PRIMARY, COL_PRIMARY_RED, cardHover * 0.7f));
+                     fmtSubheading_, lerpColor(COL_TEXT_PRIMARY, COL_PRIMARY_RED, std::clamp(cardHover, 0.0f, 1.0f) * 0.7f));
 
             std::string subInfo = peerHost.empty() ? peerEp : peerHost;
             drawText(subInfo, { cardR.left + 14.0f, cardR.top + 54.0f, cardR.right - 108.0f, cardR.bottom - 10.0f },
                      fmtSmall_, COL_TEXT_SECONDARY);
 
             std::string targetStr = (peerId > 0) ? CryptoUtils::formatDeskId(peerId) : peerEp;
-            UiRect quickConnBtn = { cardR.right - 98.0f, cardR.top + 34.0f, cardR.right - 10.0f, cardR.bottom - 16.0f };
+            UiRect quickConnBtn = { cardR.right - 98.0f, cardR.top + 35.0f, cardR.right - 12.0f, cardR.bottom - 15.0f };
             drawButton(cardBtnId, quickConnBtn, "Connect",
-                       COL_PRIMARY_RED, COL_PRIMARY_RED_HV, COL_TEXT_ON_ACCENT, 7.5f, [this, targetStr]() {
+                       COL_PRIMARY_RED, COL_PRIMARY_RED_HV, COL_TEXT_ON_ACCENT, 8.0f, [this, targetStr]() {
                            remoteIdInput_ = targetStr;
                            initiateConnection();
                        }, fmtSmall_);
@@ -1391,13 +1486,12 @@ void AeroDeskWindow::drawRemoteSessionView(const UiRect& bounds, float alpha) {
     auto stats = network_.viewerStats();
     const auto& appSett = identity_.settings();
 
-    // Session Control HUD Bar
     float barH = 48.0f;
     UiRect hudBar = { bounds.left, bounds.top, bounds.right, bounds.top + barH };
     fillRoundRect(hudBar, 0.0f, COL_BG_CARD);
     fillRoundRect({ hudBar.left, hudBar.bottom - 1.0f, hudBar.right, hudBar.bottom }, 0.0f, COL_BORDER);
 
-    float bx = hudBar.left + 16.0f;
+    float bx = hudBar.left + 18.0f;
     std::string peerTitle = stats.remoteHostname.empty()
         ? CryptoUtils::formatDeskId(stats.remoteDeskId)
         : stats.remoteHostname;
@@ -1414,89 +1508,89 @@ void AeroDeskWindow::drawRemoteSessionView(const UiRect& bounds, float alpha) {
     }
 
     // Right-aligned session controls
-    float rx = hudBar.right - 12.0f;
+    float rx = hudBar.right - 14.0f;
 
-    UiRect discBtn = { rx - 86.0f, hudBar.top + 7.0f, rx, hudBar.bottom - 7.0f };
+    UiRect discBtn = { rx - 88.0f, hudBar.top + 8.0f, rx, hudBar.bottom - 8.0f };
     drawButton("sess_disconnect", discBtn, "Disconnect",
-               COL_DANGER, COL_DANGER_HV, COL_TEXT_ON_ACCENT, 6.5f, [this]() {
+               COL_DANGER, COL_DANGER_HV, COL_TEXT_ON_ACCENT, 7.5f, [this]() {
                    network_.disconnectViewer();
                    switchTab(ActiveTab::Dashboard);
-                   showToast("Disconnected.");
+                   showToast("Disconnected");
                }, fmtSmall_);
-    rx = discBtn.left - 5.0f;
+    rx = discBtn.left - 6.0f;
 
-    UiRect fsBtn = { rx - 82.0f, hudBar.top + 7.0f, rx, hudBar.bottom - 7.0f };
+    UiRect fsBtn = { rx - 84.0f, hudBar.top + 8.0f, rx, hudBar.bottom - 8.0f };
     drawButton("sess_fullscreen", fsBtn, isFullscreen_ ? "Exit (F11)" : "Fullscreen",
-               COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 6.5f, [this]() {
+               COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 7.5f, [this]() {
                    toggleFullscreen();
                }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
-    rx = fsBtn.left - 5.0f;
+    rx = fsBtn.left - 6.0f;
 
-    UiRect shotBtn = { rx - 78.0f, hudBar.top + 7.0f, rx, hudBar.bottom - 7.0f };
+    UiRect shotBtn = { rx - 80.0f, hudBar.top + 8.0f, rx, hudBar.bottom - 8.0f };
     drawButton("sess_screenshot", shotBtn, "Screenshot",
-               COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 6.5f, [this]() {
+               COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 7.5f, [this]() {
                    saveRemoteScreenshot();
                }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
-    rx = shotBtn.left - 5.0f;
+    rx = shotBtn.left - 6.0f;
 
-    UiRect taskBtn = { rx - 70.0f, hudBar.top + 7.0f, rx, hudBar.bottom - 7.0f };
+    UiRect taskBtn = { rx - 72.0f, hudBar.top + 8.0f, rx, hudBar.bottom - 8.0f };
     drawButton("sess_taskmgr", taskBtn, "Task Mgr",
-               COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 6.5f, [this]() {
+               COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 7.5f, [this]() {
                    network_.sendSystemAction(SystemActionType::TaskManager);
-                   showToast("Opened Task Manager on remote computer.");
+                   showToast("Opened Task Manager");
                }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
-    rx = taskBtn.left - 5.0f;
+    rx = taskBtn.left - 6.0f;
 
     std::string scaleLabel = (scaleMode_ == ScaleMode::FitAspect) ? "Scale: Fit" :
                              (scaleMode_ == ScaleMode::Stretch) ? "Scale: Stretch" : "Scale: 1:1";
-    UiRect scaleBtn = { rx - 86.0f, hudBar.top + 7.0f, rx, hudBar.bottom - 7.0f };
+    UiRect scaleBtn = { rx - 88.0f, hudBar.top + 8.0f, rx, hudBar.bottom - 8.0f };
     drawButton("sess_scale", scaleBtn, scaleLabel,
-               COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 6.5f, [this]() {
+               COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 7.5f, [this]() {
                    if (scaleMode_ == ScaleMode::FitAspect) scaleMode_ = ScaleMode::Stretch;
                    else if (scaleMode_ == ScaleMode::Stretch) scaleMode_ = ScaleMode::Original;
                    else scaleMode_ = ScaleMode::FitAspect;
                }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
-    rx = scaleBtn.left - 5.0f;
+    rx = scaleBtn.left - 6.0f;
 
     std::string qualLabel = (stats.qualityPreset == QualityPreset::Ultra) ? "Quality: High" :
                             (stats.qualityPreset == QualityPreset::Balanced) ? "Quality: Bal" : "Quality: Fast";
-    UiRect qualBtn = { rx - 92.0f, hudBar.top + 7.0f, rx, hudBar.bottom - 7.0f };
+    UiRect qualBtn = { rx - 94.0f, hudBar.top + 8.0f, rx, hudBar.bottom - 8.0f };
     drawButton("sess_quality", qualBtn, qualLabel,
-               COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 6.5f, [this, stats]() {
+               COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 7.5f, [this, stats]() {
                    QualityPreset nextQ = (stats.qualityPreset == QualityPreset::Ultra) ? QualityPreset::Balanced :
                                          (stats.qualityPreset == QualityPreset::Balanced) ? QualityPreset::LowBandwidth :
                                          QualityPreset::Ultra;
                    network_.requestVideoSettings(nextQ, stats.activeMonitorIndex, true, stats.targetFps, stats.adaptiveFps ? 1 : 0);
                }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
-    rx = qualBtn.left - 5.0f;
+    rx = qualBtn.left - 6.0f;
 
     if (stats.monitorCount > 1) {
         std::string monLabel = "Display " + std::to_string(stats.activeMonitorIndex + 1);
-        UiRect monBtn = { rx - 76.0f, hudBar.top + 7.0f, rx, hudBar.bottom - 7.0f };
+        UiRect monBtn = { rx - 78.0f, hudBar.top + 8.0f, rx, hudBar.bottom - 8.0f };
         drawButton("sess_monitor", monBtn, monLabel,
-                   COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 6.5f, [this, stats]() {
+                   COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 7.5f, [this, stats]() {
                        int nextMon = (stats.activeMonitorIndex + 1) % std::max(1, stats.monitorCount);
                        network_.requestVideoSettings(stats.qualityPreset, nextMon, true, stats.targetFps, stats.adaptiveFps ? 1 : 0);
                    }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
-        rx = monBtn.left - 5.0f;
+        rx = monBtn.left - 6.0f;
     }
 
     bool canControl = (stats.grantedPermissions & PERM_INPUT) != 0;
     bool inputActive = canControl && remoteInputEnabled_;
     std::string inputLabel = !canControl ? "View Only" :
                              (inputActive ? "Control: ON" : "View Only");
-    UiRect inputBtn = { rx - 96.0f, hudBar.top + 7.0f, rx, hudBar.bottom - 7.0f };
+    UiRect inputBtn = { rx - 98.0f, hudBar.top + 8.0f, rx, hudBar.bottom - 8.0f };
     drawButton("sess_input_toggle", inputBtn, inputLabel,
                inputActive ? COL_PRIMARY_RED : COL_SEC_BTN_BG,
                inputActive ? COL_PRIMARY_RED_HV : COL_SEC_BTN_HV,
                inputActive ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
-               6.5f, [this, canControl]() {
+               7.5f, [this, canControl]() {
                    if (canControl) {
                        remoteInputEnabled_ = !remoteInputEnabled_;
                        if (!remoteInputEnabled_) network_.sendReleaseAllModifiers();
-                       showToast(remoteInputEnabled_ ? "Control enabled." : "View-only mode.");
+                       showToast(remoteInputEnabled_ ? "Control enabled" : "View-only mode");
                    } else {
-                       showToast("Remote control is disabled by the host.", true);
+                       showToast("Remote control disabled by host", true);
                    }
                }, fmtSmall_, !inputActive, COL_BORDER,
                inputActive ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
@@ -1529,8 +1623,8 @@ void AeroDeskWindow::drawRemoteSessionView(const UiRect& bounds, float alpha) {
     }
 
     if (remoteBitmap_ && bitmapW_ > 0 && bitmapH_ > 0) {
-        float availW = stageRect.width() - 20.0f;
-        float availH = stageRect.height() - 20.0f;
+        float availW = stageRect.width() - 24.0f;
+        float availH = stageRect.height() - 24.0f;
         float drawW = availW;
         float drawH = availH;
 
@@ -1547,8 +1641,8 @@ void AeroDeskWindow::drawRemoteSessionView(const UiRect& bounds, float alpha) {
         float top  = stageRect.top + (stageRect.height() - drawH) * 0.5f;
         renderedCanvasRect_ = { left, top, left + drawW, top + drawH };
 
-        drawCardShadow(renderedCanvasRect_, 6.0f, alpha);
-        strokeRoundRect(renderedCanvasRect_.inflate(1.5f, 1.5f), 4.0f, COL_PRIMARY_RED, 1.5f);
+        drawCardShadow(renderedCanvasRect_, 8.0f, alpha);
+        strokeRoundRect(renderedCanvasRect_.inflate(1.2f, 1.2f), 6.0f, COL_BORDER_ALT, 1.2f);
 
         D2D1_RECT_F dRect = D2D1::RectF(renderedCanvasRect_.left, renderedCanvasRect_.top,
                                         renderedCanvasRect_.right, renderedCanvasRect_.bottom);
@@ -1558,9 +1652,9 @@ void AeroDeskWindow::drawRemoteSessionView(const UiRect& bounds, float alpha) {
             float curX = renderedCanvasRect_.left + remoteCursor_.normX * renderedCanvasRect_.width();
             float curY = renderedCanvasRect_.top + remoteCursor_.normY * renderedCanvasRect_.height();
             solidBrush_->SetColor(withAlpha(COL_PRIMARY_RED, 0.92f));
-            renderTarget_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(curX, curY), 5.5f, 5.5f), solidBrush_);
+            renderTarget_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(curX, curY), 5.0f, 5.0f), solidBrush_);
             solidBrush_->SetColor(rgba(255, 255, 255, 0.98f));
-            renderTarget_->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(curX, curY), 6.5f, 6.5f), solidBrush_, 1.8f);
+            renderTarget_->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(curX, curY), 6.0f, 6.0f), solidBrush_, 1.6f);
         }
     } else {
         renderedCanvasRect_ = {};
@@ -1568,15 +1662,17 @@ void AeroDeskWindow::drawRemoteSessionView(const UiRect& bounds, float alpha) {
     }
 }
 
-// ---------------- Interactive Settings View ----------------
+// ---------------- macOS System Settings View ----------------
 
 void AeroDeskWindow::drawSettingsView(const UiRect& bounds, float alpha) {
     if (alpha <= 0.01f) return;
 
-    float staggerL = (1.0f - cubicOutEase(std::clamp(tabEnterStaggerT_ * 1.25f, 0.0f, 1.0f))) * 8.0f;
-    float staggerR = (1.0f - cubicOutEase(std::clamp((tabEnterStaggerT_ - 0.06f) * 1.25f, 0.0f, 1.0f))) * 10.0f;
+    float sL = std::clamp(tabEnterStaggerT_, 0.0f, 1.15f);
+    float sR = std::clamp((tabEnterStaggerT_ - 0.05f) * 1.12f, 0.0f, 1.15f);
+    float staggerL = (1.0f - sL) * 12.0f;
+    float staggerR = (1.0f - sR) * 14.0f;
 
-    float pad = 22.0f;
+    float pad = 24.0f;
     float totalW = bounds.width() - pad * 2.0f;
     float colW = (totalW - pad) * 0.5f;
 
@@ -1586,35 +1682,35 @@ void AeroDeskWindow::drawSettingsView(const UiRect& bounds, float alpha) {
     const AppSettings s = identity_.settings();
 
     // ==================== LEFT COLUMN: APPEARANCE & DISPLAY ====================
-    drawCardSurface(leftCard, 14.0f, alpha, true);
+    drawCardSurface(leftCard, 16.0f, alpha);
 
-    float lx = leftCard.left + 22.0f;
-    float lrx = leftCard.right - 22.0f;
-    float ly = leftCard.top + 18.0f;
+    float lx = leftCard.left + 24.0f;
+    float lrx = leftCard.right - 24.0f;
+    float ly = leftCard.top + 20.0f;
     float innerW = lrx - lx;
 
     drawText("Appearance & Display", { lx, ly, lrx, ly + 26.0f }, fmtHeading_, COL_TEXT_PRIMARY);
-    ly += 26.0f;
+    ly += 25.0f;
     drawText("Theme, frame rate, and display preferences.",
              { lx, ly, lrx, ly + 18.0f }, fmtSmall_, COL_TEXT_SECONDARY);
     ly += 26.0f;
 
-    // 1. Theme
+    // 1. Theme Segmented Box
     UiRect themeBox = { lx, ly, lrx, ly + 82.0f };
-    fillRoundRect(themeBox, 10.0f, COL_BG_SUBTLE);
-    strokeRoundRect(themeBox, 10.0f, COL_BORDER);
+    fillRoundRect(themeBox, 12.0f, COL_BG_SUBTLE);
+    strokeRoundRect(themeBox, 12.0f, COL_BORDER);
 
-    drawText("THEME", { themeBox.left + 14.0f, themeBox.top + 8.0f, themeBox.right - 14.0f, themeBox.top + 24.0f },
+    drawText("THEME", { themeBox.left + 16.0f, themeBox.top + 8.0f, themeBox.right - 16.0f, themeBox.top + 24.0f },
              fmtSmall_, COL_TEXT_ACCENT);
-    float halfBtnW = (innerW - 28.0f - 10.0f) * 0.5f;
-    UiRect lightBtn = { themeBox.left + 14.0f, themeBox.top + 32.0f, themeBox.left + 14.0f + halfBtnW, themeBox.bottom - 10.0f };
-    UiRect darkBtn  = { lightBtn.right + 10.0f, themeBox.top + 32.0f, themeBox.right - 14.0f, themeBox.bottom - 10.0f };
+    float halfBtnW = (innerW - 32.0f - 10.0f) * 0.5f;
+    UiRect lightBtn = { themeBox.left + 16.0f, themeBox.top + 32.0f, themeBox.left + 16.0f + halfBtnW, themeBox.bottom - 10.0f };
+    UiRect darkBtn  = { lightBtn.right + 10.0f, themeBox.top + 32.0f, themeBox.right - 16.0f, themeBox.bottom - 10.0f };
 
     drawButton("sett_theme_light", lightBtn, "Light",
                !s.darkTheme ? COL_PRIMARY_RED : COL_SEC_BTN_BG,
                !s.darkTheme ? COL_PRIMARY_RED_HV : COL_SEC_BTN_HV,
                !s.darkTheme ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
-               7.5f, [this]() {
+               8.0f, [this]() {
                    AppSettings ns = identity_.settings();
                    ns.darkTheme = false;
                    identity_.updateSettings(ns);
@@ -1625,7 +1721,7 @@ void AeroDeskWindow::drawSettingsView(const UiRect& bounds, float alpha) {
                s.darkTheme ? COL_PRIMARY_RED : COL_SEC_BTN_BG,
                s.darkTheme ? COL_PRIMARY_RED_HV : COL_SEC_BTN_HV,
                s.darkTheme ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
-               7.5f, [this]() {
+               8.0f, [this]() {
                    AppSettings ns = identity_.settings();
                    ns.darkTheme = true;
                    identity_.updateSettings(ns);
@@ -1636,18 +1732,18 @@ void AeroDeskWindow::drawSettingsView(const UiRect& bounds, float alpha) {
 
     // 2. Frame Rate
     UiRect fpsBox = { lx, ly, lrx, ly + 118.0f };
-    fillRoundRect(fpsBox, 10.0f, COL_BG_SUBTLE);
-    strokeRoundRect(fpsBox, 10.0f, COL_BORDER);
+    fillRoundRect(fpsBox, 12.0f, COL_BG_SUBTLE);
+    strokeRoundRect(fpsBox, 12.0f, COL_BORDER);
 
     drawText("FRAME RATE",
-             { fpsBox.left + 14.0f, fpsBox.top + 8.0f, fpsBox.right - 14.0f, fpsBox.top + 24.0f },
+             { fpsBox.left + 16.0f, fpsBox.top + 8.0f, fpsBox.right - 16.0f, fpsBox.top + 24.0f },
              fmtSmall_, COL_TEXT_ACCENT);
 
-    float thirdW = (innerW - 28.0f - 16.0f) / 3.0f;
+    float thirdW = (innerW - 32.0f - 16.0f) / 3.0f;
     uint8_t curFps = clampTargetFps(s.targetFps);
-    UiRect fps15Btn = { fpsBox.left + 14.0f, fpsBox.top + 30.0f, fpsBox.left + 14.0f + thirdW, fpsBox.top + 66.0f };
+    UiRect fps15Btn = { fpsBox.left + 16.0f, fpsBox.top + 30.0f, fpsBox.left + 16.0f + thirdW, fpsBox.top + 66.0f };
     UiRect fps30Btn = { fps15Btn.right + 8.0f, fpsBox.top + 30.0f, fps15Btn.right + 8.0f + thirdW, fpsBox.top + 66.0f };
-    UiRect fps60Btn = { fps30Btn.right + 8.0f, fpsBox.top + 30.0f, fpsBox.right - 14.0f, fpsBox.top + 66.0f };
+    UiRect fps60Btn = { fps30Btn.right + 8.0f, fpsBox.top + 30.0f, fpsBox.right - 16.0f, fpsBox.top + 66.0f };
 
     auto setFpsAction = [this](uint8_t fpsVal) {
         AppSettings ns = identity_.settings();
@@ -1660,24 +1756,24 @@ void AeroDeskWindow::drawSettingsView(const UiRect& bounds, float alpha) {
                (curFps == 15) ? COL_PRIMARY_RED : COL_SEC_BTN_BG,
                (curFps == 15) ? COL_PRIMARY_RED_HV : COL_SEC_BTN_HV,
                (curFps == 15) ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
-               7.5f, [setFpsAction]() { setFpsAction(15); }, fmtSmall_, curFps != 15, COL_BORDER,
+               8.0f, [setFpsAction]() { setFpsAction(15); }, fmtSmall_, curFps != 15, COL_BORDER,
                (curFps == 15) ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
 
     drawButton("sett_fps_30", fps30Btn, "30 FPS",
                (curFps == 30) ? COL_PRIMARY_RED : COL_SEC_BTN_BG,
                (curFps == 30) ? COL_PRIMARY_RED_HV : COL_SEC_BTN_HV,
                (curFps == 30) ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
-               7.5f, [setFpsAction]() { setFpsAction(30); }, fmtSmall_, curFps != 30, COL_BORDER,
+               8.0f, [setFpsAction]() { setFpsAction(30); }, fmtSmall_, curFps != 30, COL_BORDER,
                (curFps == 30) ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
 
     drawButton("sett_fps_60", fps60Btn, "60 FPS",
                (curFps == 60) ? COL_PRIMARY_RED : COL_SEC_BTN_BG,
                (curFps == 60) ? COL_PRIMARY_RED_HV : COL_SEC_BTN_HV,
                (curFps == 60) ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
-               7.5f, [setFpsAction]() { setFpsAction(60); }, fmtSmall_, curFps != 60, COL_BORDER,
+               8.0f, [setFpsAction]() { setFpsAction(60); }, fmtSmall_, curFps != 60, COL_BORDER,
                (curFps == 60) ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
 
-    drawToggleSwitch("sett_adaptive_fps", { fpsBox.left + 14.0f, fpsBox.top + 78.0f, fpsBox.right - 14.0f, fpsBox.top + 104.0f },
+    drawToggleSwitch("sett_adaptive_fps", { fpsBox.left + 16.0f, fpsBox.top + 78.0f, fpsBox.right - 16.0f, fpsBox.top + 106.0f },
                      s.adaptiveFps, "Adjust automatically on slow connections", [this]() {
                          AppSettings ns = identity_.settings();
                          ns.adaptiveFps = !ns.adaptiveFps;
@@ -1689,16 +1785,16 @@ void AeroDeskWindow::drawSettingsView(const UiRect& bounds, float alpha) {
 
     // 3. Quality & Scaling
     UiRect qualBox = { lx, ly, lrx, ly + 124.0f };
-    fillRoundRect(qualBox, 10.0f, COL_BG_SUBTLE);
-    strokeRoundRect(qualBox, 10.0f, COL_BORDER);
+    fillRoundRect(qualBox, 12.0f, COL_BG_SUBTLE);
+    strokeRoundRect(qualBox, 12.0f, COL_BORDER);
 
-    drawText("QUALITY & SCALING", { qualBox.left + 14.0f, qualBox.top + 8.0f, qualBox.right - 14.0f, qualBox.top + 24.0f },
+    drawText("QUALITY & SCALING", { qualBox.left + 16.0f, qualBox.top + 8.0f, qualBox.right - 16.0f, qualBox.top + 24.0f },
              fmtSmall_, COL_TEXT_ACCENT);
 
     QualityPreset defQ = s.defaultQuality;
-    UiRect qUltraBtn = { qualBox.left + 14.0f, qualBox.top + 28.0f, qualBox.left + 14.0f + thirdW, qualBox.top + 62.0f };
+    UiRect qUltraBtn = { qualBox.left + 16.0f, qualBox.top + 28.0f, qualBox.left + 16.0f + thirdW, qualBox.top + 62.0f };
     UiRect qBalBtn   = { qUltraBtn.right + 8.0f, qualBox.top + 28.0f, qUltraBtn.right + 8.0f + thirdW, qualBox.top + 62.0f };
-    UiRect qFastBtn  = { qBalBtn.right + 8.0f, qualBox.top + 28.0f, qualBox.right - 14.0f, qualBox.top + 62.0f };
+    UiRect qFastBtn  = { qBalBtn.right + 8.0f, qualBox.top + 28.0f, qualBox.right - 16.0f, qualBox.top + 62.0f };
 
     auto setQualAction = [this](QualityPreset qp) {
         AppSettings ns = identity_.settings();
@@ -1714,27 +1810,27 @@ void AeroDeskWindow::drawSettingsView(const UiRect& bounds, float alpha) {
                (defQ == QualityPreset::Ultra) ? COL_PRIMARY_RED : COL_SEC_BTN_BG,
                (defQ == QualityPreset::Ultra) ? COL_PRIMARY_RED_HV : COL_SEC_BTN_HV,
                (defQ == QualityPreset::Ultra) ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
-               7.0f, [setQualAction]() { setQualAction(QualityPreset::Ultra); }, fmtSmall_, defQ != QualityPreset::Ultra, COL_BORDER,
+               8.0f, [setQualAction]() { setQualAction(QualityPreset::Ultra); }, fmtSmall_, defQ != QualityPreset::Ultra, COL_BORDER,
                (defQ == QualityPreset::Ultra) ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
 
     drawButton("sett_q_bal", qBalBtn, "Balanced",
                (defQ == QualityPreset::Balanced) ? COL_PRIMARY_RED : COL_SEC_BTN_BG,
                (defQ == QualityPreset::Balanced) ? COL_PRIMARY_RED_HV : COL_SEC_BTN_HV,
                (defQ == QualityPreset::Balanced) ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
-               7.0f, [setQualAction]() { setQualAction(QualityPreset::Balanced); }, fmtSmall_, defQ != QualityPreset::Balanced, COL_BORDER,
+               8.0f, [setQualAction]() { setQualAction(QualityPreset::Balanced); }, fmtSmall_, defQ != QualityPreset::Balanced, COL_BORDER,
                (defQ == QualityPreset::Balanced) ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
 
     drawButton("sett_q_fast", qFastBtn, "Fast",
                (defQ == QualityPreset::LowBandwidth) ? COL_PRIMARY_RED : COL_SEC_BTN_BG,
                (defQ == QualityPreset::LowBandwidth) ? COL_PRIMARY_RED_HV : COL_SEC_BTN_HV,
                (defQ == QualityPreset::LowBandwidth) ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
-               7.0f, [setQualAction]() { setQualAction(QualityPreset::LowBandwidth); }, fmtSmall_, defQ != QualityPreset::LowBandwidth, COL_BORDER,
+               8.0f, [setQualAction]() { setQualAction(QualityPreset::LowBandwidth); }, fmtSmall_, defQ != QualityPreset::LowBandwidth, COL_BORDER,
                (defQ == QualityPreset::LowBandwidth) ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
 
     uint8_t defScale = s.defaultScaleMode;
-    UiRect scFitBtn  = { qualBox.left + 14.0f, qualBox.top + 72.0f, qualBox.left + 14.0f + thirdW, qualBox.top + 106.0f };
+    UiRect scFitBtn  = { qualBox.left + 16.0f, qualBox.top + 72.0f, qualBox.left + 16.0f + thirdW, qualBox.top + 106.0f };
     UiRect scStrBtn  = { scFitBtn.right + 8.0f, qualBox.top + 72.0f, scFitBtn.right + 8.0f + thirdW, qualBox.top + 106.0f };
-    UiRect scOrigBtn = { scStrBtn.right + 8.0f, qualBox.top + 72.0f, qualBox.right - 14.0f, qualBox.top + 106.0f };
+    UiRect scOrigBtn = { scStrBtn.right + 8.0f, qualBox.top + 72.0f, qualBox.right - 16.0f, qualBox.top + 106.0f };
 
     auto setScaleAction = [this](uint8_t scMode) {
         AppSettings ns = identity_.settings();
@@ -1747,41 +1843,41 @@ void AeroDeskWindow::drawSettingsView(const UiRect& bounds, float alpha) {
                (defScale == 0) ? COL_PRIMARY_RED : COL_SEC_BTN_BG,
                (defScale == 0) ? COL_PRIMARY_RED_HV : COL_SEC_BTN_HV,
                (defScale == 0) ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
-               7.0f, [setScaleAction]() { setScaleAction(0); }, fmtSmall_, defScale != 0, COL_BORDER,
+               8.0f, [setScaleAction]() { setScaleAction(0); }, fmtSmall_, defScale != 0, COL_BORDER,
                (defScale == 0) ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
 
     drawButton("sett_sc_str", scStrBtn, "Stretch",
                (defScale == 1) ? COL_PRIMARY_RED : COL_SEC_BTN_BG,
                (defScale == 1) ? COL_PRIMARY_RED_HV : COL_SEC_BTN_HV,
                (defScale == 1) ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
-               7.0f, [setScaleAction]() { setScaleAction(1); }, fmtSmall_, defScale != 1, COL_BORDER,
+               8.0f, [setScaleAction]() { setScaleAction(1); }, fmtSmall_, defScale != 1, COL_BORDER,
                (defScale == 1) ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
 
     drawButton("sett_sc_orig", scOrigBtn, "Actual Size",
                (defScale == 2) ? COL_PRIMARY_RED : COL_SEC_BTN_BG,
                (defScale == 2) ? COL_PRIMARY_RED_HV : COL_SEC_BTN_HV,
                (defScale == 2) ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
-               7.0f, [setScaleAction]() { setScaleAction(2); }, fmtSmall_, defScale != 2, COL_BORDER,
+               8.0f, [setScaleAction]() { setScaleAction(2); }, fmtSmall_, defScale != 2, COL_BORDER,
                (defScale == 2) ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
 
     ly = qualBox.bottom + 14.0f;
 
     // 4. Session Display
-    UiRect ovBox = { lx, ly, lrx, leftCard.bottom - 18.0f };
-    fillRoundRect(ovBox, 10.0f, COL_BG_SUBTLE);
-    strokeRoundRect(ovBox, 10.0f, COL_BORDER);
+    UiRect ovBox = { lx, ly, lrx, leftCard.bottom - 20.0f };
+    fillRoundRect(ovBox, 12.0f, COL_BG_SUBTLE);
+    strokeRoundRect(ovBox, 12.0f, COL_BORDER);
 
-    drawText("SESSION DISPLAY", { ovBox.left + 14.0f, ovBox.top + 8.0f, ovBox.right - 14.0f, ovBox.top + 24.0f },
+    drawText("SESSION DISPLAY", { ovBox.left + 16.0f, ovBox.top + 8.0f, ovBox.right - 16.0f, ovBox.top + 24.0f },
              fmtSmall_, COL_TEXT_ACCENT);
 
-    drawToggleSwitch("sett_show_cursor", { ovBox.left + 14.0f, ovBox.top + 30.0f, ovBox.right - 14.0f, ovBox.top + 56.0f },
+    drawToggleSwitch("sett_show_cursor", { ovBox.left + 16.0f, ovBox.top + 30.0f, ovBox.right - 16.0f, ovBox.top + 56.0f },
                      s.showRemoteCursor, "Show remote cursor", [this]() {
                          AppSettings ns = identity_.settings();
                          ns.showRemoteCursor = !ns.showRemoteCursor;
                          identity_.updateSettings(ns);
                      });
 
-    drawToggleSwitch("sett_show_hud", { ovBox.left + 14.0f, ovBox.top + 62.0f, ovBox.right - 14.0f, ovBox.top + 88.0f },
+    drawToggleSwitch("sett_show_hud", { ovBox.left + 16.0f, ovBox.top + 62.0f, ovBox.right - 16.0f, ovBox.top + 88.0f },
                      s.showSessionHud, "Show frame rate in session bar", [this]() {
                          AppSettings ns = identity_.settings();
                          ns.showSessionHud = !ns.showSessionHud;
@@ -1789,29 +1885,29 @@ void AeroDeskWindow::drawSettingsView(const UiRect& bounds, float alpha) {
                      });
 
     // ==================== RIGHT COLUMN: ACCESS & NETWORK ====================
-    drawCardSurface(rightCard, 14.0f, alpha, true);
+    drawCardSurface(rightCard, 16.0f, alpha);
 
-    float rx = rightCard.left + 22.0f;
-    float rrx = rightCard.right - 22.0f;
-    float ry = rightCard.top + 18.0f;
+    float rx = rightCard.left + 24.0f;
+    float rrx = rightCard.right - 24.0f;
+    float ry = rightCard.top + 20.0f;
 
     drawText("Access & Network", { rx, ry, rrx, ry + 26.0f }, fmtHeading_, COL_TEXT_PRIMARY);
-    ry += 26.0f;
+    ry += 25.0f;
     drawText("Permissions, privacy, and connection settings.",
              { rx, ry, rrx, ry + 18.0f }, fmtSmall_, COL_TEXT_SECONDARY);
     ry += 26.0f;
 
     // 1. Permissions
     UiRect permBox = { rx, ry, rrx, ry + 198.0f };
-    fillRoundRect(permBox, 10.0f, COL_BG_SUBTLE);
-    strokeRoundRect(permBox, 10.0f, COL_BORDER);
+    fillRoundRect(permBox, 12.0f, COL_BG_SUBTLE);
+    strokeRoundRect(permBox, 12.0f, COL_BORDER);
 
     drawText("PERMISSIONS",
-             { permBox.left + 14.0f, permBox.top + 8.0f, permBox.right - 14.0f, permBox.top + 24.0f },
+             { permBox.left + 16.0f, permBox.top + 8.0f, permBox.right - 16.0f, permBox.top + 24.0f },
              fmtSmall_, COL_TEXT_ACCENT);
 
     float py = permBox.top + 30.0f;
-    drawToggleSwitch("sett_auto_accept", { permBox.left + 14.0f, py, permBox.right - 14.0f, py + 26.0f },
+    drawToggleSwitch("sett_auto_accept", { permBox.left + 16.0f, py, permBox.right - 16.0f, py + 26.0f },
                      s.autoAcceptIncoming, "Automatically accept incoming connections", [this]() {
                          AppSettings ns = identity_.settings();
                          ns.autoAcceptIncoming = !ns.autoAcceptIncoming;
@@ -1820,7 +1916,7 @@ void AeroDeskWindow::drawSettingsView(const UiRect& bounds, float alpha) {
                      });
     py += 32.0f;
 
-    drawToggleSwitch("sett_def_perm_input", { permBox.left + 14.0f, py, permBox.right - 14.0f, py + 26.0f },
+    drawToggleSwitch("sett_def_perm_input", { permBox.left + 16.0f, py, permBox.right - 16.0f, py + 26.0f },
                      (s.defaultPermissions & PERM_INPUT) != 0, "Allow mouse and keyboard control", [this]() {
                          AppSettings ns = identity_.settings();
                          ns.defaultPermissions ^= PERM_INPUT;
@@ -1829,7 +1925,7 @@ void AeroDeskWindow::drawSettingsView(const UiRect& bounds, float alpha) {
                      });
     py += 32.0f;
 
-    drawToggleSwitch("sett_def_perm_clip", { permBox.left + 14.0f, py, permBox.right - 14.0f, py + 26.0f },
+    drawToggleSwitch("sett_def_perm_clip", { permBox.left + 16.0f, py, permBox.right - 16.0f, py + 26.0f },
                      (s.defaultPermissions & PERM_CLIPBOARD) != 0, "Allow clipboard sharing", [this]() {
                          AppSettings ns = identity_.settings();
                          ns.defaultPermissions ^= PERM_CLIPBOARD;
@@ -1838,7 +1934,7 @@ void AeroDeskWindow::drawSettingsView(const UiRect& bounds, float alpha) {
                      });
     py += 32.0f;
 
-    drawToggleSwitch("sett_def_perm_file", { permBox.left + 14.0f, py, permBox.right - 14.0f, py + 26.0f },
+    drawToggleSwitch("sett_def_perm_file", { permBox.left + 16.0f, py, permBox.right - 16.0f, py + 26.0f },
                      (s.defaultPermissions & PERM_FILE_TRANSFER) != 0, "Allow file transfers", [this]() {
                          AppSettings ns = identity_.settings();
                          ns.defaultPermissions ^= PERM_FILE_TRANSFER;
@@ -1847,7 +1943,7 @@ void AeroDeskWindow::drawSettingsView(const UiRect& bounds, float alpha) {
                      });
     py += 32.0f;
 
-    drawToggleSwitch("sett_lock_disc", { permBox.left + 14.0f, py, permBox.right - 14.0f, py + 26.0f },
+    drawToggleSwitch("sett_lock_disc", { permBox.left + 16.0f, py, permBox.right - 16.0f, py + 26.0f },
                      s.lockWorkstationOnDisconnect, "Lock computer when session ends", [this]() {
                          AppSettings ns = identity_.settings();
                          ns.lockWorkstationOnDisconnect = !ns.lockWorkstationOnDisconnect;
@@ -1858,98 +1954,95 @@ void AeroDeskWindow::drawSettingsView(const UiRect& bounds, float alpha) {
 
     // 2. Network & Relay
     UiRect netBox = { rx, ry, rrx, ry + 92.0f };
-    fillRoundRect(netBox, 10.0f, COL_BG_SUBTLE);
-    strokeRoundRect(netBox, 10.0f, COL_BORDER);
+    fillRoundRect(netBox, 12.0f, COL_BG_SUBTLE);
+    strokeRoundRect(netBox, 12.0f, COL_BORDER);
 
     drawText("NETWORK",
-             { netBox.left + 14.0f, netBox.top + 8.0f, netBox.right - 14.0f, netBox.top + 24.0f },
+             { netBox.left + 16.0f, netBox.top + 8.0f, netBox.right - 16.0f, netBox.top + 24.0f },
              fmtSmall_, COL_TEXT_ACCENT);
 
-    UiRect settRelayField = { netBox.left + 14.0f, netBox.top + 34.0f, netBox.right - 196.0f, netBox.top + 72.0f };
+    UiRect settRelayField = { netBox.left + 16.0f, netBox.top + 34.0f, netBox.right - 196.0f, netBox.top + 72.0f };
     drawTextField("field_relay_srv_sett", FocusedField::RelayServer, settRelayField,
                   relayServerEdit_, "Relay server address", false);
 
     UiRect applyRelayBtn = { settRelayField.right + 8.0f, netBox.top + 34.0f, settRelayField.right + 82.0f, netBox.top + 72.0f };
     drawButton("sett_apply_relay", applyRelayBtn, "Save",
-               COL_PRIMARY_RED, COL_PRIMARY_RED_HV, COL_TEXT_ON_ACCENT, 7.0f, [this]() {
+               COL_PRIMARY_RED, COL_PRIMARY_RED_HV, COL_TEXT_ON_ACCENT, 8.0f, [this]() {
                    identity_.setRelayServerAddress(relayServerEdit_);
-                   showToast("Relay server saved.");
+                   showToast("Relay server saved");
                }, fmtSmall_);
 
     bool relayRunning = network_.isLocalRelayRunning();
-    UiRect localRelayBtn = { applyRelayBtn.right + 8.0f, netBox.top + 34.0f, netBox.right - 14.0f, netBox.top + 72.0f };
+    UiRect localRelayBtn = { applyRelayBtn.right + 8.0f, netBox.top + 34.0f, netBox.right - 16.0f, netBox.top + 72.0f };
     drawButton("sett_toggle_relay", localRelayBtn, relayRunning ? "Relay: ON" : "Relay: OFF",
                relayRunning ? COL_PRIMARY_RED : COL_SEC_BTN_BG,
                relayRunning ? COL_PRIMARY_RED_HV : COL_SEC_BTN_HV,
                relayRunning ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
-               7.0f, [this, relayRunning]() {
+               8.0f, [this, relayRunning]() {
                    if (relayRunning) {
                        network_.stopLocalRelayServer();
-                       showToast("Local relay stopped.");
+                       showToast("Local relay stopped");
                    } else if (network_.startLocalRelayServer(DEFAULT_RELAY_PORT)) {
-                       showToast("Local relay started.");
+                       showToast("Local relay started");
                    } else {
-                       showToast("Relay port is already in use.", true);
+                       showToast("Relay port already in use", true);
                    }
                }, fmtSmall_, !relayRunning, COL_BORDER, relayRunning ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
 
     ry = netBox.bottom + 14.0f;
 
     // 3. Data & Reset Actions
-    UiRect maintBox = { rx, ry, rrx, rightCard.bottom - 18.0f };
-    fillRoundRect(maintBox, 10.0f, COL_BG_SUBTLE);
-    strokeRoundRect(maintBox, 10.0f, COL_BORDER);
+    UiRect maintBox = { rx, ry, rrx, rightCard.bottom - 20.0f };
+    fillRoundRect(maintBox, 12.0f, COL_BG_SUBTLE);
+    strokeRoundRect(maintBox, 12.0f, COL_BORDER);
 
     drawText("DATA",
-             { maintBox.left + 14.0f, maintBox.top + 8.0f, maintBox.right - 14.0f, maintBox.top + 24.0f },
+             { maintBox.left + 16.0f, maintBox.top + 8.0f, maintBox.right - 16.0f, maintBox.top + 24.0f },
              fmtSmall_, COL_TEXT_ACCENT);
 
-    float mThirdW = (rrx - rx - 28.0f - 16.0f) / 3.0f;
+    float mThirdW = (rrx - rx - 32.0f - 16.0f) / 3.0f;
     float btnTop = maintBox.top + 34.0f;
     float btnBot = std::min(btnTop + 38.0f, maintBox.bottom - 10.0f);
 
-    UiRect openRecvBtn = { maintBox.left + 14.0f, btnTop, maintBox.left + 14.0f + mThirdW, btnBot };
+    UiRect openRecvBtn = { maintBox.left + 16.0f, btnTop, maintBox.left + 16.0f + mThirdW, btnBot };
     UiRect clearRecBtn = { openRecvBtn.right + 8.0f, btnTop, openRecvBtn.right + 8.0f + mThirdW, btnBot };
-    UiRect resetBtn    = { clearRecBtn.right + 8.0f, btnTop, maintBox.right - 14.0f, btnBot };
+    UiRect resetBtn    = { clearRecBtn.right + 8.0f, btnTop, maintBox.right - 16.0f, btnBot };
 
     drawButton("sett_open_recv", openRecvBtn, "Received Files",
-               COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 7.0f, [this]() {
+               COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 8.0f, [this]() {
                    network_.fileTransferManager().openReceiveDirectoryInExplorer();
                }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
 
     drawButton("sett_clear_recents", clearRecBtn, "Clear History",
-               COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 7.0f, [this]() {
+               COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 8.0f, [this]() {
                    identity_.clearRecentSessions();
-                   showToast("History cleared.");
+                   showToast("History cleared");
                }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
 
     drawButton("sett_reset_defaults", resetBtn, "Reset Settings",
-               COL_SEC_BTN_BG, COL_DANGER, COL_TEXT_PRIMARY, 7.0f, [this]() {
+               COL_SEC_BTN_BG, COL_DANGER, COL_TEXT_PRIMARY, 8.0f, [this]() {
                    identity_.resetSettingsToDefault();
                    applyWindowThemeAttribute();
                    scaleMode_ = ScaleMode::FitAspect;
                    network_.setAutoAcceptIncoming(false, PERM_ALL);
                    network_.setSessionFpsConfig(30, true);
-                   showToast("Settings restored to defaults.");
+                   showToast("Settings restored to defaults");
                }, fmtSmall_, true, COL_BORDER, COL_TEXT_ON_ACCENT);
 }
 
-// ---------------- File Transfer, Clipboard & Chat Drawer ----------------
+// ---------------- Floating macOS Side Sheet Drawer ----------------
 
 void AeroDeskWindow::drawFileTransferDrawer(const UiRect& bounds, float slideProgress) {
-    float slideOffsetX = bounds.width() * (1.0f - slideProgress);
+    float slideOffsetX = (bounds.width() + 24.0f) * (1.0f - slideProgress);
     UiRect r = bounds.offset(slideOffsetX, 0.0f);
 
-    fillRoundRect({ r.left - 8.0f, r.top, r.left, r.bottom }, 0.0f, rgba(5, 8, 15, 0.08f * slideProgress));
-    fillRoundRect(r, 0.0f, COL_BG_CARD);
-    strokeRoundRect(r, 0.0f, COL_BORDER, 1.5f);
+    drawCardSurface(r, 16.0f, std::clamp(slideProgress, 0.0f, 1.0f));
 
-    float x = r.left + 18.0f;
-    float rx = r.right - 18.0f;
-    float y = r.top + 14.0f;
+    float x = r.left + 20.0f;
+    float rx = r.right - 20.0f;
+    float y = r.top + 16.0f;
 
-    // Segmented Drawer Switcher: [Files] | [Chat]
-    float halfTabW = (rx - x - 36.0f - 6.0f) * 0.5f;
+    float halfTabW = (rx - x - 38.0f - 6.0f) * 0.5f;
     UiRect tabFiles = { x, y, x + halfTabW, y + 32.0f };
     UiRect tabChat  = { tabFiles.right + 6.0f, y, tabFiles.right + 6.0f + halfTabW, y + 32.0f };
 
@@ -1958,7 +2051,7 @@ void AeroDeskWindow::drawFileTransferDrawer(const UiRect& bounds, float slidePro
                onFiles ? COL_PRIMARY_RED : COL_SEC_BTN_BG,
                onFiles ? COL_PRIMARY_RED_HV : COL_SEC_BTN_HV,
                onFiles ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
-               6.5f, [this]() { drawerTab_ = DrawerTab::FilesAndClip; }, fmtSmall_);
+               8.0f, [this]() { drawerTab_ = DrawerTab::FilesAndClip; }, fmtSmall_);
 
     uint32_t unread = network_.unreadChatCount();
     std::string chatTabLbl = unread > 0 ? ("Chat (" + std::to_string(unread) + ")") : "Chat";
@@ -1966,50 +2059,53 @@ void AeroDeskWindow::drawFileTransferDrawer(const UiRect& bounds, float slidePro
                !onFiles ? COL_PRIMARY_RED : COL_SEC_BTN_BG,
                !onFiles ? COL_PRIMARY_RED_HV : COL_SEC_BTN_HV,
                !onFiles ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
-               6.5f, [this]() {
+               8.0f, [this]() {
                    drawerTab_ = DrawerTab::LiveChat;
                    network_.markChatRead();
                }, fmtSmall_);
 
-    UiRect closeBtn = { rx - 28.0f, y + 2.0f, rx, y + 30.0f };
-    drawButton("drawer_close", closeBtn, "×", COL_SEC_BTN_BG, COL_DANGER, COL_TEXT_SECONDARY, 6.0f, [this]() {
+    UiRect closeBtn = { rx - 30.0f, y + 1.0f, rx, y + 31.0f };
+    drawButton("drawer_close", closeBtn, "", COL_SEC_BTN_BG, COL_DANGER, COL_TEXT_SECONDARY, 7.5f, [this]() {
         showFileDrawer_ = false;
     }, fmtSmall_, false, D2D1::ColorF(0, 0, 0, 0), COL_TEXT_ON_ACCENT);
-    y += 42.0f;
+    float closeHover = std::clamp(widgetAnims_["drawer_close"].hoverT, 0.0f, 1.0f);
+    drawIconClose(closeBtn.centerX(), closeBtn.centerY(), 4.2f,
+                  lerpColor(COL_TEXT_SECONDARY, COL_TEXT_ON_ACCENT, closeHover), 1.6f);
+    y += 44.0f;
 
     if (drawerTab_ == DrawerTab::FilesAndClip) {
-        drawText("Drag and drop files into the window or use the buttons below.",
+        drawText("Drop files anywhere or use the actions below.",
                  { x, y, rx, y + 18.0f }, fmtSmall_, COL_TEXT_SECONDARY);
         y += 24.0f;
 
         float halfW = (rx - x - 8.0f) * 0.5f;
         UiRect sendFileBtn = { x, y, x + halfW, y + 36.0f };
         drawButton("drawer_send_file", sendFileBtn, "Send File...",
-                   COL_PRIMARY_RED, COL_PRIMARY_RED_HV, COL_TEXT_ON_ACCENT, 7.0f, [this]() {
+                   COL_PRIMARY_RED, COL_PRIMARY_RED_HV, COL_TEXT_ON_ACCENT, 8.0f, [this]() {
                        openSendFileDialog();
                    }, fmtSmall_);
 
         UiRect openDirBtn = { sendFileBtn.right + 8.0f, y, rx, y + 36.0f };
         drawButton("drawer_open_dir", openDirBtn, "Received Files",
-                   COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 7.0f, [this]() {
+                   COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 8.0f, [this]() {
                        network_.fileTransferManager().openReceiveDirectoryInExplorer();
                    }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
         y += 44.0f;
 
         UiRect syncClipBtn = { x, y, rx, y + 34.0f };
         drawButton("drawer_sync_clip", syncClipBtn, "Sync Clipboard",
-                   COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 7.0f, [this]() {
+                   COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 8.0f, [this]() {
                        network_.pushLocalClipboardNow();
-                       showToast("Clipboard synced.");
+                       showToast("Clipboard synced");
                    }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
         y += 42.0f;
 
         drawText("TRANSFERS", { x, y, rx - 60.0f, y + 18.0f }, fmtSmall_, COL_TEXT_MUTED);
         UiRect clrBtn = { rx - 56.0f, y - 2.0f, rx, y + 20.0f };
-        drawButton("drawer_clear_done", clrBtn, "Clear", COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_SECONDARY, 5.0f, [this]() {
+        drawButton("drawer_clear_done", clrBtn, "Clear", COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_SECONDARY, 6.0f, [this]() {
             network_.fileTransferManager().clearCompleted();
         }, fmtSmall_);
-        y += 24.0f;
+        y += 26.0f;
 
         auto items = network_.fileTransferManager().snapshotTransfers();
         if (items.empty()) {
@@ -2017,7 +2113,7 @@ void AeroDeskWindow::drawFileTransferDrawer(const UiRect& bounds, float slidePro
                      fmtSmall_, COL_TEXT_MUTED, DWRITE_TEXT_ALIGNMENT_CENTER);
         } else {
             for (size_t i = 0; i < items.size() && i < 16; ++i) {
-                if (y + 62.0f > r.bottom - 12.0f) break;
+                if (y + 62.0f > r.bottom - 14.0f) break;
                 const auto& it = items[i];
 
                 if (stepExp(transferProgSmooth_[i], std::clamp(it.progressFraction(), 0.0f, 1.0f), 18.0f, lastDt_)) {
@@ -2025,13 +2121,12 @@ void AeroDeskWindow::drawFileTransferDrawer(const UiRect& bounds, float slidePro
                 }
 
                 UiRect card = { x, y, rx, y + 56.0f };
-                fillRoundRect(card, 8.0f, COL_BG_SUBTLE);
-                strokeRoundRect(card, 8.0f, COL_BORDER);
+                fillRoundRect(card, 10.0f, COL_BG_SUBTLE);
+                strokeRoundRect(card, 10.0f, COL_BORDER);
 
-                std::string dirPrefix = it.isOutgoing ? "↑ " : "↓ ";
-                drawText(dirPrefix + it.fileName, { card.left + 10.0f, card.top + 6.0f, card.right - 70.0f, card.top + 24.0f },
+                drawText(it.fileName, { card.left + 12.0f, card.top + 6.0f, card.right - 70.0f, card.top + 24.0f },
                          fmtBodyBold_, COL_TEXT_PRIMARY);
-                drawText(it.statusText, { card.left + 10.0f, card.top + 24.0f, card.right - 70.0f, card.top + 40.0f },
+                drawText(it.statusText, { card.left + 12.0f, card.top + 24.0f, card.right - 70.0f, card.top + 40.0f },
                          fmtSmall_, it.status == TransferStatus::Completed ? COL_SUCCESS :
                                     (it.status == TransferStatus::Failed || it.status == TransferStatus::Cancelled) ? COL_DANGER : COL_PRIMARY_RED);
 
@@ -2039,32 +2134,31 @@ void AeroDeskWindow::drawFileTransferDrawer(const UiRect& bounds, float slidePro
                     uint32_t tid = it.transferId;
                     UiRect cancelBtn = { card.right - 62.0f, card.top + 8.0f, card.right - 8.0f, card.top + 34.0f };
                     drawButton("xfer_cancel_" + std::to_string(tid), cancelBtn, "Cancel",
-                               COL_SEC_BTN_BG, COL_DANGER, COL_TEXT_PRIMARY, 5.5f, [this, tid]() {
+                               COL_SEC_BTN_BG, COL_DANGER, COL_TEXT_PRIMARY, 6.5f, [this, tid]() {
                                    network_.cancelFileTransfer(tid);
-                                   showToast("Transfer cancelled.");
+                                   showToast("Transfer cancelled");
                                }, fmtSmall_, true, COL_BORDER, COL_TEXT_ON_ACCENT);
                 }
 
-                UiRect progBg = { card.left + 10.0f, card.bottom - 10.0f, card.right - 10.0f, card.bottom - 5.0f };
-                fillRoundRect(progBg, 2.5f, COL_BORDER);
+                UiRect progBg = { card.left + 12.0f, card.bottom - 10.0f, card.right - 12.0f, card.bottom - 5.5f };
+                fillRoundRect(progBg, 2.2f, COL_BORDER);
                 float fillW = progBg.width() * transferProgSmooth_[i];
                 if (fillW > 1.0f) {
                     UiRect progFg = { progBg.left, progBg.top, progBg.left + fillW, progBg.bottom };
-                    fillRoundRect(progFg, 2.5f, it.status == TransferStatus::Completed ? COL_SUCCESS : COL_PRIMARY_RED);
+                    fillRoundRect(progFg, 2.2f, it.status == TransferStatus::Completed ? COL_SUCCESS : COL_PRIMARY_RED);
                 }
 
                 y += 64.0f;
             }
         }
     } else {
-        // ==================== SESSION CHAT ====================
         drawText("Messages",
                  { x, y, rx, y + 18.0f }, fmtSmall_, COL_TEXT_SECONDARY);
         y += 24.0f;
 
-        UiRect chatBox = { x, y, rx, r.bottom - 62.0f };
-        fillRoundRect(chatBox, 9.0f, COL_BG_SUBTLE);
-        strokeRoundRect(chatBox, 9.0f, COL_BORDER);
+        UiRect chatBox = { x, y, rx, r.bottom - 64.0f };
+        fillRoundRect(chatBox, 11.0f, COL_BG_SUBTLE);
+        strokeRoundRect(chatBox, 11.0f, COL_BORDER);
 
         auto msgs = network_.chatMessages();
         if (msgs.empty()) {
@@ -2082,8 +2176,8 @@ void AeroDeskWindow::drawFileTransferDrawer(const UiRect& bounds, float slidePro
                 UiRect bubble = m.fromLocal
                     ? UiRect{ chatBox.left + 36.0f, my, chatBox.right - 10.0f, my + msgH }
                     : UiRect{ chatBox.left + 10.0f, my, chatBox.right - 36.0f, my + msgH };
-                fillRoundRect(bubble, 8.0f, m.fromLocal ? COL_BG_CARD_ALT : COL_BG_CARD);
-                strokeRoundRect(bubble, 8.0f, m.fromLocal ? COL_BORDER_ALT : COL_BORDER);
+                fillRoundRect(bubble, 9.5f, m.fromLocal ? COL_BG_CARD_ALT : COL_BG_CARD);
+                strokeRoundRect(bubble, 9.5f, m.fromLocal ? COL_BORDER_ALT : COL_BORDER);
 
                 drawText(m.senderName, { bubble.left + 10.0f, bubble.top + 4.0f, bubble.right - 10.0f, bubble.top + 20.0f },
                          fmtSmall_, m.fromLocal ? COL_PRIMARY_RED : COL_TEXT_ACCENT);
@@ -2093,47 +2187,44 @@ void AeroDeskWindow::drawFileTransferDrawer(const UiRect& bounds, float slidePro
             }
         }
 
-        UiRect chatField = { x, r.bottom - 50.0f, rx - 76.0f, r.bottom - 12.0f };
+        UiRect chatField = { x, r.bottom - 52.0f, rx - 76.0f, r.bottom - 14.0f };
         drawTextField("field_chat_input", FocusedField::ChatInput, chatField,
-                      chatInput_, "Type a message...", false);
+                      chatInput_, "Message...", false);
 
         UiRect sendChatBtn = { chatField.right + 6.0f, chatField.top, rx, chatField.bottom };
         drawButton("btn_send_chat", sendChatBtn, "Send",
-                   COL_PRIMARY_RED, COL_PRIMARY_RED_HV, COL_TEXT_ON_ACCENT, 7.0f, [this]() {
+                   COL_PRIMARY_RED, COL_PRIMARY_RED_HV, COL_TEXT_ON_ACCENT, 8.5f, [this]() {
                        sendChatFromInput();
                    }, fmtSmall_);
     }
 }
 
-// ---------------- Incoming Connection Approval Modal ----------------
+// ---------------- macOS Sheet Connection Approval Modal ----------------
 
 void AeroDeskWindow::drawIncomingApprovalModal(float width, float height, float modalProgress) {
     auto req = network_.pendingIncomingRequest();
     if (!req.active && modalProgress <= 0.01f) return;
 
-    fillRoundRect({ 0.0f, 0.0f, width, height }, 0.0f, rgba(5, 8, 15, 0.50f * modalProgress));
+    float alpha = std::clamp(modalProgress, 0.0f, 1.0f);
+    fillRoundRect({ 0.0f, 0.0f, width, height }, 0.0f, rgba(5, 8, 15, 0.44f * alpha));
 
-    float mw = 465.0f;
-    float mh = 336.0f;
+    float mw = 440.0f;
+    float mh = 326.0f;
     UiRect modal = { (width - mw) * 0.5f, (height - mh) * 0.5f, (width + mw) * 0.5f, (height + mh) * 0.5f };
 
-    float scale = 0.94f + 0.06f * modalProgress;
+    float scale = 0.88f + 0.12f * modalProgress;
     renderTarget_->SetTransform(
         D2D1::Matrix3x2F::Scale(scale, scale, D2D1::Point2F(modal.centerX(), modal.centerY()))
     );
 
-    drawCardShadow(modal, 16.0f, modalProgress * 1.5f);
-    fillRoundRect(modal, 16.0f, COL_BG_CARD);
-    strokeRoundRect(modal, 16.0f, COL_PRIMARY_RED, 2.0f);
-
-    fillRoundRect({ modal.left + 20.0f, modal.top, modal.right - 20.0f, modal.top + 4.0f }, 2.0f, COL_PRIMARY_RED);
+    drawCardSurface(modal, 20.0f, alpha);
 
     float mx = modal.left + 26.0f;
     float mrx = modal.right - 26.0f;
-    float my = modal.top + 22.0f;
+    float my = modal.top + 24.0f;
 
     drawText("Connection Request", { mx, my, mrx, my + 28.0f }, fmtHeading_, COL_TEXT_PRIMARY);
-    my += 32.0f;
+    my += 30.0f;
 
     std::string callerLine = req.callerHostname + " (" + CryptoUtils::formatDeskId(req.callerDeskId) + ")";
     drawText(callerLine, { mx, my, mrx, my + 24.0f }, fmtSubheading_, COL_PRIMARY_RED);
@@ -2141,7 +2232,7 @@ void AeroDeskWindow::drawIncomingApprovalModal(float width, float height, float 
 
     drawText("Wants to connect to your desktop.",
              { mx, my, mrx, my + 20.0f }, fmtSmall_, COL_TEXT_SECONDARY);
-    my += 30.0f;
+    my += 28.0f;
 
     drawToggleSwitch("modal_perm_input", { mx, my, mrx, my + 26.0f }, (modalPermissions_ & PERM_INPUT) != 0,
                      "Allow mouse and keyboard control", [this]() {
@@ -2159,40 +2250,46 @@ void AeroDeskWindow::drawIncomingApprovalModal(float width, float height, float 
                      "Allow file transfers", [this]() {
                          modalPermissions_ ^= PERM_FILE_TRANSFER;
                      });
-    my += 42.0f;
+    my += 40.0f;
 
-    float btnW = (mrx - mx - 14.0f) * 0.5f;
-    UiRect acceptBtn = { mx, my, mx + btnW, my + 44.0f };
-    drawButton("modal_accept", acceptBtn, "Accept",
-               COL_PRIMARY_RED, COL_PRIMARY_RED_HV, COL_TEXT_ON_ACCENT, 8.0f, [this]() {
-                   network_.respondToIncomingRequest(true, modalPermissions_);
-                   showToast("Connection accepted.");
-               });
-
-    UiRect rejectBtn = { acceptBtn.right + 14.0f, my, mrx, my + 44.0f };
+    float btnW = (mrx - mx - 12.0f) * 0.5f;
+    UiRect rejectBtn = { mx, my, mx + btnW, my + 42.0f };
     drawButton("modal_reject", rejectBtn, "Decline",
-               COL_SEC_BTN_BG, COL_DANGER, COL_TEXT_PRIMARY, 8.0f, [this]() {
+               COL_SEC_BTN_BG, COL_DANGER, COL_TEXT_PRIMARY, 9.5f, [this]() {
                    network_.respondToIncomingRequest(false, 0);
-                   showToast("Connection declined.", true);
+                   showToast("Connection declined", true);
                }, nullptr, true, COL_BORDER, COL_TEXT_ON_ACCENT);
+
+    UiRect acceptBtn = { rejectBtn.right + 12.0f, my, mrx, my + 42.0f };
+    drawButton("modal_accept", acceptBtn, "Accept",
+               COL_PRIMARY_RED, COL_PRIMARY_RED_HV, COL_TEXT_ON_ACCENT, 9.5f, [this]() {
+                   network_.respondToIncomingRequest(true, modalPermissions_);
+                   showToast("Connection accepted");
+               });
 
     renderTarget_->SetTransform(D2D1::Matrix3x2F::Identity());
 }
+
+// ---------------- macOS Dynamic Capsule Toast Banner ----------------
 
 void AeroDeskWindow::drawToastBanner(float width, float height, float toastProgress) {
     if (toastText_.empty() || toastProgress <= 0.01f) {
         return;
     }
-    float bw = std::min(640.0f, width - 40.0f);
-    float bh = 42.0f;
-    float slideY = (1.0f - toastProgress) * 20.0f;
-    UiRect r = UiRect{ (width - bw) * 0.5f, height - bh - 20.0f, (width + bw) * 0.5f, height - 20.0f }.offset(0.0f, slideY);
+    float alpha = std::clamp(toastProgress, 0.0f, 1.0f);
+    float estTextW = static_cast<float>(toastText_.size()) * 7.6f + 64.0f;
+    float bw = std::clamp(estTextW, 220.0f, std::min(560.0f, width - 40.0f));
+    float bh = 40.0f;
+    float slideY = (1.0f - toastProgress) * 26.0f;
+    UiRect r = UiRect{ (width - bw) * 0.5f, height - bh - 22.0f, (width + bw) * 0.5f, height - 22.0f }.offset(0.0f, slideY);
 
-    drawCardShadow(r, 10.0f, toastProgress);
-    fillRoundRect(r, 10.0f, withAlpha(toastIsError_ ? COL_BG_CARD_ALT : COL_BG_CARD, 0.98f * toastProgress));
-    strokeRoundRect(r, 10.0f, withAlpha(toastIsError_ ? COL_DANGER : COL_PRIMARY_RED, toastProgress), 1.5f);
-    drawText(toastText_, { r.left + 16.0f, r.top, r.right - 16.0f, r.bottom },
-             fmtBodyBold_, withAlpha(toastIsError_ ? COL_TEXT_ACCENT : COL_TEXT_PRIMARY, toastProgress), DWRITE_TEXT_ALIGNMENT_CENTER);
+    drawCardShadow(r, bh * 0.5f, alpha * 1.4f);
+    fillRoundRect(r, bh * 0.5f, withAlpha(COL_BG_CARD, 0.98f * alpha));
+    strokeRoundRect(r, bh * 0.5f, withAlpha(toastIsError_ ? COL_DANGER : COL_BORDER_ALT, alpha), 1.2f);
+
+    drawPulseDot(r.left + 18.0f, r.centerY(), 3.6f, toastIsError_ ? COL_DANGER : COL_PRIMARY_RED, alpha);
+    drawText(toastText_, { r.left + 28.0f, r.top, r.right - 18.0f, r.bottom },
+             fmtBodyBold_, withAlpha(COL_TEXT_PRIMARY, alpha), DWRITE_TEXT_ALIGNMENT_CENTER);
 }
 
 // ---------------- Input & Interaction Handlers ----------------
@@ -2259,7 +2356,6 @@ void AeroDeskWindow::onMouseMove(float x, float y) {
         }
     }
 
-    // Only invalidate on hover target change (prevents 500-1000Hz WM_MOUSEMOVE paint flooding)
     if (hoverChanged) {
         InvalidateRect(hwnd_, nullptr, FALSE);
     }
@@ -2324,22 +2420,22 @@ void AeroDeskWindow::onCharInput(wchar_t ch) {
 
     if (ch == L'\b') {
         if (!target->empty()) target->pop_back();
-    } else if (ch == 1) { // Ctrl+A -> clear field for fast replacement
+    } else if (ch == 1) {
         target->clear();
-    } else if (ch == 3) { // Ctrl+C -> copy field to clipboard
+    } else if (ch == 3) {
         if (!target->empty() && focusedField_ != FocusedField::RemotePassword && focusedField_ != FocusedField::LocalPassword) {
             ClipboardManager::setClipboardUtf8(*target);
-            showToast("Copied text field to clipboard.");
+            showToast("Copied to clipboard");
         }
     } else if (ch == L'\r' || ch == L'\n') {
         if (focusedField_ == FocusedField::RemoteId || focusedField_ == FocusedField::RemotePassword) {
             initiateConnection();
         } else if (focusedField_ == FocusedField::LocalPassword && !localPasswordEdit_.empty()) {
             identity_.setUnattendedPassword(localPasswordEdit_);
-            showToast("Password saved.");
+            showToast("Password saved");
         } else if (focusedField_ == FocusedField::RelayServer && !relayServerEdit_.empty()) {
             identity_.setRelayServerAddress(relayServerEdit_);
-            showToast("Relay server saved.");
+            showToast("Relay server saved");
         } else if (focusedField_ == FocusedField::ChatInput) {
             sendChatFromInput();
         }
@@ -2348,7 +2444,7 @@ void AeroDeskWindow::onCharInput(wchar_t ch) {
         else if (focusedField_ == FocusedField::RemotePassword) focusedField_ = FocusedField::LocalPassword;
         else if (focusedField_ == FocusedField::LocalPassword) focusedField_ = FocusedField::RelayServer;
         else focusedField_ = FocusedField::RemoteId;
-    } else if (ch == 22) { // Ctrl+V paste
+    } else if (ch == 22) {
         std::string clip = ClipboardManager::getClipboardUtf8();
         for (char c : clip) {
             if (c >= 32 && c < 127 && target->size() < maxLen) {
@@ -2413,9 +2509,9 @@ void AeroDeskWindow::onDropFiles(HDROP hDrop) {
     if (sentCount > 0) {
         drawerTab_ = DrawerTab::FilesAndClip;
         showFileDrawer_ = true;
-        showToast("Sending " + std::to_string(sentCount) + " file(s).");
+        showToast("Sending " + std::to_string(sentCount) + " file(s)");
     } else {
-        showToast("Connect to a remote desk first before sending files.", true);
+        showToast("Connect to a remote desk first", true);
     }
 }
 
@@ -2423,7 +2519,7 @@ void AeroDeskWindow::onDropFiles(HDROP hDrop) {
 
 void AeroDeskWindow::initiateConnection() {
     if (remoteIdInput_.empty()) {
-        showToast("Enter a 9-digit Desk ID to connect.", true);
+        showToast("Enter a 9-digit Desk ID", true);
         return;
     }
     network_.connectToRemote(remoteIdInput_, remotePasswordInput_);
@@ -2447,14 +2543,14 @@ void AeroDeskWindow::openSendFileDialog() {
             showFileDrawer_ = true;
             showToast("Sending file...");
         } else {
-            showToast("No active session to send file.", true);
+            showToast("No active session", true);
         }
     }
 }
 
 void AeroDeskWindow::saveRemoteScreenshot() {
     if (frameBufferBgra_.empty() || frameBufferW_ <= 0 || frameBufferH_ <= 0) {
-        showToast("No video frame available yet.", true);
+        showToast("No video frame available yet", true);
         return;
     }
 
@@ -2469,14 +2565,14 @@ void AeroDeskWindow::saveRemoteScreenshot() {
     uint32_t imgSize = rowStride * static_cast<uint32_t>(frameBufferH_);
 
     BITMAPFILEHEADER bfh{};
-    bfh.bfType = 0x4D42; // 'BM'
+    bfh.bfType = 0x4D42;
     bfh.bfOffBits = sizeof(BITMAPFILEHEADER) + sizeof(BITMAPINFOHEADER);
     bfh.bfSize = bfh.bfOffBits + imgSize;
 
     BITMAPINFOHEADER bih{};
     bih.biSize = sizeof(BITMAPINFOHEADER);
     bih.biWidth = frameBufferW_;
-    bih.biHeight = -frameBufferH_; // Top-down DIB
+    bih.biHeight = -frameBufferH_;
     bih.biPlanes = 1;
     bih.biBitCount = 32;
     bih.biCompression = BI_RGB;
@@ -2488,9 +2584,9 @@ void AeroDeskWindow::saveRemoteScreenshot() {
         out.write(reinterpret_cast<const char*>(&bih), sizeof(bih));
         out.write(reinterpret_cast<const char*>(frameBufferBgra_.data()), imgSize);
         out.close();
-        showToast("Saved screenshot: " + fileName);
+        showToast("Saved " + fileName);
     } else {
-        showToast("Failed to save screenshot.", true);
+        showToast("Failed to save screenshot", true);
     }
 }
 
@@ -2500,7 +2596,7 @@ void AeroDeskWindow::sendChatFromInput() {
         chatInput_.clear();
         InvalidateRect(hwnd_, nullptr, FALSE);
     } else {
-        showToast("Connect to a remote desk first to send messages.", true);
+        showToast("Connect to a remote desk first", true);
     }
 }
 
@@ -2532,7 +2628,7 @@ void AeroDeskWindow::toggleFullscreen() {
 void AeroDeskWindow::showToast(const std::string& message, bool isError) {
     toastText_ = message;
     toastIsError_ = isError;
-    toastExpireTick_ = GetTickCount64() + 4000;
+    toastExpireTick_ = GetTickCount64() + 3500;
     InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
