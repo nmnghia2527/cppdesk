@@ -39,7 +39,7 @@ D2D1_COLOR_F lerpColor(const D2D1_COLOR_F& a, const D2D1_COLOR_F& b, float t) {
 
 bool stepExp(float& current, float target, float speed, float dt) {
     float diff = target - current;
-    if (std::fabs(diff) <= 0.0012f) {
+    if (std::fabs(diff) <= 0.004f) {
         if (current != target) {
             current = target;
             return true;
@@ -62,65 +62,65 @@ float cubicOutEase(float t) {
     return 1.0f - (inv * inv * inv);
 }
 
-// ---------------- Dynamic Light & Dark Crimson Red Theme Palette ----------------
-D2D1_COLOR_F COL_BG_MAIN          = rgba(248, 249, 251);
+// ---------------- Dynamic Light (White & Blue) & Dark (Black & Blue) Theme Palette ----------------
+D2D1_COLOR_F COL_BG_MAIN          = rgba(248, 250, 252);
 D2D1_COLOR_F COL_BG_NAV           = rgba(255, 255, 255);
 D2D1_COLOR_F COL_BG_CARD          = rgba(255, 255, 255);
-D2D1_COLOR_F COL_BG_SUBTLE        = rgba(249, 250, 251);
-D2D1_COLOR_F COL_BG_CARD_ALT      = rgba(255, 245, 245);
-D2D1_COLOR_F COL_BG_INPUT         = rgba(249, 250, 251);
+D2D1_COLOR_F COL_BG_SUBTLE        = rgba(241, 245, 249);
+D2D1_COLOR_F COL_BG_CARD_ALT      = rgba(239, 246, 255);
+D2D1_COLOR_F COL_BG_INPUT         = rgba(248, 250, 252);
 D2D1_COLOR_F COL_BG_INPUT_FOCUS   = rgba(255, 255, 255);
-D2D1_COLOR_F COL_BORDER           = rgba(229, 231, 235);
-D2D1_COLOR_F COL_BORDER_ALT       = rgba(254, 205, 211);
-D2D1_COLOR_F COL_BORDER_FOCUS     = rgba(225, 29, 72);
+D2D1_COLOR_F COL_BORDER           = rgba(226, 232, 240);
+D2D1_COLOR_F COL_BORDER_ALT       = rgba(191, 219, 254);
+D2D1_COLOR_F COL_BORDER_FOCUS     = rgba(37, 99, 235);
 
-D2D1_COLOR_F COL_PRIMARY_RED      = rgba(225, 29, 72);
-D2D1_COLOR_F COL_PRIMARY_RED_HV   = rgba(190, 18, 60);
-D2D1_COLOR_F COL_SEC_BTN_BG       = rgba(243, 244, 246);
-D2D1_COLOR_F COL_SEC_BTN_HV       = rgba(255, 241, 242);
+D2D1_COLOR_F COL_PRIMARY_RED      = rgba(37, 99, 235);
+D2D1_COLOR_F COL_PRIMARY_RED_HV   = rgba(29, 78, 216);
+D2D1_COLOR_F COL_SEC_BTN_BG       = rgba(241, 245, 249);
+D2D1_COLOR_F COL_SEC_BTN_HV       = rgba(219, 234, 254);
 
 D2D1_COLOR_F COL_SUCCESS          = rgba(16, 185, 129);
 D2D1_COLOR_F COL_WARNING          = rgba(245, 158, 11);
 D2D1_COLOR_F COL_DANGER           = rgba(220, 38, 38);
 D2D1_COLOR_F COL_DANGER_HV        = rgba(153, 27, 27);
 
-D2D1_COLOR_F COL_TEXT_PRIMARY     = rgba(17, 24, 39);
-D2D1_COLOR_F COL_TEXT_SECONDARY   = rgba(75, 85, 99);
-D2D1_COLOR_F COL_TEXT_MUTED       = rgba(156, 163, 175);
-D2D1_COLOR_F COL_TEXT_ACCENT      = rgba(190, 18, 60);
+D2D1_COLOR_F COL_TEXT_PRIMARY     = rgba(15, 23, 42);
+D2D1_COLOR_F COL_TEXT_SECONDARY   = rgba(71, 85, 105);
+D2D1_COLOR_F COL_TEXT_MUTED       = rgba(148, 163, 184);
+D2D1_COLOR_F COL_TEXT_ACCENT      = rgba(29, 78, 216);
 D2D1_COLOR_F COL_TEXT_ON_ACCENT   = rgba(255, 255, 255);
-D2D1_COLOR_F COL_STAGE_BG         = rgba(238, 240, 244);
+D2D1_COLOR_F COL_STAGE_BG         = rgba(226, 232, 240);
 
 void updateActivePalette(float darkT) {
     darkT = std::clamp(darkT, 0.0f, 1.0f);
 
-    // 60% Dominant Surfaces: Alabaster White (#F8F9FB / #FFFFFF) <-> Obsidian Slate (#0D0F14 / #161922)
-    COL_BG_MAIN        = lerpColor(rgba(248, 249, 251), rgba(13, 15, 20), darkT);
-    COL_BG_NAV         = lerpColor(rgba(255, 255, 255), rgba(22, 25, 34), darkT);
-    COL_BG_CARD        = lerpColor(rgba(255, 255, 255), rgba(22, 25, 34), darkT);
-    COL_BG_SUBTLE      = lerpColor(rgba(249, 250, 251), rgba(29, 34, 46), darkT);
+    // 60% Dominant Surfaces: Crisp White (#F8FAFC / #FFFFFF) <-> Pitch Black (#05070B / #0A0E17)
+    COL_BG_MAIN        = lerpColor(rgba(248, 250, 252), rgba(5, 7, 11), darkT);
+    COL_BG_NAV         = lerpColor(rgba(255, 255, 255), rgba(10, 14, 23), darkT);
+    COL_BG_CARD        = lerpColor(rgba(255, 255, 255), rgba(11, 16, 27), darkT);
+    COL_BG_SUBTLE      = lerpColor(rgba(241, 245, 249), rgba(15, 23, 42), darkT);
 
-    // 30% Secondary Surfaces & Borders: Soft Rose (#FFF5F5) <-> Deep Crimson-Plum (#26131B)
-    COL_BG_CARD_ALT    = lerpColor(rgba(255, 245, 245), rgba(38, 19, 27), darkT);
-    COL_BG_INPUT       = lerpColor(rgba(249, 250, 251), rgba(16, 19, 27), darkT);
-    COL_BG_INPUT_FOCUS = lerpColor(rgba(255, 255, 255), rgba(26, 31, 43), darkT);
-    COL_BORDER         = lerpColor(rgba(229, 231, 235), rgba(42, 49, 66), darkT);
-    COL_BORDER_ALT     = lerpColor(rgba(254, 205, 211), rgba(110, 29, 51), darkT);
-    COL_BORDER_FOCUS   = lerpColor(rgba(225, 29, 72),   rgba(244, 63, 94), darkT);
+    // 30% Secondary Surfaces & Borders: Ice Blue (#EFF6FF) <-> Deep Midnight Blue-Black (#0C1930)
+    COL_BG_CARD_ALT    = lerpColor(rgba(239, 246, 255), rgba(12, 25, 48), darkT);
+    COL_BG_INPUT       = lerpColor(rgba(248, 250, 252), rgba(8, 12, 20), darkT);
+    COL_BG_INPUT_FOCUS = lerpColor(rgba(255, 255, 255), rgba(15, 23, 42), darkT);
+    COL_BORDER         = lerpColor(rgba(226, 232, 240), rgba(30, 41, 59), darkT);
+    COL_BORDER_ALT     = lerpColor(rgba(191, 219, 254), rgba(30, 58, 138), darkT);
+    COL_BORDER_FOCUS   = lerpColor(rgba(37, 99, 235),   rgba(59, 130, 246), darkT);
 
-    // 10% Signature Accent: Modern Crimson Red (#E11D48) in both Light & Dark schemes
-    COL_PRIMARY_RED    = lerpColor(rgba(225, 29, 72),   rgba(225, 29, 72), darkT);
-    COL_PRIMARY_RED_HV = lerpColor(rgba(190, 18, 60),   rgba(244, 63, 94), darkT);
-    COL_SEC_BTN_BG     = lerpColor(rgba(243, 244, 246), rgba(33, 39, 54), darkT);
-    COL_SEC_BTN_HV     = lerpColor(rgba(255, 241, 242), rgba(58, 23, 35), darkT);
+    // 10% Signature Accent: Royal Blue (#2563EB) in Light Mode <-> Electric Blue (#3B82F6) in Dark Mode
+    COL_PRIMARY_RED    = lerpColor(rgba(37, 99, 235),   rgba(59, 130, 246), darkT);
+    COL_PRIMARY_RED_HV = lerpColor(rgba(29, 78, 216),   rgba(96, 165, 250), darkT);
+    COL_SEC_BTN_BG     = lerpColor(rgba(241, 245, 249), rgba(17, 25, 40), darkT);
+    COL_SEC_BTN_HV     = lerpColor(rgba(219, 234, 254), rgba(23, 37, 84), darkT);
 
     // Typography Hierarchy
-    COL_TEXT_PRIMARY   = lerpColor(rgba(17, 24, 39),    rgba(243, 244, 246), darkT);
-    COL_TEXT_SECONDARY = lerpColor(rgba(75, 85, 99),    rgba(156, 163, 175), darkT);
-    COL_TEXT_MUTED     = lerpColor(rgba(156, 163, 175), rgba(107, 114, 128), darkT);
-    COL_TEXT_ACCENT    = lerpColor(rgba(190, 18, 60),   rgba(251, 113, 133), darkT);
+    COL_TEXT_PRIMARY   = lerpColor(rgba(15, 23, 42),    rgba(248, 250, 252), darkT);
+    COL_TEXT_SECONDARY = lerpColor(rgba(71, 85, 105),   rgba(148, 163, 184), darkT);
+    COL_TEXT_MUTED     = lerpColor(rgba(148, 163, 184), rgba(100, 116, 139), darkT);
+    COL_TEXT_ACCENT    = lerpColor(rgba(29, 78, 216),   rgba(96, 165, 250), darkT);
     COL_TEXT_ON_ACCENT = rgba(255, 255, 255);
-    COL_STAGE_BG       = lerpColor(rgba(238, 240, 244), rgba(9, 11, 15), darkT);
+    COL_STAGE_BG       = lerpColor(rgba(226, 232, 240), rgba(3, 5, 8), darkT);
 }
 
 std::wstring utf8ToWide(const std::string& str) {
@@ -187,7 +187,7 @@ bool AeroDeskWindow::create(HINSTANCE hInstance, int nCmdShow) {
     wc.style = CS_HREDRAW | CS_VREDRAW | CS_DBLCLKS;
     wc.lpfnWndProc = &AeroDeskWindow::WndProcStatic;
     wc.hInstance = hInstance;
-    wc.hCursor = nullptr; // Managed dynamically via WM_SETCURSOR for custom in-window vector cursor
+    wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
     wc.hIcon = LoadIcon(nullptr, IDI_APPLICATION);
     wc.lpszClassName = L"AeroDeskMainWindowClass";
     RegisterClassExW(&wc);
@@ -224,8 +224,8 @@ bool AeroDeskWindow::create(HINSTANCE hInstance, int nCmdShow) {
     ShowWindow(hwnd_, nCmdShow);
     UpdateWindow(hwnd_);
 
-    // 60 FPS timer (~16ms); smart idle frame-pacing keeps CPU/GPU overhead near zero
-    SetTimer(hwnd_, 1, 16, nullptr);
+    // Background polling timer; active animations are driven at native VSync inside onPaint()
+    SetTimer(hwnd_, 1, 32, nullptr);
     return true;
 }
 
@@ -241,23 +241,6 @@ int AeroDeskWindow::messageLoop() {
 bool AeroDeskWindow::initGraphics() {
     HRESULT hr = D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, &d2dFactory_);
     if (FAILED(hr) || !d2dFactory_) return false;
-
-    // Pre-build custom precision arrow cursor geometry once (zero per-frame allocation)
-    if (SUCCEEDED(d2dFactory_->CreatePathGeometry(&cursorArrowGeo_)) && cursorArrowGeo_) {
-        ID2D1GeometrySink* sink = nullptr;
-        if (SUCCEEDED(cursorArrowGeo_->Open(&sink)) && sink) {
-            sink->BeginFigure(D2D1::Point2F(0.0f, 0.0f), D2D1_FIGURE_BEGIN_FILLED);
-            sink->AddLine(D2D1::Point2F(0.0f, 17.5f));
-            sink->AddLine(D2D1::Point2F(4.8f, 13.6f));
-            sink->AddLine(D2D1::Point2F(8.0f, 20.2f));
-            sink->AddLine(D2D1::Point2F(10.6f, 19.0f));
-            sink->AddLine(D2D1::Point2F(7.4f, 12.4f));
-            sink->AddLine(D2D1::Point2F(13.2f, 12.4f));
-            sink->EndFigure(D2D1_FIGURE_END_CLOSED);
-            sink->Close();
-            sink->Release();
-        }
-    }
 
     hr = DWriteCreateFactory(
         DWRITE_FACTORY_TYPE_SHARED,
@@ -297,7 +280,6 @@ void AeroDeskWindow::discardDeviceResources() {
 
 void AeroDeskWindow::releaseGraphics() {
     discardDeviceResources();
-    if (cursorArrowGeo_) { cursorArrowGeo_->Release(); cursorArrowGeo_ = nullptr; }
     if (fmtHeroId_) { fmtHeroId_->Release(); fmtHeroId_ = nullptr; }
     if (fmtHeading_) { fmtHeading_->Release(); fmtHeading_ = nullptr; }
     if (fmtSubheading_) { fmtSubheading_->Release(); fmtSubheading_ = nullptr; }
@@ -313,62 +295,44 @@ bool AeroDeskWindow::stepAnimations(float dt) {
     bool active = false;
     animTimeSec_ += dt;
 
-    // 1. Continuous Directional Viewport Carousel + Tab View Opacity & Stagger
+    // 1. Snappy Tab Entrance & Directional Viewport Position
     float targetViewport = (activeTab_ == ActiveTab::Dashboard) ? 0.0f :
                            (activeTab_ == ActiveTab::RemoteSession) ? 1.0f : 2.0f;
-    if (stepExp(viewportPos_, targetViewport, 16.5f, dt)) active = true;
+    if (stepExp(viewportPos_, targetViewport, 26.0f, dt)) active = true;
 
     float wantDash = (activeTab_ == ActiveTab::Dashboard) ? 1.0f : 0.0f;
     float wantSess = (activeTab_ == ActiveTab::RemoteSession) ? 1.0f : 0.0f;
     float wantSett = (activeTab_ == ActiveTab::Settings) ? 1.0f : 0.0f;
-    if (stepExp(dashViewAnimT_, wantDash, 17.0f, dt)) active = true;
-    if (stepExp(sessViewAnimT_, wantSess, 17.0f, dt)) active = true;
-    if (stepExp(settingsViewAnimT_, wantSett, 17.0f, dt)) active = true;
-    if (stepExp(tabEnterStaggerT_, 1.0f, 11.0f, dt)) active = true;
+    if (stepExp(dashViewAnimT_, wantDash, 26.0f, dt)) active = true;
+    if (stepExp(sessViewAnimT_, wantSess, 26.0f, dt)) active = true;
+    if (stepExp(settingsViewAnimT_, wantSett, 26.0f, dt)) active = true;
+    if (stepExp(tabEnterStaggerT_, 1.0f, 20.0f, dt)) active = true;
 
-    // 2. Spring-Physics Sliding Navigation Pill Indicator
+    // 2. Sliding Navigation Pill Indicator
     if (navPillInit_) {
-        if (stepExp(navPillLeft_, targetPillLeft_, 21.0f, dt)) active = true;
-        if (stepExp(navPillRight_, targetPillRight_, 21.0f, dt)) active = true;
+        if (stepExp(navPillLeft_, targetPillLeft_, 28.0f, dt)) active = true;
+        if (stepExp(navPillRight_, targetPillRight_, 28.0f, dt)) active = true;
     }
 
-    // 3. Smooth Light <-> Dark Red Theme transition
+    // 3. Smooth Light (White & Blue) <-> Dark (Black & Blue) Theme transition
     float wantTheme = identity_.settings().darkTheme ? 1.0f : 0.0f;
-    if (stepExp(themeAnimT_, wantTheme, 14.0f, dt)) active = true;
+    if (stepExp(themeAnimT_, wantTheme, 22.0f, dt)) active = true;
 
     // 4. Slide-out File, Clipboard & Live Chat drawer transition
     float targetDrawer = showFileDrawer_ ? 1.0f : 0.0f;
-    if (stepExp(drawerAnimT_, targetDrawer, 18.0f, dt)) active = true;
+    if (stepExp(drawerAnimT_, targetDrawer, 24.0f, dt)) active = true;
 
     // 5. Incoming Connection Approval Modal scale & fade transition
     bool modalNow = network_.pendingIncomingRequest().active;
     float targetModal = modalNow ? 1.0f : 0.0f;
-    if (stepExp(modalAnimT_, targetModal, 18.0f, dt)) active = true;
+    if (stepExp(modalAnimT_, targetModal, 24.0f, dt)) active = true;
 
     // 6. Toast Notification Banner slide & fade transition
     bool toastVisible = (!toastText_.empty() && GetTickCount64() <= toastExpireTick_);
     float targetToast = toastVisible ? 1.0f : 0.0f;
-    if (stepExp(toastAnimT_, targetToast, 16.0f, dt)) active = true;
+    if (stepExp(toastAnimT_, targetToast, 22.0f, dt)) active = true;
 
-    // 7. Custom In-Window Cursor spring trail & state morphing
-    if (mouseInsideClient_) {
-        if (!cursorTrailInit_) {
-            cursorTrailX_ = mouseX_;
-            cursorTrailY_ = mouseY_;
-            cursorTrailInit_ = true;
-        } else {
-            if (stepExp(cursorTrailX_, mouseX_, 26.0f, dt)) active = true;
-            if (stepExp(cursorTrailY_, mouseY_, 26.0f, dt)) active = true;
-        }
-        float wantCurHover = (!hoveredWidgetId_.empty() && !hoveredIsTextInput_) ? 1.0f : 0.0f;
-        float wantCurText  = hoveredIsTextInput_ ? 1.0f : 0.0f;
-        float wantCurPress = mouseLeftDown_ ? 1.0f : 0.0f;
-        if (stepExp(cursorHoverT_, wantCurHover, 20.0f, dt)) active = true;
-        if (stepExp(cursorTextT_, wantCurText, 22.0f, dt)) active = true;
-        if (stepExp(cursorPressT_, wantCurPress, 28.0f, dt)) active = true;
-    }
-
-    // 8. Per-widget hover, press, and subtle click ripple animations
+    // 7. Per-widget hover, press, and click ripple animations
     for (auto& kv : widgetAnims_) {
         const std::string& id = kv.first;
         WidgetAnimState& st = kv.second;
@@ -376,11 +340,11 @@ bool AeroDeskWindow::stepAnimations(float dt) {
         float wantHover = (id == hoveredWidgetId_) ? 1.0f : 0.0f;
         float wantPress = (mouseLeftDown_ && id == pressedWidgetId_ && id == hoveredWidgetId_) ? 1.0f : 0.0f;
 
-        if (stepExp(st.hoverT, wantHover, 18.0f, dt)) active = true;
-        if (stepExp(st.pressT, wantPress, 24.0f, dt)) active = true;
+        if (stepExp(st.hoverT, wantHover, 24.0f, dt)) active = true;
+        if (stepExp(st.pressT, wantPress, 30.0f, dt)) active = true;
 
         if (st.rippleT < 1.0f) {
-            st.rippleT = std::min(1.0f, st.rippleT + dt * 2.6f);
+            st.rippleT = std::min(1.0f, st.rippleT + dt * 3.2f);
             active = true;
         }
     }
@@ -409,7 +373,13 @@ LRESULT AeroDeskWindow::handleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
         case WM_SETCURSOR: {
             if (LOWORD(lParam) == HTCLIENT) {
-                SetCursor(nullptr); // Hide default OS arrow inside client window so custom Direct2D cursor renders cleanly
+                if (hoveredIsTextInput_) {
+                    SetCursor(LoadCursor(nullptr, IDC_IBEAM));
+                } else if (!hoveredWidgetId_.empty()) {
+                    SetCursor(LoadCursor(nullptr, IDC_HAND));
+                } else {
+                    SetCursor(LoadCursor(nullptr, IDC_ARROW));
+                }
                 return TRUE;
             }
             break;
@@ -440,14 +410,6 @@ LRESULT AeroDeskWindow::handleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
             return 0;
         }
         case WM_TIMER: {
-            LARGE_INTEGER now{};
-            QueryPerformanceCounter(&now);
-            float dt = (qpcFreq_ > 0)
-                ? static_cast<float>(now.QuadPart - lastQpcCounter_) / static_cast<float>(qpcFreq_)
-                : 0.016f;
-            lastQpcCounter_ = now.QuadPart;
-            dt = std::clamp(dt, 0.001f, 0.05f);
-
             uint64_t tickNow = GetTickCount64();
             auto vStats = network_.viewerStats();
             if (vStats.state == ViewerConnectionState::Connected &&
@@ -498,19 +460,18 @@ LRESULT AeroDeskWindow::handleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
             if (pending.active && !modalWasActive_) {
                 modalPermissions_ = identity_.settings().defaultPermissions;
                 SetForegroundWindow(hwnd_);
+                InvalidateRect(hwnd_, nullptr, FALSE);
             }
             modalWasActive_ = pending.active;
 
-            bool animMoving = stepAnimations(dt);
+            bool toastActive = (!toastText_.empty() && tickNow <= toastExpireTick_ + 500);
             bool inLiveSession = (vStats.state != ViewerConnectionState::Disconnected) ||
                                  network_.hostSessionStatus().active ||
                                  pending.active;
-            bool recentMouse = (tickNow - lastMouseMoveTick_ <= 180);
 
-            // Smart frame-pacing: 60 FPS during active motion/session, ~10 FPS when completely idle
             static uint32_t idleTickCounter = 0;
             ++idleTickCounter;
-            if (animMoving || inLiveSession || recentMouse || (idleTickCounter % 6 == 0)) {
+            if (inLiveSession || toastActive || (idleTickCounter % 4 == 0)) {
                 InvalidateRect(hwnd_, nullptr, FALSE);
             }
             return 0;
@@ -602,21 +563,10 @@ void AeroDeskWindow::drawCardShadow(const UiRect& r, float radius, float intensi
 void AeroDeskWindow::drawCardSurface(const UiRect& r, float radius, float alpha, bool accentHeader) {
     drawCardShadow(r, radius, alpha);
     fillRoundRect(r, radius, withAlpha(COL_BG_CARD, alpha));
-
-    // Subtle cursor-proximity border spotlight (zero shader overhead)
-    float prox = 0.0f;
-    if (mouseInsideClient_) {
-        float dx = std::max({ r.left - mouseX_, 0.0f, mouseX_ - r.right });
-        float dy = std::max({ r.top - mouseY_, 0.0f, mouseY_ - r.bottom });
-        float dist = std::hypot(dx, dy);
-        prox = std::clamp(1.0f - (dist / 160.0f), 0.0f, 1.0f) * 0.45f;
-    }
-    D2D1_COLOR_F bdrCol = lerpColor(COL_BORDER, COL_BORDER_FOCUS, prox);
-    strokeRoundRect(r, radius, withAlpha(bdrCol, alpha), 1.2f + 0.3f * prox);
+    strokeRoundRect(r, radius, withAlpha(COL_BORDER, alpha), 1.2f);
 
     if (accentHeader) {
-        float barW = 78.0f + 28.0f * prox;
-        fillRoundRect({ r.left + 22.0f, r.top, r.left + 22.0f + barW, r.top + 3.5f }, 1.8f, withAlpha(COL_PRIMARY_RED, alpha));
+        fillRoundRect({ r.left + 22.0f, r.top, r.left + 104.0f, r.top + 3.5f }, 1.8f, withAlpha(COL_PRIMARY_RED, alpha));
     }
 }
 
@@ -699,17 +649,17 @@ void AeroDeskWindow::drawButton(
 {
     WidgetAnimState& anim = widgetAnims_[id];
 
-    float liftY = (-1.1f * anim.hoverT) + (1.3f * anim.pressT);
-    float shrink = 0.8f * anim.pressT;
+    float liftY = (-1.0f * anim.hoverT) + (1.2f * anim.pressT);
+    float shrink = 0.7f * anim.pressT;
     UiRect animRect = r.offset(0.0f, liftY).inflate(-shrink, -shrink * 0.5f);
 
     if (anim.hoverT > 0.02f && bgColor.a > 0.05f) {
-        fillRoundRect(animRect.offset(0.0f, 2.2f), radius, rgba(225, 29, 72, 0.12f * anim.hoverT * (1.0f - anim.pressT)));
+        fillRoundRect(animRect.offset(0.0f, 2.0f), radius, withAlpha(COL_PRIMARY_RED, 0.14f * anim.hoverT * (1.0f - anim.pressT)));
     }
 
     D2D1_COLOR_F curBg = lerpColor(bgColor, hoverColor, anim.hoverT);
     if (anim.pressT > 0.01f) {
-        curBg = lerpColor(curBg, rgba(17, 24, 39, curBg.a), 0.10f * anim.pressT);
+        curBg = lerpColor(curBg, rgba(15, 23, 42, curBg.a), 0.10f * anim.pressT);
     }
     if (curBg.a > 0.005f) {
         fillRoundRect(animRect, radius, curBg);
@@ -756,11 +706,13 @@ void AeroDeskWindow::drawTextField(
     bool focused = (focusedField_ == fieldType);
 
     float targetFocus = focused ? 1.0f : 0.0f;
-    stepExp(anim.focusT, targetFocus, 18.0f, 0.016f);
+    if (stepExp(anim.focusT, targetFocus, 24.0f, lastDt_)) {
+        inlineAnimActive_ = true;
+    }
 
     if (anim.focusT > 0.01f) {
         UiRect glowR = r.inflate(2.2f * anim.focusT, 2.2f * anim.focusT);
-        fillRoundRect(glowR, 9.5f, rgba(225, 29, 72, 0.14f * anim.focusT));
+        fillRoundRect(glowR, 9.5f, withAlpha(COL_PRIMARY_RED, 0.16f * anim.focusT));
     }
 
     D2D1_COLOR_F bg = lerpColor(COL_BG_INPUT, COL_BG_INPUT_FOCUS, std::max(anim.focusT, anim.hoverT * 0.5f));
@@ -805,7 +757,9 @@ void AeroDeskWindow::drawToggleSwitch(
         anim.toggleT = targetToggle;
         anim.toggleInitialized = true;
     } else {
-        stepExp(anim.toggleT, targetToggle, 18.0f, 0.016f);
+        if (stepExp(anim.toggleT, targetToggle, 24.0f, lastDt_)) {
+            inlineAnimActive_ = true;
+        }
     }
 
     float swW = 40.0f;
@@ -813,14 +767,14 @@ void AeroDeskWindow::drawToggleSwitch(
     float swTop = r.top + (r.height() - swH) * 0.5f;
     UiRect pill = { r.left, swTop, r.left + swW, swTop + swH };
 
-    D2D1_COLOR_F offBase = lerpColor(rgba(209, 213, 219), rgba(55, 65, 81), themeAnimT_);
-    D2D1_COLOR_F offHover = lerpColor(rgba(186, 192, 202), rgba(75, 85, 99), themeAnimT_);
+    D2D1_COLOR_F offBase = lerpColor(rgba(203, 213, 225), rgba(30, 41, 59), themeAnimT_);
+    D2D1_COLOR_F offHover = lerpColor(rgba(148, 163, 184), rgba(51, 65, 85), themeAnimT_);
     D2D1_COLOR_F offCol = lerpColor(offBase, offHover, anim.hoverT);
     D2D1_COLOR_F onCol  = lerpColor(COL_PRIMARY_RED, COL_PRIMARY_RED_HV, anim.hoverT);
     fillRoundRect(pill, swH * 0.5f, lerpColor(offCol, onCol, anim.toggleT));
 
     if (anim.hoverT > 0.02f) {
-        strokeRoundRect(pill.inflate(1.5f, 1.5f), (swH + 3.0f) * 0.5f, rgba(225, 29, 72, 0.18f * anim.hoverT), 1.2f);
+        strokeRoundRect(pill.inflate(1.5f, 1.5f), (swH + 3.0f) * 0.5f, withAlpha(COL_PRIMARY_RED, 0.20f * anim.hoverT), 1.2f);
     }
 
     float knobR = 8.0f + 0.6f * anim.hoverT - 0.6f * anim.pressT;
@@ -830,7 +784,7 @@ void AeroDeskWindow::drawToggleSwitch(
     float knobCy = swTop + swH * 0.5f;
 
     if (renderTarget_ && solidBrush_) {
-        solidBrush_->SetColor(rgba(17, 24, 39, 0.18f));
+        solidBrush_->SetColor(rgba(15, 23, 42, 0.18f));
         renderTarget_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(knobCx, knobCy + 1.2f), knobR, knobR), solidBrush_);
         solidBrush_->SetColor(rgba(255, 255, 255));
         renderTarget_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(knobCx, knobCy), knobR, knobR), solidBrush_);
@@ -844,91 +798,21 @@ void AeroDeskWindow::drawToggleSwitch(
     }
 }
 
-// ---------------- Custom In-Window Hardware-Smooth Vector Cursor ----------------
-
-void AeroDeskWindow::drawCustomCursor() {
-    if (!mouseInsideClient_ || !renderTarget_ || !solidBrush_) return;
-    if (mouseX_ < 0.0f || mouseY_ < 0.0f) return;
-
-    renderTarget_->SetTransform(D2D1::Matrix3x2F::Identity());
-
-    bool onRemoteCanvas = (activeTab_ == ActiveTab::RemoteSession) &&
-                          remoteInputEnabled_ &&
-                          !showFileDrawer_ &&
-                          !network_.pendingIncomingRequest().active &&
-                          renderedCanvasRect_.contains(mouseX_, mouseY_);
-
-    // 1. Spring-lagged trailing ring (expands on interactive widgets, contracts on click)
-    float ringRadius = 9.5f + 5.0f * cursorHoverT_ - 2.5f * cursorPressT_;
-    float ringAlpha  = 0.22f + 0.32f * cursorHoverT_;
-    solidBrush_->SetColor(rgba(225, 29, 72, ringAlpha));
-    renderTarget_->DrawEllipse(
-        D2D1::Ellipse(D2D1::Point2F(cursorTrailX_, cursorTrailY_), ringRadius, ringRadius),
-        solidBrush_,
-        1.4f + 0.4f * cursorHoverT_
-    );
-
-    if (cursorHoverT_ > 0.05f) {
-        solidBrush_->SetColor(rgba(225, 29, 72, 0.07f * cursorHoverT_));
-        renderTarget_->FillEllipse(
-            D2D1::Ellipse(D2D1::Point2F(cursorTrailX_, cursorTrailY_), ringRadius, ringRadius),
-            solidBrush_
-        );
-    }
-
-    // 2. Remote Canvas Precision Crosshair Reticle
-    if (onRemoteCanvas) {
-        float cr = 7.0f - 1.5f * cursorPressT_;
-        solidBrush_->SetColor(rgba(255, 255, 255, 0.90f));
-        renderTarget_->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(mouseX_, mouseY_), cr + 1.0f, cr + 1.0f), solidBrush_, 1.5f);
-        solidBrush_->SetColor(COL_PRIMARY_RED);
-        renderTarget_->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(mouseX_, mouseY_), cr, cr), solidBrush_, 1.6f);
-        renderTarget_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(mouseX_, mouseY_), 2.2f, 2.2f), solidBrush_);
-        return;
-    }
-
-    // 3. Text Input I-Beam Cursor
-    if (cursorTextT_ > 0.5f) {
-        float halfH = 9.0f;
-        float serifW = 3.5f;
-        solidBrush_->SetColor(COL_PRIMARY_RED);
-        renderTarget_->DrawLine(D2D1::Point2F(mouseX_, mouseY_ - halfH), D2D1::Point2F(mouseX_, mouseY_ + halfH), solidBrush_, 1.8f);
-        renderTarget_->DrawLine(D2D1::Point2F(mouseX_ - serifW, mouseY_ - halfH), D2D1::Point2F(mouseX_ + serifW, mouseY_ - halfH), solidBrush_, 1.6f);
-        renderTarget_->DrawLine(D2D1::Point2F(mouseX_ - serifW, mouseY_ + halfH), D2D1::Point2F(mouseX_ + serifW, mouseY_ + halfH), solidBrush_, 1.6f);
-        return;
-    }
-
-    // 4. Default & Interactive Crimson Red Vector Pointer Arrow
-    if (cursorArrowGeo_) {
-        float scale = 1.0f + 0.06f * cursorHoverT_ - 0.08f * cursorPressT_;
-
-        // Subtle drop shadow
-        renderTarget_->SetTransform(
-            D2D1::Matrix3x2F::Scale(scale, scale) *
-            D2D1::Matrix3x2F::Translation(mouseX_ + 1.2f, mouseY_ + 1.8f)
-        );
-        solidBrush_->SetColor(rgba(5, 8, 15, 0.28f));
-        renderTarget_->FillGeometry(cursorArrowGeo_, solidBrush_);
-
-        // Crisp Crimson Red body + contrasting White/Obsidian border
-        renderTarget_->SetTransform(
-            D2D1::Matrix3x2F::Scale(scale, scale) *
-            D2D1::Matrix3x2F::Translation(mouseX_, mouseY_)
-        );
-        solidBrush_->SetColor(COL_PRIMARY_RED);
-        renderTarget_->FillGeometry(cursorArrowGeo_, solidBrush_);
-
-        solidBrush_->SetColor(rgba(255, 255, 255, 0.96f));
-        renderTarget_->DrawGeometry(cursorArrowGeo_, solidBrush_, 1.35f);
-
-        renderTarget_->SetTransform(D2D1::Matrix3x2F::Identity());
-    }
-}
-
 // ---------------- Main Paint Orchestrator ----------------
 
 void AeroDeskWindow::onPaint() {
     if (!d2dFactory_) return;
+
+    // Step animations using high-precision QPC right before drawing for VSync-locked smoothness
+    LARGE_INTEGER now{};
+    QueryPerformanceCounter(&now);
+    float dt = (qpcFreq_ > 0)
+        ? static_cast<float>(now.QuadPart - lastQpcCounter_) / static_cast<float>(qpcFreq_)
+        : 0.016f;
+    lastQpcCounter_ = now.QuadPart;
+    lastDt_ = std::clamp(dt, 0.001f, 0.04f);
+    inlineAnimActive_ = false;
+    bool animMoving = stepAnimations(lastDt_);
 
     updateActivePalette(smoothStepEase(themeAnimT_));
 
@@ -958,44 +842,26 @@ void AeroDeskWindow::onPaint() {
     drawTopNavBar(width, topOffset);
 
     UiRect contentBounds = { 0.0f, topOffset, width, height };
-    float cx = contentBounds.centerX();
-    float cy = contentBounds.centerY();
 
-    // Seamless Directional Viewport Slide + Scale + Opacity across Dashboard (0), Session (1), and Settings (2)
-    float dA  = smoothStepEase(dashViewAnimT_);
-    float sA  = smoothStepEase(sessViewAnimT_);
-    float stA = smoothStepEase(settingsViewAnimT_);
+    // Fast, single-active-view slide + fade transition (zero dual-view DirectWrite overdraw)
+    float targetIdx = (activeTab_ == ActiveTab::Dashboard) ? 0.0f :
+                      (activeTab_ == ActiveTab::RemoteSession) ? 1.0f : 2.0f;
+    float slideX = (targetIdx - viewportPos_) * 28.0f;
+    float enterAlpha = std::clamp(0.35f + 0.65f * cubicOutEase(tabEnterStaggerT_), 0.0f, 1.0f);
 
-    if (dA > 0.004f) {
-        float slideX = (0.0f - viewportPos_) * 48.0f;
-        float sc = 0.986f + 0.014f * dA;
-        renderTarget_->SetTransform(
-            D2D1::Matrix3x2F::Scale(sc, sc, D2D1::Point2F(cx, cy)) *
-            D2D1::Matrix3x2F::Translation(slideX, 0.0f)
-        );
-        drawDashboardView(contentBounds, dA);
-        renderTarget_->SetTransform(D2D1::Matrix3x2F::Identity());
+    if (std::fabs(slideX) > 0.25f) {
+        renderTarget_->SetTransform(D2D1::Matrix3x2F::Translation(slideX, 0.0f));
     }
-    if (sA > 0.004f) {
-        float slideX = (1.0f - viewportPos_) * 48.0f;
-        float sc = 0.986f + 0.014f * sA;
-        renderTarget_->SetTransform(
-            D2D1::Matrix3x2F::Scale(sc, sc, D2D1::Point2F(cx, cy)) *
-            D2D1::Matrix3x2F::Translation(slideX, 0.0f)
-        );
-        drawRemoteSessionView(contentBounds, sA);
-        renderTarget_->SetTransform(D2D1::Matrix3x2F::Identity());
+
+    if (activeTab_ == ActiveTab::Dashboard) {
+        drawDashboardView(contentBounds, enterAlpha);
+    } else if (activeTab_ == ActiveTab::RemoteSession) {
+        drawRemoteSessionView(contentBounds, enterAlpha);
+    } else {
+        drawSettingsView(contentBounds, enterAlpha);
     }
-    if (stA > 0.004f) {
-        float slideX = (2.0f - viewportPos_) * 48.0f;
-        float sc = 0.986f + 0.014f * stA;
-        renderTarget_->SetTransform(
-            D2D1::Matrix3x2F::Scale(sc, sc, D2D1::Point2F(cx, cy)) *
-            D2D1::Matrix3x2F::Translation(slideX, 0.0f)
-        );
-        drawSettingsView(contentBounds, stA);
-        renderTarget_->SetTransform(D2D1::Matrix3x2F::Identity());
-    }
+
+    renderTarget_->SetTransform(D2D1::Matrix3x2F::Identity());
 
     // Smooth slide-out File, Clipboard & Live Chat drawer
     if (drawerAnimT_ > 0.005f) {
@@ -1027,12 +893,14 @@ void AeroDeskWindow::onPaint() {
     hoveredWidgetId_ = newHoverId;
     hoveredIsTextInput_ = newIsText;
 
-    // Topmost layer: Custom In-Window Direct2D Vector Cursor
-    drawCustomCursor();
-
     HRESULT hr = renderTarget_->EndDraw();
     if (hr == D2DERR_RECREATE_TARGET) {
         discardDeviceResources();
+    }
+
+    // Self-schedule next VSync frame immediately while any animation is in motion
+    if (animMoving || inlineAnimActive_) {
+        InvalidateRect(hwnd_, nullptr, FALSE);
     }
 }
 
@@ -1044,9 +912,9 @@ void AeroDeskWindow::drawTopNavBar(float width, float& outTopOffset) {
     fillRoundRect(navRect, 0.0f, COL_BG_NAV);
     fillRoundRect({ 0.0f, navH - 1.0f, width, navH }, 0.0f, COL_BORDER);
 
-    // Signature Crimson Red Brand Badge
+    // Signature Blue Brand Badge
     UiRect logoBadge = { 18.0f, 12.0f, 50.0f, 44.0f };
-    fillRoundRect(logoBadge.offset(0.0f, 2.0f), 8.5f, rgba(225, 29, 72, 0.24f));
+    fillRoundRect(logoBadge.offset(0.0f, 2.0f), 8.5f, withAlpha(COL_PRIMARY_RED, 0.24f));
     fillRoundRect(logoBadge, 8.5f, COL_PRIMARY_RED);
     drawText("AD", logoBadge, fmtBodyBold_, COL_TEXT_ON_ACCENT, DWRITE_TEXT_ALIGNMENT_CENTER);
 
@@ -1087,9 +955,9 @@ void AeroDeskWindow::drawTopNavBar(float width, float& outTopOffset) {
     fillRoundRect(trackRect, 9.5f, COL_SEC_BTN_BG);
     strokeRoundRect(trackRect, 9.5f, COL_BORDER, 1.0f);
 
-    // Draw the physical spring-sliding Crimson Red active pill!
+    // Draw the physical spring-sliding Blue active pill!
     UiRect slidingPill = { navPillLeft_, 11.0f, navPillRight_, 45.0f };
-    fillRoundRect(slidingPill.offset(0.0f, 1.8f), 7.5f, rgba(225, 29, 72, 0.22f));
+    fillRoundRect(slidingPill.offset(0.0f, 1.8f), 7.5f, withAlpha(COL_PRIMARY_RED, 0.22f));
     fillRoundRect(slidingPill, 7.5f, COL_PRIMARY_RED);
 
     bool onDash = (activeTab_ == ActiveTab::Dashboard);
@@ -1127,7 +995,7 @@ void AeroDeskWindow::drawTopNavBar(float width, float& outTopOffset) {
                }, fmtSmall_, false, D2D1::ColorF(0, 0, 0, 0),
                onSett ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
 
-    // Right Action Bar (Clean, Production-Grade — No "+ Spawn Test Peer" button!)
+    // Right Action Bar
     auto hStatus = network_.hostSessionStatus();
     std::string activeSas = !vStats.securityFingerprint.empty() ? vStats.securityFingerprint :
                             !hStatus.securityFingerprint.empty() ? hStatus.securityFingerprint : "";
@@ -1192,14 +1060,14 @@ void AeroDeskWindow::drawTopNavBar(float width, float& outTopOffset) {
 
     bool isDark = identity_.settings().darkTheme;
     UiRect themeBtn = { filesBtn.left - 102.0f, 11.0f, filesBtn.left - 8.0f, 45.0f };
-    drawButton("btn_nav_theme", themeBtn, isDark ? "Dark Red" : "Light Red",
+    drawButton("btn_nav_theme", themeBtn, isDark ? "Dark Blue" : "Light Blue",
                COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY,
                7.5f, [this]() {
                    AppSettings s = identity_.settings();
                    s.darkTheme = !s.darkTheme;
                    identity_.updateSettings(s);
                    applyWindowThemeAttribute();
-                   showToast(s.darkTheme ? "Switched to Dark Mode (Obsidian & Crimson Red)." : "Switched to Light Mode (White & Crimson Red).");
+                   showToast(s.darkTheme ? "Switched to Dark Mode (Black & Blue)." : "Switched to Light Mode (White & Blue).");
                }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
 }
 
@@ -1787,7 +1655,7 @@ void AeroDeskWindow::drawRemoteSessionView(const UiRect& bounds, float alpha) {
         if (remoteCursor_.visible && appSett.showRemoteCursor) {
             float curX = renderedCanvasRect_.left + remoteCursor_.normX * renderedCanvasRect_.width();
             float curY = renderedCanvasRect_.top + remoteCursor_.normY * renderedCanvasRect_.height();
-            solidBrush_->SetColor(rgba(225, 29, 72, 0.92f));
+            solidBrush_->SetColor(withAlpha(COL_PRIMARY_RED, 0.92f));
             renderTarget_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(curX, curY), 5.5f, 5.5f), solidBrush_);
             solidBrush_->SetColor(rgba(255, 255, 255, 0.98f));
             renderTarget_->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(curX, curY), 6.5f, 6.5f), solidBrush_, 1.8f);
@@ -1803,8 +1671,8 @@ void AeroDeskWindow::drawRemoteSessionView(const UiRect& bounds, float alpha) {
 void AeroDeskWindow::drawSettingsView(const UiRect& bounds, float alpha) {
     if (alpha <= 0.01f) return;
 
-    float staggerL = (1.0f - cubicOutEase(std::clamp(tabEnterStaggerT_ * 1.25f, 0.0f, 1.0f))) * 10.0f;
-    float staggerR = (1.0f - cubicOutEase(std::clamp((tabEnterStaggerT_ - 0.08f) * 1.25f, 0.0f, 1.0f))) * 12.0f;
+    float staggerL = (1.0f - cubicOutEase(std::clamp(tabEnterStaggerT_ * 1.25f, 0.0f, 1.0f))) * 8.0f;
+    float staggerR = (1.0f - cubicOutEase(std::clamp((tabEnterStaggerT_ - 0.06f) * 1.25f, 0.0f, 1.0f))) * 10.0f;
 
     float pad = 22.0f;
     float totalW = bounds.width() - pad * 2.0f;
@@ -1825,22 +1693,22 @@ void AeroDeskWindow::drawSettingsView(const UiRect& bounds, float alpha) {
 
     drawText("Appearance, Frame Rate & Display", { lx, ly, lrx, ly + 26.0f }, fmtHeading_, COL_TEXT_PRIMARY);
     ly += 26.0f;
-    drawText("Customize the Red color theme, 15/30/60 FPS streaming rate, and adaptive network throttling.",
+    drawText("Customize the Blue color theme, 15/30/60 FPS streaming rate, and adaptive network throttling.",
              { lx, ly, lrx, ly + 18.0f }, fmtSmall_, COL_TEXT_SECONDARY);
     ly += 26.0f;
 
-    // 1. Color Theme (Light Red vs Dark Red)
+    // 1. Color Theme (White & Blue vs Black & Blue)
     UiRect themeBox = { lx, ly, lrx, ly + 82.0f };
     fillRoundRect(themeBox, 10.0f, COL_BG_SUBTLE);
     strokeRoundRect(themeBox, 10.0f, COL_BORDER);
 
-    drawText("COLOR THEME (CRIMSON RED SCHEME)", { themeBox.left + 14.0f, themeBox.top + 8.0f, themeBox.right - 14.0f, themeBox.top + 24.0f },
+    drawText("COLOR THEME (WHITE & BLUE / BLACK & BLUE)", { themeBox.left + 14.0f, themeBox.top + 8.0f, themeBox.right - 14.0f, themeBox.top + 24.0f },
              fmtSmall_, COL_TEXT_ACCENT);
     float halfBtnW = (innerW - 28.0f - 10.0f) * 0.5f;
     UiRect lightBtn = { themeBox.left + 14.0f, themeBox.top + 32.0f, themeBox.left + 14.0f + halfBtnW, themeBox.bottom - 10.0f };
     UiRect darkBtn  = { lightBtn.right + 10.0f, themeBox.top + 32.0f, themeBox.right - 14.0f, themeBox.bottom - 10.0f };
 
-    drawButton("sett_theme_light", lightBtn, "Light Mode (White & Red)",
+    drawButton("sett_theme_light", lightBtn, "Light Mode (White & Blue)",
                !s.darkTheme ? COL_PRIMARY_RED : COL_SEC_BTN_BG,
                !s.darkTheme ? COL_PRIMARY_RED_HV : COL_SEC_BTN_HV,
                !s.darkTheme ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
@@ -1849,10 +1717,10 @@ void AeroDeskWindow::drawSettingsView(const UiRect& bounds, float alpha) {
                    ns.darkTheme = false;
                    identity_.updateSettings(ns);
                    applyWindowThemeAttribute();
-                   showToast("Applied Light Mode (Crisp White & Crimson Red).");
+                   showToast("Applied Light Mode (Crisp White & Royal Blue).");
                }, fmtSmall_, s.darkTheme, COL_BORDER, !s.darkTheme ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
 
-    drawButton("sett_theme_dark", darkBtn, "Dark Mode (Obsidian & Red)",
+    drawButton("sett_theme_dark", darkBtn, "Dark Mode (Black & Blue)",
                s.darkTheme ? COL_PRIMARY_RED : COL_SEC_BTN_BG,
                s.darkTheme ? COL_PRIMARY_RED_HV : COL_SEC_BTN_HV,
                s.darkTheme ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
@@ -1861,7 +1729,7 @@ void AeroDeskWindow::drawSettingsView(const UiRect& bounds, float alpha) {
                    ns.darkTheme = true;
                    identity_.updateSettings(ns);
                    applyWindowThemeAttribute();
-                   showToast("Applied Dark Mode (Obsidian Slate & Crimson Red).");
+                   showToast("Applied Dark Mode (Pitch Black & Electric Blue).");
                }, fmtSmall_, !s.darkTheme, COL_BORDER, s.darkTheme ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
 
     ly = themeBox.bottom + 14.0f;
@@ -2259,7 +2127,9 @@ void AeroDeskWindow::drawFileTransferDrawer(const UiRect& bounds, float slidePro
                 if (y + 62.0f > r.bottom - 12.0f) break;
                 const auto& it = items[i];
 
-                stepExp(transferProgSmooth_[i], std::clamp(it.progressFraction(), 0.0f, 1.0f), 14.0f, 0.016f);
+                if (stepExp(transferProgSmooth_[i], std::clamp(it.progressFraction(), 0.0f, 1.0f), 18.0f, lastDt_)) {
+                    inlineAnimActive_ = true;
+                }
 
                 UiRect card = { x, y, rx, y + 56.0f };
                 fillRoundRect(card, 8.0f, COL_BG_SUBTLE);
@@ -2459,7 +2329,6 @@ void AeroDeskWindow::onMouseMove(float x, float y) {
     mouseX_ = x;
     mouseY_ = y;
     mouseInsideClient_ = true;
-    lastMouseMoveTick_ = GetTickCount64();
 
     if (!trackingMouseLeave_ && hwnd_) {
         TRACKMOUSEEVENT tme{};
@@ -2480,6 +2349,8 @@ void AeroDeskWindow::onMouseMove(float x, float y) {
             break;
         }
     }
+
+    bool hoverChanged = (newHover != hoveredWidgetId_) || (newIsText != hoveredIsTextInput_);
     hoveredWidgetId_ = newHover;
     hoveredIsTextInput_ = newIsText;
 
@@ -2495,14 +2366,16 @@ void AeroDeskWindow::onMouseMove(float x, float y) {
         }
     }
 
-    InvalidateRect(hwnd_, nullptr, FALSE);
+    // Only invalidate on hover target change (prevents 500-1000Hz WM_MOUSEMOVE paint flooding)
+    if (hoverChanged) {
+        InvalidateRect(hwnd_, nullptr, FALSE);
+    }
 }
 
 void AeroDeskWindow::onMouseButton(MouseButtonId btn, bool isDown, float x, float y) {
     mouseX_ = x;
     mouseY_ = y;
     mouseInsideClient_ = true;
-    lastMouseMoveTick_ = GetTickCount64();
 
     if (btn == MouseButtonId::Left) {
         mouseLeftDown_ = isDown;

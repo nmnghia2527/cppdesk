@@ -120,7 +120,6 @@ private:
     void drawFileTransferDrawer(const UiRect& bounds, float slideProgress);
     void drawIncomingApprovalModal(float width, float height, float modalProgress);
     void drawToastBanner(float width, float height, float toastProgress);
-    void drawCustomCursor();
 
     // Primitive drawing helpers
     void drawCardShadow(const UiRect& r, float radius, float intensity = 1.0f);
@@ -168,7 +167,6 @@ private:
     ID2D1Factory*           d2dFactory_ = nullptr;
     ID2D1HwndRenderTarget*  renderTarget_ = nullptr;
     ID2D1SolidColorBrush*   solidBrush_ = nullptr;
-    ID2D1PathGeometry*      cursorArrowGeo_ = nullptr;
     ID2D1Bitmap*            remoteBitmap_ = nullptr;
     int                     bitmapW_ = 0;
     int                     bitmapH_ = 0;
@@ -219,7 +217,7 @@ private:
     std::array<float, SPARKLINE_SAMPLES> fpsHistory_{};
     uint64_t                lastTelemetrySampleTick_ = 0;
 
-    // Hit-test regions & Lightweight Animation Engine state
+    // Hit-test regions & VSync Animation Engine state
     std::vector<ClickRegion>                        clickRegions_;
     std::unordered_map<std::string, WidgetAnimState> widgetAnims_;
     std::string             hoveredWidgetId_;
@@ -231,19 +229,12 @@ private:
     bool                    trackingMouseLeave_ = false;
     bool                    mouseLeftDown_ = false;
     uint64_t                lastMouseSendTick_ = 0;
-    uint64_t                lastMouseMoveTick_ = 0;
-
-    // Custom In-Window Cursor physics & morph state
-    float                   cursorTrailX_ = -1000.0f;
-    float                   cursorTrailY_ = -1000.0f;
-    float                   cursorHoverT_ = 0.0f;
-    float                   cursorTextT_ = 0.0f;
-    float                   cursorPressT_ = 0.0f;
-    bool                    cursorTrailInit_ = false;
 
     // Global layout, sliding nav pill & seamless tab viewport animations
     int64_t                 qpcFreq_ = 0;
     int64_t                 lastQpcCounter_ = 0;
+    float                   lastDt_ = 0.016f;
+    bool                    inlineAnimActive_ = false;
     float                   animTimeSec_ = 0.0f;
     float                   viewportPos_ = 0.0f;       // Continuous 0.0 (Dashboard) <-> 1.0 (Session) <-> 2.0 (Settings)
     float                   dashViewAnimT_ = 1.0f;     // 1.0 when Dashboard active
@@ -256,7 +247,7 @@ private:
     float                   targetPillRight_ = 394.0f;
     bool                    navPillInit_ = false;
 
-    float                   themeAnimT_ = 0.0f;        // 0.0 = Light Red, 1.0 = Dark Red
+    float                   themeAnimT_ = 0.0f;        // 0.0 = Light (White & Blue), 1.0 = Dark (Black & Blue)
     float                   drawerAnimT_ = 0.0f;       // 0.0 = Closed, 1.0 = Open
     float                   modalAnimT_ = 0.0f;        // 0.0 = Hidden, 1.0 = Visible
     float                   toastAnimT_ = 0.0f;        // 0.0 = Hidden, 1.0 = Visible

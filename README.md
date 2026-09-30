@@ -32,8 +32,8 @@ AeroDesk is a zero-install, hardware-accelerated Remote Desktop application for 
 - **15 / 30 / 60 FPS + Adaptive Network Throttling**: Switch target frame rates live during a session; when `Adaptive FPS` is enabled, AeroDesk automatically steps down (`60 → 30 → 15 FPS`) during high RTT or socket congestion and recovers when latency stabilizes.
 
 ### Direct2D Hardware-Accelerated UI
-- **Light & Dark Crimson Themes**: Instant runtime switching between **Alabaster & Crimson Red (`#E11D48`)** and **Obsidian & Rose Crimson (`#F43F5E`)** palettes.
-- **Custom Direct2D Vector Cursor**: Context-aware custom in-window vector cursor with a spring-physics trailing ring across 4 states (Precision Arrow, Interactive Hover Ring, Text I-Beam, and Remote Canvas Crosshair).
+- **White & Blue / Black & Blue Themes**: Instant runtime switching between **Crisp White & Royal Blue (`#2563EB`)** and **Pitch Black & Electric Blue (`#3B82F6`)** palettes.
+- **VSync-Locked Smooth Animations**: QPC-driven Direct2D hardware VSync animation loop with zero-overhead native OS cursor handling.
 
 ---
 
