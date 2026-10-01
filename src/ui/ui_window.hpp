@@ -3,6 +3,7 @@
 #include "../core/protocol.hpp"
 #include "../core/crypto_identity.hpp"
 #include "../net/network_engine.hpp"
+#include "notification_manager.hpp"
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -166,12 +167,14 @@ private:
     void toggleFullscreen();
     void toggleShortcutsModal();
     void showToast(const std::string& message, bool isError = false);
+    void restoreFromTray(NotificationType contextType = NotificationType::GeneralInfo);
     bool mapCanvasPointToNormalized(float x, float y, float& outNormX, float& outNormY) const;
     std::string* activeFocusedTextBuffer();
 
     IdentityManager&        identity_;
     NetworkEngine&          network_;
     HWND                    hwnd_ = nullptr;
+    std::unique_ptr<NotificationManager> notificationMgr_;
 
     // Direct2D & DirectWrite resources
     ID2D1Factory*           d2dFactory_ = nullptr;
@@ -213,6 +216,10 @@ private:
     uint8_t                 modalPermissions_ = PERM_ALL;
     bool                    modalWasActive_ = false;
     uint32_t                lastSeenUnreadChat_ = 0;
+    bool                    prevIncomingPending_ = false;
+    size_t                  lastNotifiedChatCount_ = 0;
+    size_t                  prevActiveTransfers_ = 0;
+    ViewerConnectionState   prevNotifiedViewerState_ = ViewerConnectionState::Disconnected;
 
     // Remote video canvas cache
     uint64_t                displayedFrameSeq_ = 0;
@@ -294,6 +301,11 @@ private:
     float                   shortcutsModalAnimVel_ = 0.0f;
 
     ViewerConnectionState   prevViewerState_ = ViewerConnectionState::Disconnected;
+    bool                    prevHostActive_ = false;
+    std::string             prevViewerHostname_;
+    std::string             prevHostClientName_;
+    size_t                  prevCompletedTransfersCount_ = 0;
+    bool                    prevHasPendingIncoming_ = false;
 };
 
 } // namespace aerodesk

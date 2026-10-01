@@ -5,6 +5,7 @@
 #include "../src/control/input_injector.hpp"
 #include "../src/control/clipboard_file_manager.hpp"
 #include "../src/net/network_engine.hpp"
+#include "../src/ui/notification_manager.hpp"
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -779,6 +780,75 @@ void testV201FeaturesAndResilience() {
     }
 }
 
+void testNotificationSystemAndTray() {
+    std::cout << "[TEST 10] Windows Push Notifications, Tray Icon & AppSettings Persistence...\n";
+
+    // 1. AppSettings default notification toggles
+    AppSettings defSettings{};
+    TEST_ASSERT(defSettings.enablePushNotifications == true);
+    TEST_ASSERT(defSettings.enableTaskbarFlash == true);
+    TEST_ASSERT(defSettings.enableNotificationSounds == true);
+    TEST_ASSERT(defSettings.minimizeToTray == false);
+
+    // 2. INI Serialization / Deserialization round-trip
+    {
+        IdentityManager idMgr(99);
+        idMgr.loadOrCreate();
+
+        AppSettings custom = idMgr.settings();
+        custom.enablePushNotifications = false;
+        custom.enableTaskbarFlash = false;
+        custom.enableNotificationSounds = false;
+        custom.minimizeToTray = true;
+        idMgr.updateSettings(custom);
+
+        // Reload from disk to verify persistence
+        IdentityManager reloadMgr(99);
+        TEST_ASSERT(reloadMgr.loadOrCreate());
+        const auto& loaded = reloadMgr.settings();
+        TEST_ASSERT(!loaded.enablePushNotifications);
+        TEST_ASSERT(!loaded.enableTaskbarFlash);
+        TEST_ASSERT(!loaded.enableNotificationSounds);
+        TEST_ASSERT(loaded.minimizeToTray);
+
+        // Clean up test config
+        std::error_code ec;
+        std::filesystem::remove(idMgr.configFilePath(), ec);
+    }
+
+    // 3. NotificationManager lifecycle and features
+    NotificationManager notifMgr;
+    TEST_ASSERT(!notifMgr.isMuted());
+    notifMgr.setMuted(true);
+    TEST_ASSERT(notifMgr.isMuted());
+    notifMgr.setMuted(false);
+    TEST_ASSERT(!notifMgr.isMuted());
+
+    TEST_ASSERT(notifMgr.lastNotificationType() == NotificationType::GeneralInfo);
+    AppSettings s{};
+    notifMgr.notify(NotificationType::ChatMessage, "Test User", "Hello AeroDesk!", s);
+    TEST_ASSERT(notifMgr.lastNotificationType() == NotificationType::ChatMessage);
+
+    notifMgr.notify(NotificationType::IncomingConnection, "Incoming Request", "Desk 123 456 789 wants to connect", s);
+    TEST_ASSERT(notifMgr.lastNotificationType() == NotificationType::IncomingConnection);
+
+    notifMgr.notify(NotificationType::FileTransferDone, "File Transfer", "document.pdf received", s);
+    TEST_ASSERT(notifMgr.lastNotificationType() == NotificationType::FileTransferDone);
+
+    notifMgr.notify(NotificationType::SessionDropped, "Disconnected", "Session terminated", s);
+    TEST_ASSERT(notifMgr.lastNotificationType() == NotificationType::SessionDropped);
+
+    notifMgr.clearLastNotificationType();
+    TEST_ASSERT(notifMgr.lastNotificationType() == NotificationType::GeneralInfo);
+
+    // Flash control safe handling with null HWND
+    notifMgr.flashTaskbar(false);
+    notifMgr.stopFlash();
+    TEST_ASSERT(!notifMgr.isFlashing());
+
+    notifMgr.shutdown();
+}
+
 } // namespace
 
 int main() {
@@ -797,6 +867,7 @@ int main() {
     testAvx2SimdAssemblyKernels();
     testEcdhAndAesGcmEngine();
     testV201FeaturesAndResilience();
+    testNotificationSystemAndTray();
 
     std::cout << "---------------------------------------------------------\n";
     std::cout << "Assertions Passed: " << g_passed << " | Failed: " << g_failed << "\n";

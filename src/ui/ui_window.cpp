@@ -181,6 +181,9 @@ AeroDeskWindow::AeroDeskWindow(IdentityManager& identity, NetworkEngine& network
 }
 
 AeroDeskWindow::~AeroDeskWindow() {
+    if (notificationMgr_) {
+        notificationMgr_->shutdown();
+    }
     releaseGraphics();
 }
 
@@ -254,6 +257,9 @@ bool AeroDeskWindow::create(HINSTANCE hInstance, int nCmdShow) {
 
     applyWindowThemeAttribute();
     DragAcceptFiles(hwnd_, TRUE);
+
+    notificationMgr_ = std::make_unique<NotificationManager>();
+    notificationMgr_->init(hwnd_, hInstance, title);
 
     ShowWindow(hwnd_, nCmdShow);
     UpdateWindow(hwnd_);
@@ -444,6 +450,74 @@ LRESULT AeroDeskWindow::handleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
             InvalidateRect(hwnd_, nullptr, FALSE);
             return 0;
         }
+        case WM_ACTIVATE:
+        case WM_SETFOCUS: {
+            if (notificationMgr_) {
+                notificationMgr_->stopFlash();
+            }
+            break;
+        }
+        case WM_SYSCOMMAND: {
+            if ((wParam & 0xFFF0) == SC_MINIMIZE && identity_.settings().minimizeToTray) {
+                ShowWindow(hwnd_, SW_HIDE);
+                return 0;
+            }
+            break;
+        }
+        case WM_CLOSE: {
+            if (identity_.settings().minimizeToTray) {
+                ShowWindow(hwnd_, SW_HIDE);
+                return 0;
+            }
+            DestroyWindow(hwnd_);
+            return 0;
+        }
+        case WM_COMMAND: {
+            WORD cmdId = LOWORD(wParam);
+            if (cmdId == IDM_TRAY_RESTORE) {
+                restoreFromTray();
+                return 0;
+            } else if (cmdId == IDM_TRAY_MUTE) {
+                if (notificationMgr_) {
+                    notificationMgr_->setMuted(!notificationMgr_->isMuted());
+                    showToast(notificationMgr_->isMuted() ? "Notifications muted" : "Notifications unmuted");
+                }
+                return 0;
+            } else if (cmdId == IDM_TRAY_EXIT) {
+                DestroyWindow(hwnd_);
+                return 0;
+            }
+            break;
+        }
+        case WM_TRAYICON: {
+            switch (lParam) {
+                case WM_LBUTTONUP:
+                case NIN_SELECT:
+                case NIN_BALLOONUSERCLICK: {
+                    NotificationType nType = notificationMgr_ ? notificationMgr_->lastNotificationType() : NotificationType::GeneralInfo;
+                    restoreFromTray(nType);
+                    if (notificationMgr_) notificationMgr_->clearLastNotificationType();
+                    return 0;
+                }
+                case WM_RBUTTONUP:
+                case WM_CONTEXTMENU: {
+                    POINT pt;
+                    GetCursorPos(&pt);
+                    std::string status = "Online";
+                    auto vStats = network_.viewerStats();
+                    if (vStats.state == ViewerConnectionState::Connected) {
+                        status = "Controlling " + vStats.remoteHostname;
+                    } else if (network_.hostSessionStatus().active) {
+                        status = "Host Active";
+                    }
+                    if (notificationMgr_) {
+                        notificationMgr_->showContextMenu(pt.x, pt.y, status);
+                    }
+                    return 0;
+                }
+            }
+            return 0;
+        }
         case WM_SIZE: {
             if (renderTarget_) {
                 RECT rc{};
@@ -474,9 +548,35 @@ LRESULT AeroDeskWindow::handleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
                        prevViewerState_ != ViewerConnectionState::Error) {
                 showToast(vStats.statusMessage, true);
                 switchTab(ActiveTab::Dashboard);
+            } else if (prevViewerState_ == ViewerConnectionState::Connected &&
+                       vStats.state == ViewerConnectionState::Disconnected) {
+                if (notificationMgr_) {
+                    std::string hName = prevViewerHostname_.empty() ? "Remote Desktop" : prevViewerHostname_;
+                    notificationMgr_->notify(NotificationType::SessionDropped, "Session Disconnected",
+                                             "Remote session with " + hName + " ended.", identity_.settings());
+                }
+                switchTab(ActiveTab::Dashboard);
+            }
+            if (vStats.state == ViewerConnectionState::Connected) {
+                prevViewerHostname_ = vStats.remoteHostname;
             }
             prevViewerState_ = vStats.state;
 
+            // Host session disconnect detection
+            auto hostStatus = network_.hostSessionStatus();
+            if (prevHostActive_ && !hostStatus.active) {
+                if (notificationMgr_) {
+                    std::string cName = prevHostClientName_.empty() ? "Remote Client" : prevHostClientName_;
+                    notificationMgr_->notify(NotificationType::SessionDropped, "Client Disconnected",
+                                             cName + " disconnected from your desktop.", identity_.settings());
+                }
+            }
+            if (hostStatus.active) {
+                prevHostClientName_ = hostStatus.viewerHostname;
+            }
+            prevHostActive_ = hostStatus.active;
+
+            // Chat message notifications
             uint32_t unreadChat = network_.unreadChatCount();
             if (showFileDrawer_ && drawerTab_ == DrawerTab::LiveChat && unreadChat > 0) {
                 network_.markChatRead();
@@ -486,16 +586,58 @@ LRESULT AeroDeskWindow::handleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
                 auto msgs = network_.chatMessages();
                 if (!msgs.empty() && !msgs.back().fromLocal) {
                     showToast(msgs.back().senderName + ": " + msgs.back().text);
+                    bool isUnfocused = (GetForegroundWindow() != hwnd_ || IsIconic(hwnd_));
+                    bool drawerClosed = (!showFileDrawer_ || drawerTab_ != DrawerTab::LiveChat);
+                    if ((isUnfocused || drawerClosed) && notificationMgr_) {
+                        notificationMgr_->notify(
+                            NotificationType::ChatMessage,
+                            msgs.back().senderName.empty() ? "New Chat Message" : msgs.back().senderName,
+                            msgs.back().text,
+                            identity_.settings()
+                        );
+                    }
                 }
             }
             lastSeenUnreadChat_ = unreadChat;
 
+            // Completed file transfer notifications
+            auto transfers = network_.fileTransferManager().snapshotTransfers();
+            size_t completedCount = 0;
+            std::string newlyCompletedName;
+            for (const auto& item : transfers) {
+                if (item.status == TransferStatus::Completed) {
+                    completedCount++;
+                    if (!item.isOutgoing && completedCount > prevCompletedTransfersCount_) {
+                        newlyCompletedName = item.fileName;
+                    }
+                }
+            }
+            if (completedCount > prevCompletedTransfersCount_) {
+                if (!newlyCompletedName.empty() && notificationMgr_) {
+                    notificationMgr_->notify(
+                        NotificationType::FileTransferDone,
+                        "File Transfer Complete",
+                        "File '" + newlyCompletedName + "' received successfully.",
+                        identity_.settings()
+                    );
+                }
+            }
+            prevCompletedTransfersCount_ = completedCount;
+
+            // Incoming connection request notification
             auto pending = network_.pendingIncomingRequest();
-            if (pending.active && !modalWasActive_) {
+            if (pending.active && !prevHasPendingIncoming_) {
                 modalPermissions_ = identity_.settings().defaultPermissions;
                 SetForegroundWindow(hwnd_);
+                if (notificationMgr_) {
+                    std::string title = "Incoming Connection Request";
+                    std::string caller = pending.callerHostname.empty() ? "Remote User" : pending.callerHostname;
+                    std::string msg = caller + " (" + CryptoUtils::formatDeskId(pending.callerDeskId) + ") is requesting remote control.";
+                    notificationMgr_->notify(NotificationType::IncomingConnection, title, msg, identity_.settings());
+                }
                 InvalidateRect(hwnd_, nullptr, FALSE);
             }
+            prevHasPendingIncoming_ = pending.active;
             modalWasActive_ = pending.active;
 
             bool toastActive = (!toastText_.empty() && tickNow <= toastExpireTick_ + 500);
@@ -2016,10 +2158,53 @@ void AeroDeskWindow::drawSettingsView(const UiRect& bounds, float alpha) {
                          identity_.updateSettings(ns);
                      });
 
-    ry = permBox.bottom + 14.0f;
+    ry = permBox.bottom + 12.0f;
 
-    // 2. Network & Relay
-    UiRect netBox = { rx, ry, rrx, ry + 92.0f };
+    // 2. Notifications & System Tray
+    UiRect notifBox = { rx, ry, rrx, ry + 148.0f };
+    fillRoundRect(notifBox, 12.0f, COL_BG_SUBTLE);
+    strokeRoundRect(notifBox, 12.0f, COL_BORDER);
+
+    drawText("NOTIFICATIONS & TRAY",
+             { notifBox.left + 16.0f, notifBox.top + 8.0f, notifBox.right - 16.0f, notifBox.top + 24.0f },
+             fmtSmall_, COL_TEXT_ACCENT);
+
+    float ny = notifBox.top + 28.0f;
+    drawToggleSwitch("sett_push_notif", { notifBox.left + 16.0f, ny, notifBox.right - 16.0f, ny + 26.0f },
+                     s.enablePushNotifications, "Windows Action Center push toasts", [this]() {
+                         AppSettings ns = identity_.settings();
+                         ns.enablePushNotifications = !ns.enablePushNotifications;
+                         identity_.updateSettings(ns);
+                     });
+    ny += 28.0f;
+
+    drawToggleSwitch("sett_taskbar_flash", { notifBox.left + 16.0f, ny, notifBox.right - 16.0f, ny + 26.0f },
+                     s.enableTaskbarFlash, "Flash taskbar orange when unfocused", [this]() {
+                         AppSettings ns = identity_.settings();
+                         ns.enableTaskbarFlash = !ns.enableTaskbarFlash;
+                         identity_.updateSettings(ns);
+                     });
+    ny += 28.0f;
+
+    drawToggleSwitch("sett_notif_sound", { notifBox.left + 16.0f, ny, notifBox.right - 16.0f, ny + 26.0f },
+                     s.enableNotificationSounds, "Play sound on incoming alerts", [this]() {
+                         AppSettings ns = identity_.settings();
+                         ns.enableNotificationSounds = !ns.enableNotificationSounds;
+                         identity_.updateSettings(ns);
+                     });
+    ny += 28.0f;
+
+    drawToggleSwitch("sett_min_to_tray", { notifBox.left + 16.0f, ny, notifBox.right - 16.0f, ny + 26.0f },
+                     s.minimizeToTray, "Minimize window to system tray", [this]() {
+                         AppSettings ns = identity_.settings();
+                         ns.minimizeToTray = !ns.minimizeToTray;
+                         identity_.updateSettings(ns);
+                     });
+
+    ry = notifBox.bottom + 12.0f;
+
+    // 3. Network & Relay
+    UiRect netBox = { rx, ry, rrx, ry + 82.0f };
     fillRoundRect(netBox, 12.0f, COL_BG_SUBTLE);
     strokeRoundRect(netBox, 12.0f, COL_BORDER);
 
@@ -2027,11 +2212,11 @@ void AeroDeskWindow::drawSettingsView(const UiRect& bounds, float alpha) {
              { netBox.left + 16.0f, netBox.top + 8.0f, netBox.right - 16.0f, netBox.top + 24.0f },
              fmtSmall_, COL_TEXT_ACCENT);
 
-    UiRect settRelayField = { netBox.left + 16.0f, netBox.top + 34.0f, netBox.right - 196.0f, netBox.top + 72.0f };
+    UiRect settRelayField = { netBox.left + 16.0f, netBox.top + 30.0f, netBox.right - 196.0f, netBox.top + 68.0f };
     drawTextField("field_relay_srv_sett", FocusedField::RelayServer, settRelayField,
                   relayServerEdit_, "Relay server address", false);
 
-    UiRect applyRelayBtn = { settRelayField.right + 8.0f, netBox.top + 34.0f, settRelayField.right + 82.0f, netBox.top + 72.0f };
+    UiRect applyRelayBtn = { settRelayField.right + 8.0f, netBox.top + 30.0f, settRelayField.right + 82.0f, netBox.top + 68.0f };
     drawButton("sett_apply_relay", applyRelayBtn, "Save",
                COL_PRIMARY_ACCENT, COL_PRIMARY_ACCENT_HV, COL_TEXT_ON_ACCENT, 8.0f, [this]() {
                    identity_.setRelayServerAddress(relayServerEdit_);
@@ -2039,7 +2224,7 @@ void AeroDeskWindow::drawSettingsView(const UiRect& bounds, float alpha) {
                }, fmtSmall_);
 
     bool relayRunning = network_.isLocalRelayRunning();
-    UiRect localRelayBtn = { applyRelayBtn.right + 8.0f, netBox.top + 34.0f, netBox.right - 16.0f, netBox.top + 72.0f };
+    UiRect localRelayBtn = { applyRelayBtn.right + 8.0f, netBox.top + 30.0f, netBox.right - 16.0f, netBox.top + 68.0f };
     drawButton("sett_toggle_relay", localRelayBtn, relayRunning ? "Relay: ON" : "Relay: OFF",
                relayRunning ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
                relayRunning ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
@@ -2055,9 +2240,9 @@ void AeroDeskWindow::drawSettingsView(const UiRect& bounds, float alpha) {
                    }
                }, fmtSmall_, !relayRunning, COL_BORDER, relayRunning ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
 
-    ry = netBox.bottom + 14.0f;
+    ry = netBox.bottom + 12.0f;
 
-    // 3. Data & Reset Actions
+    // 4. Data & Reset Actions
     UiRect maintBox = { rx, ry, rrx, rightCard.bottom - 20.0f };
     fillRoundRect(maintBox, 12.0f, COL_BG_SUBTLE);
     strokeRoundRect(maintBox, 12.0f, COL_BORDER);
@@ -3166,6 +3351,33 @@ void AeroDeskWindow::showToast(const std::string& message, bool isError) {
     toastText_ = message;
     toastIsError_ = isError;
     toastExpireTick_ = GetTickCount64() + 3500;
+    InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+void AeroDeskWindow::restoreFromTray(NotificationType contextType) {
+    if (IsIconic(hwnd_)) {
+        ShowWindow(hwnd_, SW_RESTORE);
+    } else {
+        ShowWindow(hwnd_, SW_SHOW);
+    }
+    SetForegroundWindow(hwnd_);
+    if (notificationMgr_) {
+        notificationMgr_->stopFlash();
+    }
+    if (contextType == NotificationType::ChatMessage) {
+        showFileDrawer_ = true;
+        drawerTab_ = DrawerTab::LiveChat;
+        network_.markChatRead();
+        focusedField_ = FocusedField::ChatInput;
+    } else if (contextType == NotificationType::FileTransferDone) {
+        showFileDrawer_ = true;
+        drawerTab_ = DrawerTab::FilesAndClip;
+    } else if (contextType == NotificationType::IncomingConnection) {
+        auto pending = network_.pendingIncomingRequest();
+        if (pending.active) {
+            SetForegroundWindow(hwnd_);
+        }
+    }
     InvalidateRect(hwnd_, nullptr, FALSE);
 }
 

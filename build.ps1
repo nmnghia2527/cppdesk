@@ -18,7 +18,8 @@ $CoreSources = @(
     "src/capture/screen_capture.cpp",
     "src/control/input_injector.cpp",
     "src/control/clipboard_file_manager.cpp",
-    "src/net/network_engine.cpp"
+    "src/net/network_engine.cpp",
+    "src/ui/notification_manager.cpp"
 )
 
 $AppSources = $CoreSources + @(

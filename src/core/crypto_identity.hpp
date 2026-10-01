@@ -27,6 +27,10 @@ struct AppSettings {
     bool          autoAcceptIncoming = false;            // Automatically accept incoming requests without modal
     uint8_t       defaultPermissions = PERM_ALL;         // Default permissions granted to incoming viewers
     bool          lockWorkstationOnDisconnect = false;   // Lock Windows workstation when host session ends
+    bool          enablePushNotifications = true;        // Windows Action Center & Tray Push Toasts
+    bool          enableTaskbarFlash = true;             // Pulse taskbar orange when background alerts arrive
+    bool          enableNotificationSounds = true;       // Audio chime on incoming alerts
+    bool          minimizeToTray = false;                // Minimize window to Windows Notification Area
 };
 
 class CryptoUtils {

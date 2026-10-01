@@ -60,6 +60,24 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPSTR /*lpC
         return 0;
     }
 
+    // Enforce single-instance per instanceId to prevent zombie instances and duplicate tray icons
+    std::wstring mutexName = L"Local\\AeroDesk_SingleInstance_Mutex_" + std::to_wstring(instanceId);
+    HANDLE hMutex = CreateMutexW(nullptr, TRUE, mutexName.c_str());
+    if (hMutex && GetLastError() == ERROR_ALREADY_EXISTS) {
+        HWND existingHwnd = FindWindowW(L"AeroDeskMainWindowClass", nullptr);
+        if (existingHwnd) {
+            if (IsIconic(existingHwnd)) {
+                ShowWindow(existingHwnd, SW_RESTORE);
+            } else {
+                ShowWindow(existingHwnd, SW_SHOW);
+            }
+            SetForegroundWindow(existingHwnd);
+        }
+        CloseHandle(hMutex);
+        CoUninitialize();
+        return 0;
+    }
+
     aerodesk::IdentityManager identity(instanceId);
     identity.loadOrCreate();
 
@@ -69,12 +87,17 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPSTR /*lpC
     aerodesk::AeroDeskWindow window(identity, network);
     if (!window.create(hInstance, nCmdShow)) {
         network.stop();
+        if (hMutex) CloseHandle(hMutex);
         CoUninitialize();
         return 1;
     }
 
     int exitCode = window.messageLoop();
     network.stop();
+    if (hMutex) CloseHandle(hMutex);
     CoUninitialize();
+
+    // Absolute zero background residue: terminate all process threads immediately
+    ExitProcess(static_cast<UINT>(exitCode));
     return exitCode;
 }

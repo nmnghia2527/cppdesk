@@ -407,6 +407,14 @@ bool IdentityManager::loadOrCreate() {
                 } catch (...) {}
             } else if (key == "lock_on_disconnect") {
                 settings_.lockWorkstationOnDisconnect = (val == "1" || val == "true");
+            } else if (key == "push_notifications") {
+                settings_.enablePushNotifications = (val == "1" || val == "true");
+            } else if (key == "taskbar_flash") {
+                settings_.enableTaskbarFlash = (val == "1" || val == "true");
+            } else if (key == "notification_sound") {
+                settings_.enableNotificationSounds = (val == "1" || val == "true");
+            } else if (key == "minimize_to_tray") {
+                settings_.minimizeToTray = (val == "1" || val == "true");
             } else if (key == "recent") {
                 // Format: deskId|hostname|address or deskId|hostname|address|fav
                 auto p1 = val.find('|');
@@ -481,6 +489,10 @@ bool IdentityManager::save() const {
     out << "auto_accept=" << (settings_.autoAcceptIncoming ? "1" : "0") << "\n";
     out << "default_perms=" << static_cast<int>(settings_.defaultPermissions & PERM_ALL) << "\n";
     out << "lock_on_disconnect=" << (settings_.lockWorkstationOnDisconnect ? "1" : "0") << "\n";
+    out << "push_notifications=" << (settings_.enablePushNotifications ? "1" : "0") << "\n";
+    out << "taskbar_flash=" << (settings_.enableTaskbarFlash ? "1" : "0") << "\n";
+    out << "notification_sound=" << (settings_.enableNotificationSounds ? "1" : "0") << "\n";
+    out << "minimize_to_tray=" << (settings_.minimizeToTray ? "1" : "0") << "\n";
     for (const auto& r : recentSessions_) {
         out << "recent=" << r.deskId << "|" << r.hostname << "|" << r.address << "|" << (r.isFavorite ? "1" : "0") << "\n";
     }
