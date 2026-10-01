@@ -201,22 +201,7 @@ void spliceSockets(SOCKET a, SOCKET b) {
 }
 
 void executeRemoteSystemAction(SystemActionType action) {
-    switch (action) {
-        case SystemActionType::TaskManager:
-            ShellExecuteA(nullptr, "open", "taskmgr.exe", nullptr, nullptr, SW_SHOWNORMAL);
-            break;
-        case SystemActionType::ShowDesktop:
-            InputInjector::injectKeyEvent(VK_LWIN, 0, true, false);
-            InputInjector::injectKeyEvent('D', 0, true, false);
-            InputInjector::injectKeyEvent('D', 0, false, false);
-            InputInjector::injectKeyEvent(VK_LWIN, 0, false, false);
-            break;
-        case SystemActionType::LockWorkstation:
-            LockWorkStation();
-            break;
-        default:
-            break;
-    }
+    InputInjector::executeSystemAction(action);
 }
 
 } // namespace
@@ -1518,6 +1503,24 @@ void NetworkEngine::runHostSession(uintptr_t clientSock, std::string clientIp) {
                             }
                             break;
                         }
+                        case PacketType::MONITOR_SELECT: {
+                            int32_t monIdx = r.readI32();
+                            if (monIdx >= 0) {
+                                requestedMonitor.store(monIdx);
+                                forceKeyframeFlag.store(true);
+                            }
+                            break;
+                        }
+                        case PacketType::QUALITY_UPDATE: {
+                            uint8_t q = r.readU8();
+                            uint8_t fps = r.readU8();
+                            uint8_t adap = r.readU8();
+                            requestedQuality.store(q);
+                            if (fps > 0) requestedTargetFps.store(clampTargetFps(fps));
+                            adaptiveFpsEnabled.store(adap != 0);
+                            forceKeyframeFlag.store(true);
+                            break;
+                        }
                         case PacketType::VIDEO_CONTROL_REQ: {
                             uint8_t q = r.readU8();
                             int32_t monIdx = r.readI32();
@@ -1538,7 +1541,9 @@ void NetworkEngine::runHostSession(uintptr_t clientSock, std::string clientIp) {
                         case PacketType::CLIPBOARD_TEXT: {
                             if (perms & PERM_CLIPBOARD) {
                                 std::string txt = r.readString();
-                                clipboardManager_.applyRemoteClipboard(txt);
+                                if (clipboardSyncEnabled_.load()) {
+                                    clipboardManager_.applyRemoteClipboard(txt);
+                                }
                             }
                             break;
                         }
@@ -1683,7 +1688,7 @@ void NetworkEngine::runHostSession(uintptr_t clientSock, std::string clientIp) {
                 fileManager_.pumpOutgoingChunks(sendPacketHelper, 4);
             }
 
-            if ((hostLivePermissions_.load() & PERM_CLIPBOARD) && (frameStart - lastClipboardCheck >= 400)) {
+            if (clipboardSyncEnabled_.load() && (hostLivePermissions_.load() & PERM_CLIPBOARD) && (frameStart - lastClipboardCheck >= 400)) {
                 lastClipboardCheck = frameStart;
                 std::string newClip;
                 if (clipboardManager_.pollLocalChange(newClip)) {
@@ -1802,295 +1807,371 @@ void NetworkEngine::runViewerSession(std::string targetInput, std::string passwo
     while (!targetInput.empty() && (targetInput.back() == ' ' || targetInput.back() == '\t')) targetInput.pop_back();
 
     uint64_t targetDeskId = CryptoUtils::parseDeskId(targetInput);
-    SOCKET connectedSock = INVALID_SOCKET;
     std::string resolvedIp;
     uint16_t resolvedPort = DEFAULT_HOST_PORT;
 
-    if (targetDeskId > 0) {
-        setStatus(ViewerConnectionState::ResolvingId, "Searching LAN & Relay for " + CryptoUtils::formatDeskId(targetDeskId) + "...");
+    auto doConnectAndAuth = [&](bool isReconnecting) -> bool {
+        SOCKET connectedSock = INVALID_SOCKET;
 
-        if (targetDeskId == identity_.deskId()) {
-            resolvedIp = "127.0.0.1";
-            resolvedPort = identity_.listenPort();
-            connectedSock = connectTcpWithTimeout(resolvedIp, resolvedPort, 1500);
-        }
+        if (targetDeskId > 0) {
+            if (isReconnecting && !resolvedIp.empty() && resolvedIp.rfind("Relay:", 0) != 0) {
+                connectedSock = connectTcpWithTimeout(resolvedIp, resolvedPort, 1200);
+            }
 
-        if (connectedSock == INVALID_SOCKET) {
-            sendDiscoveryQuery(targetDeskId);
-            for (int waitStep = 0; waitStep < 6 && viewerActive_.load(); ++waitStep) {
-                {
-                    std::lock_guard<std::mutex> lock(peersMutex_);
-                    for (const auto& p : peers_) {
-                        if (p.deskId == targetDeskId) {
-                            resolvedIp = p.ip;
-                            resolvedPort = p.port;
-                            break;
-                        }
-                    }
+            if (connectedSock == INVALID_SOCKET) {
+                if (targetDeskId == identity_.deskId()) {
+                    resolvedIp = "127.0.0.1";
+                    resolvedPort = identity_.listenPort();
+                    connectedSock = connectTcpWithTimeout(resolvedIp, resolvedPort, 1500);
                 }
-                if (!resolvedIp.empty()) break;
-                std::this_thread::sleep_for(std::chrono::milliseconds(40));
             }
 
-            if (!resolvedIp.empty()) {
-                setStatus(ViewerConnectionState::ConnectingTcp, "Connecting on LAN (" + resolvedIp + ":" + std::to_string(resolvedPort) + ")...");
-                connectedSock = connectTcpWithTimeout(resolvedIp, resolvedPort, 1500);
-            }
-        }
-
-        if (connectedSock == INVALID_SOCKET && viewerActive_.load()) {
-            std::string rHost;
-            uint16_t rPort = DEFAULT_RELAY_PORT;
-            if (parseHostPort(identity_.relayServerAddress(), rHost, rPort, DEFAULT_RELAY_PORT)) {
-                setStatus(ViewerConnectionState::ResolvingId, "Querying Relay Server (" + rHost + ":" + std::to_string(rPort) + ")...");
-                SOCKET ls = connectTcpWithTimeout(rHost, rPort, 1500);
-                if (ls != INVALID_SOCKET) {
-                    uintptr_t lSock = fromWinSock(ls);
-                    ByteWriter lw;
-                    lw.writeU64(targetDeskId);
-                    std::mutex lm;
-                    if (sendFrame(lSock, PacketType::RELAY_LOOKUP, 0, lw.buffer().data(), lw.buffer().size(), lm)) {
-                        FrameHeader lhdr{};
-                        std::vector<uint8_t> lpay;
-                        if (recvFrame(lSock, lhdr, lpay) && static_cast<PacketType>(lhdr.type) == PacketType::RELAY_LOOKUP_RESP) {
-                            try {
-                                ByteReader lr(lpay);
-                                uint8_t found = lr.readU8();
-                                std::string peerIp = lr.readString();
-                                uint16_t peerPort = lr.readU16();
-                                if (found && !peerIp.empty()) {
-                                    resolvedIp = peerIp;
-                                    resolvedPort = peerPort;
-                                }
-                            } catch (...) {}
+            if (connectedSock == INVALID_SOCKET) {
+                sendDiscoveryQuery(targetDeskId);
+                for (int waitStep = 0; waitStep < (isReconnecting ? 4 : 6) && viewerActive_.load(); ++waitStep) {
+                    {
+                        std::lock_guard<std::mutex> lock(peersMutex_);
+                        for (const auto& p : peers_) {
+                            if (p.deskId == targetDeskId) {
+                                resolvedIp = p.ip;
+                                resolvedPort = p.port;
+                                break;
+                            }
                         }
                     }
-                    closeWinSock(lSock);
+                    if (!resolvedIp.empty()) break;
+                    std::this_thread::sleep_for(std::chrono::milliseconds(40));
                 }
 
                 if (!resolvedIp.empty()) {
-                    setStatus(ViewerConnectionState::ConnectingTcp, "Connecting to " + resolvedIp + ":" + std::to_string(resolvedPort) + "...");
+                    if (!isReconnecting) {
+                        setStatus(ViewerConnectionState::ConnectingTcp, "Connecting on LAN (" + resolvedIp + ":" + std::to_string(resolvedPort) + ")...");
+                    }
                     connectedSock = connectTcpWithTimeout(resolvedIp, resolvedPort, 1500);
                 }
+            }
 
-                if (connectedSock == INVALID_SOCKET && viewerActive_.load()) {
-                    setStatus(ViewerConnectionState::ConnectingTcp, "Bridging via Relay Server...");
-                    SOCKET bs = connectTcpWithTimeout(rHost, rPort, 1500);
-                    if (bs != INVALID_SOCKET) {
-                        uintptr_t bSock = fromWinSock(bs);
-                        ByteWriter bw;
-                        bw.writeU64(targetDeskId);
-                        std::mutex bm;
-                        if (sendFrame(bSock, PacketType::RELAY_CONNECT_REQ, 0, bw.buffer().data(), bw.buffer().size(), bm)) {
-                            FrameHeader bhdr{};
-                            std::vector<uint8_t> bpay;
-                            if (recvFrame(bSock, bhdr, bpay) && static_cast<PacketType>(bhdr.type) == PacketType::RELAY_BRIDGE_READY) {
-                                ByteReader br(bpay);
-                                if (br.hasRemaining(1) && br.readU8() == 1) {
-                                    connectedSock = bs;
-                                    resolvedIp = "Relay:" + rHost;
-                                    resolvedPort = rPort;
-                                }
+            if (connectedSock == INVALID_SOCKET && viewerActive_.load()) {
+                std::string rHost;
+                uint16_t rPort = DEFAULT_RELAY_PORT;
+                if (parseHostPort(identity_.relayServerAddress(), rHost, rPort, DEFAULT_RELAY_PORT)) {
+                    if (!isReconnecting) {
+                        setStatus(ViewerConnectionState::ResolvingId, "Querying Relay Server (" + rHost + ":" + std::to_string(rPort) + ")...");
+                    }
+                    SOCKET ls = connectTcpWithTimeout(rHost, rPort, 1500);
+                    if (ls != INVALID_SOCKET) {
+                        uintptr_t lSock = fromWinSock(ls);
+                        ByteWriter lw;
+                        lw.writeU64(targetDeskId);
+                        std::mutex lm;
+                        if (sendFrame(lSock, PacketType::RELAY_LOOKUP, 0, lw.buffer().data(), lw.buffer().size(), lm)) {
+                            FrameHeader lhdr{};
+                            std::vector<uint8_t> lpay;
+                            if (recvFrame(lSock, lhdr, lpay) && static_cast<PacketType>(lhdr.type) == PacketType::RELAY_LOOKUP_RESP) {
+                                try {
+                                    ByteReader lr(lpay);
+                                    uint8_t found = lr.readU8();
+                                    std::string peerIp = lr.readString();
+                                    uint16_t peerPort = lr.readU16();
+                                    if (found && !peerIp.empty()) {
+                                        resolvedIp = peerIp;
+                                        resolvedPort = peerPort;
+                                    }
+                                } catch (...) {}
                             }
                         }
-                        if (connectedSock == INVALID_SOCKET) {
-                            closeWinSock(bSock);
+                        closeWinSock(lSock);
+                    }
+
+                    if (!resolvedIp.empty()) {
+                        if (!isReconnecting) {
+                            setStatus(ViewerConnectionState::ConnectingTcp, "Connecting to " + resolvedIp + ":" + std::to_string(resolvedPort) + "...");
+                        }
+                        connectedSock = connectTcpWithTimeout(resolvedIp, resolvedPort, 1500);
+                    }
+
+                    if (connectedSock == INVALID_SOCKET && viewerActive_.load()) {
+                        if (!isReconnecting) {
+                            setStatus(ViewerConnectionState::ConnectingTcp, "Bridging via Relay Server...");
+                        }
+                        SOCKET bs = connectTcpWithTimeout(rHost, rPort, 1500);
+                        if (bs != INVALID_SOCKET) {
+                            uintptr_t bSock = fromWinSock(bs);
+                            ByteWriter bw;
+                            bw.writeU64(targetDeskId);
+                            std::mutex bm;
+                            if (sendFrame(bSock, PacketType::RELAY_CONNECT_REQ, 0, bw.buffer().data(), bw.buffer().size(), bm)) {
+                                FrameHeader bhdr{};
+                                std::vector<uint8_t> bpay;
+                                if (recvFrame(bSock, bhdr, bpay) && static_cast<PacketType>(bhdr.type) == PacketType::RELAY_BRIDGE_READY) {
+                                    ByteReader br(bpay);
+                                    if (br.hasRemaining(1) && br.readU8() == 1) {
+                                        connectedSock = bs;
+                                        resolvedIp = "Relay:" + rHost;
+                                        resolvedPort = rPort;
+                                    }
+                                }
+                            }
+                            if (connectedSock == INVALID_SOCKET) {
+                                closeWinSock(bSock);
+                            }
                         }
                     }
                 }
             }
-        }
-    } else {
-        if (!parseHostPort(targetInput, resolvedIp, resolvedPort, DEFAULT_HOST_PORT)) {
-            setStatus(ViewerConnectionState::Error, "Invalid Desk ID or IP:Port format.");
-            viewerActive_.store(false);
-            return;
-        }
-        setStatus(ViewerConnectionState::ConnectingTcp, "Connecting to " + resolvedIp + ":" + std::to_string(resolvedPort) + "...");
-        connectedSock = connectTcpWithTimeout(resolvedIp, resolvedPort, 2500);
-    }
-
-    if (connectedSock == INVALID_SOCKET) {
-        setStatus(ViewerConnectionState::Error, "Could not reach remote desk (" + targetInput + "). Verify the peer is online.");
-        viewerActive_.store(false);
-        return;
-    }
-
-    uintptr_t vSock = fromWinSock(connectedSock);
-    viewerSock_.store(vSock);
-    viewerEncrypted_.store(false);
-
-    try {
-        setStatus(ViewerConnectionState::Authenticating, "Performing cryptographic handshake...");
-
-        // Initialize Ephemeral ECDH (NIST P-256) for forward secrecy (Option 1A)
-        EcdhKeyExchange viewerEcdh;
-        viewerEcdh.initialize();
-
-        // 1. Send HELLO
-        {
-            ByteWriter w;
-            w.writeU16(PROTOCOL_VERSION);
-            w.writeU64(identity_.deskId());
-            w.writeString(identity_.hostname());
-            w.writeU16(static_cast<uint16_t>(viewerEcdh.localPublicKey().size()));
-            if (!viewerEcdh.localPublicKey().empty()) {
-                w.writeBytes(viewerEcdh.localPublicKey().data(), viewerEcdh.localPublicKey().size());
-            }
-            if (!sendFrame(vSock, PacketType::HELLO, 0, w.buffer().data(), w.buffer().size(), viewerSendMutex_)) {
-                FrameHeader ehdr{};
-                std::vector<uint8_t> epay;
-                if (recvFrame(vSock, ehdr, epay) && static_cast<PacketType>(ehdr.type) == PacketType::AUTH_RESULT) {
-                    ByteReader r(epay);
-                    r.readU8(); r.readU8();
-                    std::string msg = r.readString();
-                    setStatus(ViewerConnectionState::Error, msg.empty() ? "Host busy or rate-limited." : msg);
-                } else {
-                    setStatus(ViewerConnectionState::Error, "Connection closed during handshake.");
+        } else {
+            if (!parseHostPort(targetInput, resolvedIp, resolvedPort, DEFAULT_HOST_PORT)) {
+                if (!isReconnecting) {
+                    setStatus(ViewerConnectionState::Error, "Invalid Desk ID or IP:Port format.");
                 }
-                closeWinSock(vSock);
-                viewerSock_.store(~uintptr_t(0));
-                viewerActive_.store(false);
-                return;
+                return false;
             }
+            if (!isReconnecting) {
+                setStatus(ViewerConnectionState::ConnectingTcp, "Connecting to " + resolvedIp + ":" + std::to_string(resolvedPort) + "...");
+            }
+            connectedSock = connectTcpWithTimeout(resolvedIp, resolvedPort, 2500);
         }
 
-        // 2. Receive AUTH_CHALLENGE
-        FrameHeader hdr{};
-        std::vector<uint8_t> payload;
-        if (!recvFrame(vSock, hdr, payload)) {
-            setStatus(ViewerConnectionState::Error, "Failed to receive authentication challenge.");
-            closeWinSock(vSock);
-            viewerSock_.store(~uintptr_t(0));
-            viewerActive_.store(false);
-            return;
+        if (connectedSock == INVALID_SOCKET) {
+            if (!isReconnecting) {
+                setStatus(ViewerConnectionState::Error, "Could not reach remote desk (" + targetInput + "). Verify the peer is online.");
+            }
+            return false;
         }
 
-        if (static_cast<PacketType>(hdr.type) == PacketType::AUTH_RESULT) {
-            ByteReader r(payload);
-            r.readU8();
-            r.readU8();
-            std::string msg = r.readString();
-            setStatus(ViewerConnectionState::Error, msg.empty() ? "Host busy or rate-limited." : msg);
-            closeWinSock(vSock);
-            viewerSock_.store(~uintptr_t(0));
-            viewerActive_.store(false);
-            return;
-        }
+        uintptr_t vSock = fromWinSock(connectedSock);
+        viewerSock_.store(vSock);
+        viewerEncrypted_.store(false);
 
-        if (static_cast<PacketType>(hdr.type) != PacketType::AUTH_CHALLENGE) {
-            setStatus(ViewerConnectionState::Error, "Unexpected handshake packet.");
-            closeWinSock(vSock);
-            viewerSock_.store(~uintptr_t(0));
-            viewerActive_.store(false);
-            return;
-        }
+        try {
+            if (!isReconnecting) {
+                setStatus(ViewerConnectionState::Authenticating, "Performing cryptographic handshake...");
+            }
 
-        ByteReader chalReader(payload);
-        uint64_t remoteId = chalReader.readU64();
-        std::string remoteHost = chalReader.readString();
-        std::array<uint8_t, 32> nonce{};
-        chalReader.readBytes(nonce.data(), nonce.size());
-        /*uint8_t unattendedAllowed =*/ chalReader.readU8();
-        std::vector<uint8_t> hostPubBlob;
-        if (chalReader.hasRemaining(2)) {
-            uint16_t pubLen = chalReader.readU16();
-            if (chalReader.hasRemaining(pubLen)) {
-                hostPubBlob = chalReader.readBytesVector(pubLen);
-            }
-        }
+            // Initialize Ephemeral ECDH (NIST P-256) for forward secrecy
+            EcdhKeyExchange viewerEcdh;
+            viewerEcdh.initialize();
 
-        // 3. Compute & send AUTH_RESPONSE
-        {
-            ByteWriter w;
-            if (!password.empty()) {
-                w.writeU8(1);
-                auto digest = CryptoUtils::computeChallengeResponse(password, remoteId, identity_.deskId(), nonce);
-                w.writeBytes(digest.data(), digest.size());
-            } else {
-                w.writeU8(0);
-                std::array<uint8_t, 32> zero{};
-                w.writeBytes(zero.data(), zero.size());
-            }
-            if (!sendFrame(vSock, PacketType::AUTH_RESPONSE, 0, w.buffer().data(), w.buffer().size(), viewerSendMutex_)) {
-                setStatus(ViewerConnectionState::Error, "Failed to send authentication response.");
-                closeWinSock(vSock);
-                viewerSock_.store(~uintptr_t(0));
-                viewerActive_.store(false);
-                return;
-            }
-        }
-
-        // 4. Receive AUTH_WAITING and/or AUTH_RESULT
-        while (viewerActive_.load()) {
-            if (!recvFrame(vSock, hdr, payload)) {
-                setStatus(ViewerConnectionState::Error, "Connection closed during authorization.");
-                closeWinSock(vSock);
-                viewerSock_.store(~uintptr_t(0));
-                viewerActive_.store(false);
-                return;
-            }
-            PacketType pt = static_cast<PacketType>(hdr.type);
-            if (pt == PacketType::AUTH_WAITING) {
-                setStatus(ViewerConnectionState::WaitingApproval,
-                          "Waiting for " + remoteHost + " (" + CryptoUtils::formatDeskId(remoteId) + ") to click Accept...");
-                continue;
-            }
-            if (pt == PacketType::AUTH_RESULT) {
-                ByteReader r(payload);
-                AuthResultCode code = static_cast<AuthResultCode>(r.readU8());
-                uint8_t perms = r.readU8();
-                std::string msg = r.readString();
-
-                if (code != AuthResultCode::Accepted) {
-                    setStatus(ViewerConnectionState::Error, msg.empty() ? "Authentication rejected." : msg);
+            // 1. Send HELLO
+            {
+                ByteWriter w;
+                w.writeU16(PROTOCOL_VERSION);
+                w.writeU64(identity_.deskId());
+                w.writeString(identity_.hostname());
+                w.writeU16(static_cast<uint16_t>(viewerEcdh.localPublicKey().size()));
+                if (!viewerEcdh.localPublicKey().empty()) {
+                    w.writeBytes(viewerEcdh.localPublicKey().data(), viewerEcdh.localPublicKey().size());
+                }
+                if (!sendFrame(vSock, PacketType::HELLO, 0, w.buffer().data(), w.buffer().size(), viewerSendMutex_)) {
+                    FrameHeader ehdr{};
+                    std::vector<uint8_t> epay;
+                    if (recvFrame(vSock, ehdr, epay) && static_cast<PacketType>(ehdr.type) == PacketType::AUTH_RESULT) {
+                        ByteReader r(epay);
+                        r.readU8(); r.readU8();
+                        std::string msg = r.readString();
+                        if (!isReconnecting) {
+                            setStatus(ViewerConnectionState::Error, msg.empty() ? "Host busy or rate-limited." : msg);
+                        }
+                    } else if (!isReconnecting) {
+                        setStatus(ViewerConnectionState::Error, "Connection closed during handshake.");
+                    }
                     closeWinSock(vSock);
                     viewerSock_.store(~uintptr_t(0));
-                    viewerActive_.store(false);
-                    return;
+                    return false;
                 }
+            }
 
-                // Activate mandatory end-to-end stream encryption (Option 1A)!
-                if (!hostPubBlob.empty()) {
-                    viewerEcdh.computeSharedSessionKey(
-                        hostPubBlob.data(), hostPubBlob.size(),
-                        remoteId, identity_.deskId(), nonce, viewerSessionKey_);
+            // 2. Receive AUTH_CHALLENGE
+            FrameHeader hdr{};
+            std::vector<uint8_t> payload;
+            if (!recvFrame(vSock, hdr, payload)) {
+                if (!isReconnecting) {
+                    setStatus(ViewerConnectionState::Error, "Failed to receive authentication challenge.");
+                }
+                closeWinSock(vSock);
+                viewerSock_.store(~uintptr_t(0));
+                return false;
+            }
+
+            if (static_cast<PacketType>(hdr.type) == PacketType::AUTH_RESULT) {
+                ByteReader r(payload);
+                r.readU8(); r.readU8();
+                std::string msg = r.readString();
+                if (!isReconnecting) {
+                    setStatus(ViewerConnectionState::Error, msg.empty() ? "Host busy or rate-limited." : msg);
+                }
+                closeWinSock(vSock);
+                viewerSock_.store(~uintptr_t(0));
+                return false;
+            }
+
+            if (static_cast<PacketType>(hdr.type) != PacketType::AUTH_CHALLENGE) {
+                if (!isReconnecting) {
+                    setStatus(ViewerConnectionState::Error, "Unexpected handshake packet.");
+                }
+                closeWinSock(vSock);
+                viewerSock_.store(~uintptr_t(0));
+                return false;
+            }
+
+            ByteReader chalReader(payload);
+            uint64_t remoteId = chalReader.readU64();
+            std::string remoteHost = chalReader.readString();
+            std::array<uint8_t, 32> nonce{};
+            chalReader.readBytes(nonce.data(), nonce.size());
+            /*uint8_t unattendedAllowed =*/ chalReader.readU8();
+            std::vector<uint8_t> hostPubBlob;
+            if (chalReader.hasRemaining(2)) {
+                uint16_t pubLen = chalReader.readU16();
+                if (chalReader.hasRemaining(pubLen)) {
+                    hostPubBlob = chalReader.readBytesVector(pubLen);
+                }
+            }
+
+            // 3. Compute & send AUTH_RESPONSE
+            {
+                ByteWriter w;
+                if (!password.empty()) {
+                    w.writeU8(1);
+                    auto digest = CryptoUtils::computeChallengeResponse(password, remoteId, identity_.deskId(), nonce);
+                    w.writeBytes(digest.data(), digest.size());
                 } else {
-                    viewerSessionKey_ = CryptoUtils::deriveSessionKey(remoteId, identity_.deskId(), nonce);
+                    w.writeU8(0);
+                    std::array<uint8_t, 32> zero{};
+                    w.writeBytes(zero.data(), zero.size());
                 }
-
-                std::string sasFingerprint;
-                {
-                    std::lock_guard<std::mutex> lock(viewerCipherMutex_);
-                    viewerCipher_.initialize(viewerSessionKey_, /*isHost=*/false);
-                    viewerSendSeq_ = 0;
-                    viewerEncrypted_.store(true);
-                    sasFingerprint = CryptoUtils::sessionFingerprintHex(viewerSessionKey_);
+                if (!sendFrame(vSock, PacketType::AUTH_RESPONSE, 0, w.buffer().data(), w.buffer().size(), viewerSendMutex_)) {
+                    if (!isReconnecting) {
+                        setStatus(ViewerConnectionState::Error, "Failed to send authentication response.");
+                    }
+                    closeWinSock(vSock);
+                    viewerSock_.store(~uintptr_t(0));
+                    return false;
                 }
+            }
 
+            // 4. Receive AUTH_WAITING and/or AUTH_RESULT
+            while (viewerActive_.load()) {
+                if (!recvFrame(vSock, hdr, payload)) {
+                    if (!isReconnecting) {
+                        setStatus(ViewerConnectionState::Error, "Connection closed during authorization.");
+                    }
+                    closeWinSock(vSock);
+                    viewerSock_.store(~uintptr_t(0));
+                    return false;
+                }
+                PacketType pt = static_cast<PacketType>(hdr.type);
+                if (pt == PacketType::AUTH_WAITING) {
+                    setStatus(ViewerConnectionState::WaitingApproval,
+                              "Waiting for " + remoteHost + " (" + CryptoUtils::formatDeskId(remoteId) + ") to click Accept...");
+                    continue;
+                }
+                if (pt == PacketType::AUTH_RESULT) {
+                    ByteReader r(payload);
+                    AuthResultCode code = static_cast<AuthResultCode>(r.readU8());
+                    uint8_t perms = r.readU8();
+                    std::string msg = r.readString();
+
+                    if (code != AuthResultCode::Accepted) {
+                        if (!isReconnecting) {
+                            setStatus(ViewerConnectionState::Error, msg.empty() ? "Authentication rejected." : msg);
+                        }
+                        closeWinSock(vSock);
+                        viewerSock_.store(~uintptr_t(0));
+                        return false;
+                    }
+
+                    // Activate mandatory end-to-end stream encryption
+                    if (!hostPubBlob.empty()) {
+                        viewerEcdh.computeSharedSessionKey(
+                            hostPubBlob.data(), hostPubBlob.size(),
+                            remoteId, identity_.deskId(), nonce, viewerSessionKey_);
+                    } else {
+                        viewerSessionKey_ = CryptoUtils::deriveSessionKey(remoteId, identity_.deskId(), nonce);
+                    }
+
+                    std::string sasFingerprint;
+                    {
+                        std::lock_guard<std::mutex> lock(viewerCipherMutex_);
+                        viewerCipher_.initialize(viewerSessionKey_, /*isHost=*/false);
+                        viewerSendSeq_ = 0;
+                        viewerEncrypted_.store(true);
+                        sasFingerprint = CryptoUtils::sessionFingerprintHex(viewerSessionKey_);
+                    }
+
+                    {
+                        std::lock_guard<std::mutex> lock(viewerStatsMutex_);
+                        viewerStats_.state = ViewerConnectionState::Connected;
+                        viewerStats_.statusMessage = isReconnecting ? ("Reconnected to " + remoteHost) : ("Connected to " + remoteHost);
+                        viewerStats_.reconnectAttempt = 0;
+                        viewerStats_.remoteDeskId = remoteId;
+                        viewerStats_.remoteHostname = remoteHost;
+                        viewerStats_.remoteAddress = resolvedIp + ":" + std::to_string(resolvedPort);
+                        viewerStats_.securityFingerprint = sasFingerprint;
+                        if (!isReconnecting) {
+                            viewerStats_.connectedSinceTickMs = nowTickMs();
+                        }
+                        viewerStats_.grantedPermissions = perms;
+                    }
+                    identity_.addOrUpdateRecentSession(remoteId, remoteHost, targetInput);
+
+                    requestVideoSettings(
+                        identity_.settings().defaultQuality,
+                        viewerStats_.activeMonitorIndex,
+                        true,
+                        clampTargetFps(identity_.settings().targetFps),
+                        identity_.settings().adaptiveFps ? 1 : 0
+                    );
+                    return true;
+                }
+            }
+        } catch (...) {}
+
+        closeWinSock(vSock);
+        viewerSock_.store(~uintptr_t(0));
+        return false;
+    };
+
+    bool isReconnecting = false;
+
+    while (viewerActive_.load() && running_.load()) {
+        if (!isReconnecting) {
+            if (!doConnectAndAuth(false)) {
+                viewerActive_.store(false);
+                break;
+            }
+        } else {
+            bool recovered = false;
+            for (uint32_t attempt = 1; attempt <= 3 && viewerActive_.load() && running_.load(); ++attempt) {
                 {
                     std::lock_guard<std::mutex> lock(viewerStatsMutex_);
-                    viewerStats_.state = ViewerConnectionState::Connected;
-                    viewerStats_.statusMessage = "Connected to " + remoteHost;
-                    viewerStats_.remoteDeskId = remoteId;
-                    viewerStats_.remoteHostname = remoteHost;
-                    viewerStats_.remoteAddress = resolvedIp + ":" + std::to_string(resolvedPort);
-                    viewerStats_.securityFingerprint = sasFingerprint;
-                    viewerStats_.connectedSinceTickMs = nowTickMs();
-                    viewerStats_.grantedPermissions = perms;
+                    viewerStats_.state = ViewerConnectionState::Reconnecting;
+                    viewerStats_.reconnectAttempt = attempt;
+                    viewerStats_.statusMessage = "Connection lost. Reconnecting (attempt " + std::to_string(attempt) + "/3)...";
                 }
-                identity_.addOrUpdateRecentSession(remoteId, remoteHost, targetInput);
+                uint32_t backoffMs = (attempt == 1) ? 1000 : (attempt == 2) ? 3000 : 5000;
+                for (uint32_t waited = 0; waited < backoffMs && viewerActive_.load() && running_.load(); waited += 100) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                }
+                if (!viewerActive_.load() || !running_.load()) break;
 
-                requestVideoSettings(
-                    identity_.settings().defaultQuality,
-                    0,
-                    true,
-                    clampTargetFps(identity_.settings().targetFps),
-                    identity_.settings().adaptiveFps ? 1 : 0
-                );
+                if (doConnectAndAuth(true)) {
+                    recovered = true;
+                    break;
+                }
+            }
+
+            if (!recovered) {
+                if (viewerActive_.load()) {
+                    setStatus(ViewerConnectionState::Error, "Connection lost. Reconnect failed after 3 attempts.");
+                    viewerActive_.store(false);
+                }
                 break;
             }
         }
+
+        uintptr_t vSock = viewerSock_.load();
+        if (vSock == ~uintptr_t(0)) break;
 
         // 5. Connected! Receive encrypted video tiles, cursor updates, clipboard, files, and chat
         uint64_t viewerRecvSeq = 0;
@@ -2098,234 +2179,285 @@ void NetworkEngine::runViewerSession(std::string targetInput, std::string passwo
         uint64_t lastPingTick = 0;
         uint32_t framesInWindow = 0;
         uint64_t bytesInWindow = 0;
+        bool socketDropped = false;
 
         auto sendPacketHelper = [&](PacketType pt, const std::vector<uint8_t>& buf) -> bool {
             return sendViewerEncryptedPacket(pt, 0, buf.data(), buf.size());
         };
 
-        while (viewerActive_.load() && running_.load()) {
-            uint64_t now = nowTickMs();
+        try {
+            while (viewerActive_.load() && running_.load()) {
+                uint64_t now = nowTickMs();
 
-            if (now - lastPingTick >= 1000) {
-                lastPingTick = now;
-                uint32_t curRtt = 0;
-                {
-                    std::lock_guard<std::mutex> lock(viewerStatsMutex_);
-                    curRtt = viewerStats_.rttMs;
-                }
-                ByteWriter pw;
-                pw.writeU64(now);
-                pw.writeU32(curRtt);
-                sendViewerEncryptedPacket(PacketType::PING, 0, pw.buffer().data(), pw.buffer().size());
-
-                std::string newClip;
-                if (clipboardManager_.pollLocalChange(newClip)) {
-                    ByteWriter cw;
-                    cw.writeString(newClip);
-                    sendViewerEncryptedPacket(PacketType::CLIPBOARD_TEXT, 0, cw.buffer().data(), cw.buffer().size());
-                }
-            }
-
-            fileManager_.pumpOutgoingChunks(sendPacketHelper, 4);
-
-            SOCKET ws = toWinSock(vSock);
-            if (ws == INVALID_SOCKET) break;
-
-            fd_set rfds{};
-            FD_ZERO(&rfds);
-            FD_SET(ws, &rfds);
-            timeval tv{ 0, 20000 }; // 20 ms
-
-            int sel = select(0, &rfds, nullptr, nullptr, &tv);
-            if (sel < 0) break;
-            if (sel == 0) continue;
-
-            if (!recvFrame(vSock, hdr, payload, &viewerCipher_, &viewerRecvSeq)) {
-                break;
-            }
-
-            bytesInWindow += sizeof(FrameHeader) + payload.size();
-            PacketType pt = static_cast<PacketType>(hdr.type);
-
-            try {
-                ByteReader r(payload);
-                switch (pt) {
-                    case PacketType::VIDEO_CONFIG: {
-                        int32_t monIdx = r.readI32();
-                        int32_t fw = r.readI32();
-                        int32_t fh = r.readI32();
-                        uint16_t mcount = r.readU16();
-                        std::vector<MonitorDesc> mons;
-                        for (uint16_t i = 0; i < mcount; ++i) {
-                            MonitorDesc m;
-                            m.index = r.readI32();
-                            m.x = r.readI32();
-                            m.y = r.readI32();
-                            m.width = r.readI32();
-                            m.height = r.readI32();
-                            m.isPrimary = (r.readU8() != 0);
-                            m.name = r.readString();
-                            mons.push_back(m);
-                        }
-                        {
-                            std::lock_guard<std::mutex> lock(viewerFrameMutex_);
-                            viewerCanvasW_ = fw;
-                            viewerCanvasH_ = fh;
-                            viewerCanvasBgra_.assign(static_cast<size_t>(fw) * fh * 4, 0);
-                            viewerFrameSeq_++;
-                        }
-                        {
-                            std::lock_guard<std::mutex> lock(viewerStatsMutex_);
-                            viewerStats_.activeMonitorIndex = monIdx;
-                            viewerStats_.monitorCount = std::max<int>(1, static_cast<int>(mons.size()));
-                            viewerStats_.monitors = std::move(mons);
-                            viewerStats_.frameWidth = fw;
-                            viewerStats_.frameHeight = fh;
-                        }
-                        break;
+                if (now - lastPingTick >= 1000) {
+                    lastPingTick = now;
+                    uint32_t curRtt = 0;
+                    {
+                        std::lock_guard<std::mutex> lock(viewerStatsMutex_);
+                        curRtt = viewerStats_.rttMs;
                     }
-                    case PacketType::VIDEO_FRAME_TILES: {
-                        uint16_t fw = r.readU16();
-                        uint16_t fh = r.readU16();
-                        uint16_t tileCount = r.readU16();
+                    ByteWriter pw;
+                    pw.writeU64(now);
+                    pw.writeU32(curRtt);
+                    sendViewerEncryptedPacket(PacketType::PING, 0, pw.buffer().data(), pw.buffer().size());
 
-                        std::vector<EncodedTile> tiles;
-                        tiles.reserve(tileCount);
-                        for (uint16_t i = 0; i < tileCount; ++i) {
-                            TileHeader th{};
-                            r.readBytes(&th, sizeof(th));
-                            EncodedTile et;
-                            et.x = th.x;
-                            et.y = th.y;
-                            et.width = th.width;
-                            et.height = th.height;
-                            et.encoding = static_cast<TileEncoding>(th.encoding);
-                            et.data.resize(th.dataSize);
-                            if (th.dataSize > 0) {
-                                r.readBytes(et.data.data(), th.dataSize);
+                    std::string newClip;
+                    if (clipboardSyncEnabled_.load() && clipboardManager_.pollLocalChange(newClip)) {
+                        ByteWriter cw;
+                        cw.writeString(newClip);
+                        sendViewerEncryptedPacket(PacketType::CLIPBOARD_TEXT, 0, cw.buffer().data(), cw.buffer().size());
+                    }
+                }
+
+                fileManager_.pumpOutgoingChunks(sendPacketHelper, 4);
+
+                SOCKET ws = toWinSock(vSock);
+                if (ws == INVALID_SOCKET) {
+                    socketDropped = true;
+                    break;
+                }
+
+                fd_set rfds{};
+                FD_ZERO(&rfds);
+                FD_SET(ws, &rfds);
+                timeval tv{ 0, 20000 }; // 20 ms
+
+                int sel = select(0, &rfds, nullptr, nullptr, &tv);
+                if (sel < 0) {
+                    socketDropped = true;
+                    break;
+                }
+                if (sel == 0) continue;
+
+                FrameHeader hdr{};
+                std::vector<uint8_t> payload;
+                if (!recvFrame(vSock, hdr, payload, &viewerCipher_, &viewerRecvSeq)) {
+                    socketDropped = true;
+                    break;
+                }
+
+                bytesInWindow += sizeof(FrameHeader) + payload.size();
+                PacketType pt = static_cast<PacketType>(hdr.type);
+
+                try {
+                    ByteReader r(payload);
+                    switch (pt) {
+                        case PacketType::VIDEO_CONFIG: {
+                            int32_t monIdx = r.readI32();
+                            int32_t fw = r.readI32();
+                            int32_t fh = r.readI32();
+                            uint16_t mcount = r.readU16();
+                            std::vector<MonitorDesc> mons;
+                            for (uint16_t i = 0; i < mcount; ++i) {
+                                MonitorDesc m;
+                                m.index = r.readI32();
+                                m.x = r.readI32();
+                                m.y = r.readI32();
+                                m.width = r.readI32();
+                                m.height = r.readI32();
+                                m.isPrimary = (r.readU8() != 0);
+                                m.name = r.readString();
+                                mons.push_back(m);
                             }
-                            tiles.push_back(std::move(et));
-                        }
-
-                        {
-                            std::lock_guard<std::mutex> lock(viewerFrameMutex_);
-                            if (viewerCanvasW_ != fw || viewerCanvasH_ != fh) {
+                            {
+                                std::lock_guard<std::mutex> lock(viewerFrameMutex_);
                                 viewerCanvasW_ = fw;
                                 viewerCanvasH_ = fh;
                                 viewerCanvasBgra_.assign(static_cast<size_t>(fw) * fh * 4, 0);
+                                viewerFrameSeq_++;
                             }
-                            for (const auto& t : tiles) {
-                                TileCodec::decodeTileIntoCanvas(t, viewerCanvasBgra_.data(), viewerCanvasW_, viewerCanvasH_);
-                            }
-                            viewerFrameSeq_++;
-                        }
-
-                        framesInWindow++;
-                        uint64_t tNow = nowTickMs();
-                        if (tNow - lastMetricTick >= 500) {
-                            double sec = static_cast<double>(tNow - lastMetricTick) / 1000.0;
-                            std::lock_guard<std::mutex> lock(viewerStatsMutex_);
-                            viewerStats_.frameWidth = fw;
-                            viewerStats_.frameHeight = fh;
-                            viewerStats_.fps = static_cast<float>(framesInWindow / sec);
-                            viewerStats_.kbps = static_cast<float>((bytesInWindow / 1024.0) / sec);
-                            framesInWindow = 0;
-                            bytesInWindow = 0;
-                            lastMetricTick = tNow;
-                        }
-                        break;
-                    }
-                    case PacketType::CURSOR_UPDATE: {
-                        float cx = r.readF32();
-                        float cy = r.readF32();
-                        bool cvis = (r.readU8() != 0);
-                        {
-                            std::lock_guard<std::mutex> lock(viewerFrameMutex_);
-                            viewerCursor_.normX = cx;
-                            viewerCursor_.normY = cy;
-                            viewerCursor_.visible = cvis;
-                        }
-                        {
-                            std::lock_guard<std::mutex> lock(viewerStatsMutex_);
-                            viewerStats_.remoteCursor = { cx, cy, cvis };
-                        }
-                        break;
-                    }
-                    case PacketType::PERMISSION_UPDATE: {
-                        uint8_t newPerms = r.readU8();
-                        std::lock_guard<std::mutex> lock(viewerStatsMutex_);
-                        viewerStats_.grantedPermissions = newPerms;
-                        break;
-                    }
-                    case PacketType::PONG: {
-                        uint64_t sentTs = r.readU64();
-                        uint64_t rtt = nowTickMs() - sentTs;
-                        std::lock_guard<std::mutex> lock(viewerStatsMutex_);
-                        viewerStats_.rttMs = static_cast<uint32_t>(rtt);
-                        uint8_t effCap = computeAdaptiveFpsCap(
-                            viewerStats_.targetFps,
-                            viewerStats_.adaptiveFps,
-                            viewerStats_.rttMs,
-                            0.0f
-                        );
-                        viewerStats_.effectiveFpsCap = effCap;
-                        viewerStats_.networkThrottled = (effCap < viewerStats_.targetFps);
-                        break;
-                    }
-                    case PacketType::CLIPBOARD_TEXT: {
-                        std::string txt = r.readString();
-                        clipboardManager_.applyRemoteClipboard(txt);
-                        break;
-                    }
-                    case PacketType::FILE_OFFER: {
-                        uint32_t tid = r.readU32();
-                        uint64_t fsz = r.readU64();
-                        std::string fname = r.readString();
-                        fileManager_.handleFileOffer(tid, fsz, fname);
-                        break;
-                    }
-                    case PacketType::FILE_CHUNK: {
-                        uint32_t tid = r.readU32();
-                        uint64_t off = r.readU64();
-                        uint32_t clen = r.readU32();
-                        if (r.hasRemaining(clen)) {
-                            fileManager_.handleFileChunk(tid, off, r.currentPtr(), clen);
-                        }
-                        break;
-                    }
-                    case PacketType::FILE_COMPLETE: {
-                        uint32_t tid = r.readU32();
-                        std::string sha = r.readString();
-                        fileManager_.handleFileComplete(tid, sha);
-                        break;
-                    }
-                    case PacketType::FILE_CANCEL: {
-                        uint32_t tid = r.readU32();
-                        fileManager_.handleFileCancel(tid);
-                        break;
-                    }
-                    case PacketType::CHAT_MESSAGE: {
-                        std::string sender = r.readString();
-                        std::string msg = r.readString();
-                        if (!msg.empty()) {
                             {
-                                std::lock_guard<std::mutex> cl(chatMutex_);
-                                chatHistory_.push_back({ sender, msg, false, nowTickMs() });
-                                if (chatHistory_.size() > 100) chatHistory_.erase(chatHistory_.begin());
+                                std::lock_guard<std::mutex> lock(viewerStatsMutex_);
+                                viewerStats_.activeMonitorIndex = monIdx;
+                                viewerStats_.monitorCount = std::max<int>(1, static_cast<int>(mons.size()));
+                                viewerStats_.monitors = std::move(mons);
+                                viewerStats_.frameWidth = fw;
+                                viewerStats_.frameHeight = fh;
                             }
-                            unreadChatCount_.fetch_add(1);
+                            break;
                         }
-                        break;
+                        case PacketType::MONITOR_LIST: {
+                            uint16_t mcount = r.readU16();
+                            std::vector<MonitorDesc> mons;
+                            mons.reserve(mcount);
+                            for (uint16_t i = 0; i < mcount; ++i) {
+                                MonitorDesc m;
+                                m.index = r.readI32();
+                                m.x = r.readI32();
+                                m.y = r.readI32();
+                                m.width = r.readI32();
+                                m.height = r.readI32();
+                                m.isPrimary = (r.readU8() != 0);
+                                m.name = r.readString();
+                                mons.push_back(m);
+                            }
+                            {
+                                std::lock_guard<std::mutex> lock(viewerStatsMutex_);
+                                viewerStats_.monitors = std::move(mons);
+                                viewerStats_.monitorCount = std::max<int>(1, static_cast<int>(viewerStats_.monitors.size()));
+                            }
+                            break;
+                        }
+                        case PacketType::VIDEO_FRAME_TILES: {
+                            uint16_t fw = r.readU16();
+                            uint16_t fh = r.readU16();
+                            uint16_t tileCount = r.readU16();
+
+                            std::vector<EncodedTile> tiles;
+                            tiles.reserve(tileCount);
+                            for (uint16_t i = 0; i < tileCount; ++i) {
+                                TileHeader th{};
+                                r.readBytes(&th, sizeof(th));
+                                EncodedTile et;
+                                et.x = th.x;
+                                et.y = th.y;
+                                et.width = th.width;
+                                et.height = th.height;
+                                et.encoding = static_cast<TileEncoding>(th.encoding);
+                                et.data.resize(th.dataSize);
+                                if (th.dataSize > 0) {
+                                    r.readBytes(et.data.data(), th.dataSize);
+                                }
+                                tiles.push_back(std::move(et));
+                            }
+
+                            {
+                                std::lock_guard<std::mutex> lock(viewerFrameMutex_);
+                                if (viewerCanvasW_ != fw || viewerCanvasH_ != fh) {
+                                    viewerCanvasW_ = fw;
+                                    viewerCanvasH_ = fh;
+                                    viewerCanvasBgra_.assign(static_cast<size_t>(fw) * fh * 4, 0);
+                                }
+                                for (const auto& t : tiles) {
+                                    TileCodec::decodeTileIntoCanvas(t, viewerCanvasBgra_.data(), viewerCanvasW_, viewerCanvasH_);
+                                }
+                                viewerFrameSeq_++;
+                            }
+
+                            framesInWindow++;
+                            uint64_t tNow = nowTickMs();
+                            if (tNow - lastMetricTick >= 500) {
+                                double sec = static_cast<double>(tNow - lastMetricTick) / 1000.0;
+                                std::lock_guard<std::mutex> lock(viewerStatsMutex_);
+                                viewerStats_.frameWidth = fw;
+                                viewerStats_.frameHeight = fh;
+                                viewerStats_.fps = static_cast<float>(framesInWindow / sec);
+                                viewerStats_.kbps = static_cast<float>((bytesInWindow / 1024.0) / sec);
+                                framesInWindow = 0;
+                                bytesInWindow = 0;
+                                lastMetricTick = tNow;
+                            }
+                            break;
+                        }
+                        case PacketType::CURSOR_UPDATE: {
+                            float cx = r.readF32();
+                            float cy = r.readF32();
+                            bool cvis = (r.readU8() != 0);
+                            {
+                                std::lock_guard<std::mutex> lock(viewerFrameMutex_);
+                                viewerCursor_.normX = cx;
+                                viewerCursor_.normY = cy;
+                                viewerCursor_.visible = cvis;
+                            }
+                            {
+                                std::lock_guard<std::mutex> lock(viewerStatsMutex_);
+                                viewerStats_.remoteCursor = { cx, cy, cvis };
+                            }
+                            break;
+                        }
+                        case PacketType::PERMISSION_UPDATE: {
+                            uint8_t newPerms = r.readU8();
+                            std::lock_guard<std::mutex> lock(viewerStatsMutex_);
+                            viewerStats_.grantedPermissions = newPerms;
+                            break;
+                        }
+                        case PacketType::PONG: {
+                            uint64_t sentTs = r.readU64();
+                            uint64_t rtt = nowTickMs() - sentTs;
+                            std::lock_guard<std::mutex> lock(viewerStatsMutex_);
+                            viewerStats_.rttMs = static_cast<uint32_t>(rtt);
+                            uint8_t effCap = computeAdaptiveFpsCap(
+                                viewerStats_.targetFps,
+                                viewerStats_.adaptiveFps,
+                                viewerStats_.rttMs,
+                                0.0f
+                            );
+                            viewerStats_.effectiveFpsCap = effCap;
+                            viewerStats_.networkThrottled = (effCap < viewerStats_.targetFps);
+                            break;
+                        }
+                        case PacketType::CLIPBOARD_TEXT: {
+                            std::string txt = r.readString();
+                            if (clipboardSyncEnabled_.load()) {
+                                clipboardManager_.applyRemoteClipboard(txt);
+                            }
+                            break;
+                        }
+                        case PacketType::FILE_OFFER: {
+                            uint32_t tid = r.readU32();
+                            uint64_t fsz = r.readU64();
+                            std::string fname = r.readString();
+                            fileManager_.handleFileOffer(tid, fsz, fname);
+                            break;
+                        }
+                        case PacketType::FILE_CHUNK: {
+                            uint32_t tid = r.readU32();
+                            uint64_t off = r.readU64();
+                            uint32_t clen = r.readU32();
+                            if (r.hasRemaining(clen)) {
+                                fileManager_.handleFileChunk(tid, off, r.currentPtr(), clen);
+                            }
+                            break;
+                        }
+                        case PacketType::FILE_COMPLETE: {
+                            uint32_t tid = r.readU32();
+                            std::string sha = r.readString();
+                            fileManager_.handleFileComplete(tid, sha);
+                            break;
+                        }
+                        case PacketType::FILE_CANCEL: {
+                            uint32_t tid = r.readU32();
+                            fileManager_.handleFileCancel(tid);
+                            break;
+                        }
+                        case PacketType::CHAT_MESSAGE: {
+                            std::string sender = r.readString();
+                            std::string msg = r.readString();
+                            if (!msg.empty()) {
+                                {
+                                    std::lock_guard<std::mutex> cl(chatMutex_);
+                                    chatHistory_.push_back({ sender, msg, false, nowTickMs() });
+                                    if (chatHistory_.size() > 100) chatHistory_.erase(chatHistory_.begin());
+                                }
+                                unreadChatCount_.fetch_add(1);
+                            }
+                            break;
+                        }
+                        case PacketType::DISCONNECT:
+                            viewerActive_.store(false);
+                            break;
+                        default:
+                            break;
                     }
-                    case PacketType::DISCONNECT:
-                        viewerActive_.store(false);
-                        break;
-                    default:
-                        break;
-                }
-            } catch (...) {}
+                } catch (...) {}
+            }
+        } catch (...) {}
+
+        uintptr_t curS = viewerSock_.exchange(~uintptr_t(0));
+        closeWinSock(curS);
+        viewerEncrypted_.store(false);
+        {
+            std::lock_guard<std::mutex> lock(viewerCipherMutex_);
+            viewerCipher_.reset();
         }
-    } catch (...) {}
+
+        if (socketDropped && viewerActive_.load() && running_.load()) {
+            isReconnecting = true;
+            continue;
+        } else {
+            break;
+        }
+    }
 
     uintptr_t s = viewerSock_.exchange(~uintptr_t(0));
     closeWinSock(s);
@@ -2430,6 +2562,39 @@ void NetworkEngine::setSessionFpsConfig(uint8_t targetFps, bool adaptiveFps) {
         curMon = viewerStats_.activeMonitorIndex;
     }
     requestVideoSettings(curPreset, curMon, false, clampTargetFps(targetFps), adaptiveFps ? 1 : 0);
+}
+
+void NetworkEngine::selectRemoteMonitor(int monitorIndex) {
+    if (viewerSock_.load() == ~uintptr_t(0)) return;
+    {
+        std::lock_guard<std::mutex> lock(viewerStatsMutex_);
+        viewerStats_.activeMonitorIndex = monitorIndex;
+    }
+    ByteWriter w;
+    w.writeI32(monitorIndex);
+    sendViewerEncryptedPacket(PacketType::MONITOR_SELECT, 0, w.buffer().data(), w.buffer().size());
+}
+
+void NetworkEngine::updateQualitySettings(QualityPreset preset, uint8_t targetFps, bool adaptiveFps) {
+    if (viewerSock_.load() == ~uintptr_t(0)) return;
+    {
+        std::lock_guard<std::mutex> lock(viewerStatsMutex_);
+        viewerStats_.qualityPreset = preset;
+        viewerStats_.targetFps = clampTargetFps(targetFps);
+        viewerStats_.adaptiveFps = adaptiveFps;
+        viewerStats_.effectiveFpsCap = computeAdaptiveFpsCap(
+            viewerStats_.targetFps,
+            viewerStats_.adaptiveFps,
+            viewerStats_.rttMs,
+            0.0f
+        );
+        viewerStats_.networkThrottled = (viewerStats_.effectiveFpsCap < viewerStats_.targetFps);
+    }
+    ByteWriter w;
+    w.writeU8(static_cast<uint8_t>(preset));
+    w.writeU8(targetFps);
+    w.writeU8(adaptiveFps ? 1 : 0);
+    sendViewerEncryptedPacket(PacketType::QUALITY_UPDATE, 0, w.buffer().data(), w.buffer().size());
 }
 
 uint32_t NetworkEngine::sendFile(const std::string& filePath) {

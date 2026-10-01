@@ -37,6 +37,9 @@ enum class PacketType : uint8_t {
     VIDEO_FRAME_TILES   = 0x11,
     CURSOR_UPDATE       = 0x12,
     VIDEO_CONTROL_REQ   = 0x13, // Quality preset, keyframe request, or monitor switch
+    MONITOR_LIST        = 0x14, // Host -> Viewer: List of active remote monitors
+    MONITOR_SELECT      = 0x15, // Viewer -> Host: Request active monitor switch
+    QUALITY_UPDATE      = 0x16, // Viewer -> Host: Live quality preset & FPS update
 
     // Remote Input Injection
     INPUT_MOUSE_MOVE    = 0x20,
@@ -44,7 +47,7 @@ enum class PacketType : uint8_t {
     INPUT_MOUSE_WHEEL   = 0x22,
     INPUT_KEY_EVENT     = 0x23,
     INPUT_RELEASE_ALL   = 0x24, // Release all pressed modifier keys on focus loss / tab switch
-    SYSTEM_ACTION       = 0x25, // Trigger remote system action (Task Manager, Show Desktop, Lock PC)
+    SYSTEM_ACTION       = 0x25, // Trigger remote system action (Task Manager, Show Desktop, Lock PC, SAS, Reboot)
 
     // Clipboard, File Transfer & Live Chat
     CLIPBOARD_TEXT      = 0x30,
@@ -69,7 +72,9 @@ enum class PacketType : uint8_t {
 enum class SystemActionType : uint8_t {
     TaskManager     = 1,
     ShowDesktop     = 2,
-    LockWorkstation = 3
+    LockWorkstation = 3,
+    SendCtrlAltDel  = 4,
+    EmergencyReboot = 5
 };
 
 enum FrameFlags : uint8_t {

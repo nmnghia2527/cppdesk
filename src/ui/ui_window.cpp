@@ -361,6 +361,22 @@ bool AeroDeskWindow::stepAnimations(float dt) {
     float targetToast = toastVisible ? 1.0f : 0.0f;
     if (stepSpring(toastAnimT_, toastAnimVel_, targetToast, 28.0f, 0.72f, dt)) active = true;
 
+    // 7. Fullscreen macOS Dynamic Island Floating Top Bar Spring
+    RECT rcCl{};
+    GetClientRect(hwnd_, &rcCl);
+    float winW = static_cast<float>(std::max<LONG>(1, rcCl.right - rcCl.left));
+    float pillHalfW = 355.0f;
+    bool islandHovered = (mouseInsideClient_ && (mouseY_ <= 42.0f || (mouseY_ <= floatingToolbarY_ + 54.0f && std::fabs(mouseX_ - winW * 0.5f) <= pillHalfW + 24.0f)));
+    bool islandDropdownOpen = (showDisplayMenu_ || showAdminMenu_ || showQualityMenu_);
+    float targetToolbarY = (isFullscreen_ && activeTab_ == ActiveTab::RemoteSession)
+        ? ((floatingToolbarPinned_ || islandHovered || islandDropdownOpen) ? 14.0f : -64.0f)
+        : -64.0f;
+    if (stepSpring(floatingToolbarY_, floatingToolbarVel_, targetToolbarY, 26.0f, 0.78f, dt)) active = true;
+
+    // 8. Keyboard Shortcuts Modal Spring
+    float targetShortcuts = showShortcutsModal_ ? 1.0f : 0.0f;
+    if (stepSpring(shortcutsModalAnimT_, shortcutsModalAnimVel_, targetShortcuts, 28.0f, 0.74f, dt)) active = true;
+
     // 7. Per-widget macOS tactile hover & press springs
     for (auto& kv : widgetAnims_) {
         const std::string& id = kv.first;
@@ -912,7 +928,9 @@ void AeroDeskWindow::onPaint() {
     renderTarget_->Clear(COL_BG_MAIN);
 
     float topOffset = 0.0f;
-    drawTopNavBar(width, topOffset);
+    if (!isFullscreen_) {
+        drawTopNavBar(width, topOffset);
+    }
 
     UiRect contentBounds = { 0.0f, topOffset, width, height };
 
@@ -954,6 +972,16 @@ void AeroDeskWindow::onPaint() {
     // macOS Sheet Modal with spring overshoot
     if (modalAnimT_ > 0.004f) {
         drawIncomingApprovalModal(width, height, modalAnimT_);
+    }
+
+    // Fullscreen Dynamic Island Floating Toolbar
+    if (isFullscreen_ && activeTab_ == ActiveTab::RemoteSession) {
+        drawDynamicIslandToolbar(width, height);
+    }
+
+    // Keyboard Shortcuts Sheet Modal
+    if (shortcutsModalAnimT_ > 0.004f) {
+        drawShortcutsModal(width, height, shortcutsModalAnimT_);
     }
 
     // Floating Capsule Toast
@@ -1486,117 +1514,122 @@ void AeroDeskWindow::drawRemoteSessionView(const UiRect& bounds, float alpha) {
     auto stats = network_.viewerStats();
     const auto& appSett = identity_.settings();
 
-    float barH = 48.0f;
-    UiRect hudBar = { bounds.left, bounds.top, bounds.right, bounds.top + barH };
-    fillRoundRect(hudBar, 0.0f, COL_BG_CARD);
-    fillRoundRect({ hudBar.left, hudBar.bottom - 1.0f, hudBar.right, hudBar.bottom }, 0.0f, COL_BORDER);
+    UiRect stageRect = bounds;
 
-    float bx = hudBar.left + 18.0f;
-    std::string peerTitle = stats.remoteHostname.empty()
-        ? CryptoUtils::formatDeskId(stats.remoteDeskId)
-        : stats.remoteHostname;
-    drawText(peerTitle, { bx, hudBar.top, bx + 170.0f, hudBar.bottom }, fmtBodyBold_, COL_TEXT_PRIMARY);
-    bx += 174.0f;
+    if (!isFullscreen_) {
+        float barH = 48.0f;
+        UiRect hudBar = { bounds.left, bounds.top, bounds.right, bounds.top + barH };
+        fillRoundRect(hudBar, 0.0f, COL_BG_CARD);
+        fillRoundRect({ hudBar.left, hudBar.bottom - 1.0f, hudBar.right, hudBar.bottom }, 0.0f, COL_BORDER);
 
-    drawPulseDot(bx + 4.0f, hudBar.centerY(), 3.6f, COL_SUCCESS, alpha);
-    if (appSett.showSessionHud) {
-        char fpsBuf[48];
-        std::snprintf(fpsBuf, sizeof(fpsBuf), "Connected • %.0f FPS", stats.fps);
-        drawText(fpsBuf, { bx + 13.0f, hudBar.top, bx + 165.0f, hudBar.bottom }, fmtSmall_, COL_TEXT_SECONDARY);
-    } else {
-        drawText("Connected", { bx + 13.0f, hudBar.top, bx + 110.0f, hudBar.bottom }, fmtSmall_, COL_TEXT_SECONDARY);
-    }
+        float bx = hudBar.left + 18.0f;
+        std::string peerTitle = stats.remoteHostname.empty()
+            ? CryptoUtils::formatDeskId(stats.remoteDeskId)
+            : stats.remoteHostname;
+        drawText(peerTitle, { bx, hudBar.top, bx + 170.0f, hudBar.bottom }, fmtBodyBold_, COL_TEXT_PRIMARY);
+        bx += 174.0f;
 
-    // Right-aligned session controls
-    float rx = hudBar.right - 14.0f;
+        drawPulseDot(bx + 4.0f, hudBar.centerY(), 3.6f, COL_SUCCESS, alpha);
+        if (appSett.showSessionHud) {
+            char fpsBuf[48];
+            std::snprintf(fpsBuf, sizeof(fpsBuf), "Connected • %.0f FPS", stats.fps);
+            drawText(fpsBuf, { bx + 13.0f, hudBar.top, bx + 165.0f, hudBar.bottom }, fmtSmall_, COL_TEXT_SECONDARY);
+        } else {
+            drawText("Connected", { bx + 13.0f, hudBar.top, bx + 110.0f, hudBar.bottom }, fmtSmall_, COL_TEXT_SECONDARY);
+        }
 
-    UiRect discBtn = { rx - 88.0f, hudBar.top + 8.0f, rx, hudBar.bottom - 8.0f };
-    drawButton("sess_disconnect", discBtn, "Disconnect",
-               COL_DANGER, COL_DANGER_HV, COL_TEXT_ON_ACCENT, 7.5f, [this]() {
-                   network_.disconnectViewer();
-                   switchTab(ActiveTab::Dashboard);
-                   showToast("Disconnected");
-               }, fmtSmall_);
-    rx = discBtn.left - 6.0f;
+        // Right-aligned session controls
+        float rx = hudBar.right - 14.0f;
 
-    UiRect fsBtn = { rx - 84.0f, hudBar.top + 8.0f, rx, hudBar.bottom - 8.0f };
-    drawButton("sess_fullscreen", fsBtn, isFullscreen_ ? "Exit (F11)" : "Fullscreen",
-               COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 7.5f, [this]() {
-                   toggleFullscreen();
-               }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
-    rx = fsBtn.left - 6.0f;
+        UiRect discBtn = { rx - 88.0f, hudBar.top + 8.0f, rx, hudBar.bottom - 8.0f };
+        drawButton("sess_disconnect", discBtn, "Disconnect",
+                   COL_DANGER, COL_DANGER_HV, COL_TEXT_ON_ACCENT, 7.5f, [this]() {
+                       network_.disconnectViewer();
+                       switchTab(ActiveTab::Dashboard);
+                       showToast("Disconnected");
+                   }, fmtSmall_);
+        rx = discBtn.left - 6.0f;
 
-    UiRect shotBtn = { rx - 80.0f, hudBar.top + 8.0f, rx, hudBar.bottom - 8.0f };
-    drawButton("sess_screenshot", shotBtn, "Screenshot",
-               COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 7.5f, [this]() {
-                   saveRemoteScreenshot();
-               }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
-    rx = shotBtn.left - 6.0f;
-
-    UiRect taskBtn = { rx - 72.0f, hudBar.top + 8.0f, rx, hudBar.bottom - 8.0f };
-    drawButton("sess_taskmgr", taskBtn, "Task Mgr",
-               COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 7.5f, [this]() {
-                   network_.sendSystemAction(SystemActionType::TaskManager);
-                   showToast("Opened Task Manager");
-               }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
-    rx = taskBtn.left - 6.0f;
-
-    std::string scaleLabel = (scaleMode_ == ScaleMode::FitAspect) ? "Scale: Fit" :
-                             (scaleMode_ == ScaleMode::Stretch) ? "Scale: Stretch" : "Scale: 1:1";
-    UiRect scaleBtn = { rx - 88.0f, hudBar.top + 8.0f, rx, hudBar.bottom - 8.0f };
-    drawButton("sess_scale", scaleBtn, scaleLabel,
-               COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 7.5f, [this]() {
-                   if (scaleMode_ == ScaleMode::FitAspect) scaleMode_ = ScaleMode::Stretch;
-                   else if (scaleMode_ == ScaleMode::Stretch) scaleMode_ = ScaleMode::Original;
-                   else scaleMode_ = ScaleMode::FitAspect;
-               }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
-    rx = scaleBtn.left - 6.0f;
-
-    std::string qualLabel = (stats.qualityPreset == QualityPreset::Ultra) ? "Quality: High" :
-                            (stats.qualityPreset == QualityPreset::Balanced) ? "Quality: Bal" : "Quality: Fast";
-    UiRect qualBtn = { rx - 94.0f, hudBar.top + 8.0f, rx, hudBar.bottom - 8.0f };
-    drawButton("sess_quality", qualBtn, qualLabel,
-               COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 7.5f, [this, stats]() {
-                   QualityPreset nextQ = (stats.qualityPreset == QualityPreset::Ultra) ? QualityPreset::Balanced :
-                                         (stats.qualityPreset == QualityPreset::Balanced) ? QualityPreset::LowBandwidth :
-                                         QualityPreset::Ultra;
-                   network_.requestVideoSettings(nextQ, stats.activeMonitorIndex, true, stats.targetFps, stats.adaptiveFps ? 1 : 0);
-               }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
-    rx = qualBtn.left - 6.0f;
-
-    if (stats.monitorCount > 1) {
-        std::string monLabel = "Display " + std::to_string(stats.activeMonitorIndex + 1);
-        UiRect monBtn = { rx - 78.0f, hudBar.top + 8.0f, rx, hudBar.bottom - 8.0f };
-        drawButton("sess_monitor", monBtn, monLabel,
-                   COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 7.5f, [this, stats]() {
-                       int nextMon = (stats.activeMonitorIndex + 1) % std::max(1, stats.monitorCount);
-                       network_.requestVideoSettings(stats.qualityPreset, nextMon, true, stats.targetFps, stats.adaptiveFps ? 1 : 0);
+        UiRect fsBtn = { rx - 84.0f, hudBar.top + 8.0f, rx, hudBar.bottom - 8.0f };
+        drawButton("sess_fullscreen", fsBtn, "Fullscreen",
+                   COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 7.5f, [this]() {
+                       toggleFullscreen();
                    }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
-        rx = monBtn.left - 6.0f;
-    }
+        rx = fsBtn.left - 6.0f;
 
-    bool canControl = (stats.grantedPermissions & PERM_INPUT) != 0;
-    bool inputActive = canControl && remoteInputEnabled_;
-    std::string inputLabel = !canControl ? "View Only" :
-                             (inputActive ? "Control: ON" : "View Only");
-    UiRect inputBtn = { rx - 98.0f, hudBar.top + 8.0f, rx, hudBar.bottom - 8.0f };
-    drawButton("sess_input_toggle", inputBtn, inputLabel,
-               inputActive ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
-               inputActive ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
-               inputActive ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
-               7.5f, [this, canControl]() {
-                   if (canControl) {
-                       remoteInputEnabled_ = !remoteInputEnabled_;
-                       if (!remoteInputEnabled_) network_.sendReleaseAllModifiers();
-                       showToast(remoteInputEnabled_ ? "Control enabled" : "View-only mode");
-                   } else {
-                       showToast("Remote control disabled by host", true);
-                   }
-               }, fmtSmall_, !inputActive, COL_BORDER,
-               inputActive ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
+        UiRect shotBtn = { rx - 80.0f, hudBar.top + 8.0f, rx, hudBar.bottom - 8.0f };
+        drawButton("sess_screenshot", shotBtn, "Screenshot",
+                   COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 7.5f, [this]() {
+                       saveRemoteScreenshot();
+                   }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
+        rx = shotBtn.left - 6.0f;
+
+        UiRect taskBtn = { rx - 72.0f, hudBar.top + 8.0f, rx, hudBar.bottom - 8.0f };
+        drawButton("sess_taskmgr", taskBtn, "Task Mgr",
+                   COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 7.5f, [this]() {
+                       network_.sendSystemAction(SystemActionType::TaskManager);
+                       showToast("Opened Task Manager");
+                   }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
+        rx = taskBtn.left - 6.0f;
+
+        std::string scaleLabel = (scaleMode_ == ScaleMode::FitAspect) ? "Scale: Fit" :
+                                 (scaleMode_ == ScaleMode::Stretch) ? "Scale: Stretch" : "Scale: 1:1";
+        UiRect scaleBtn = { rx - 88.0f, hudBar.top + 8.0f, rx, hudBar.bottom - 8.0f };
+        drawButton("sess_scale", scaleBtn, scaleLabel,
+                   COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 7.5f, [this]() {
+                       if (scaleMode_ == ScaleMode::FitAspect) scaleMode_ = ScaleMode::Stretch;
+                       else if (scaleMode_ == ScaleMode::Stretch) scaleMode_ = ScaleMode::Original;
+                       else scaleMode_ = ScaleMode::FitAspect;
+                   }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
+        rx = scaleBtn.left - 6.0f;
+
+        std::string qualLabel = (stats.qualityPreset == QualityPreset::Ultra) ? "Quality: High" :
+                                (stats.qualityPreset == QualityPreset::Balanced) ? "Quality: Bal" : "Quality: Fast";
+        UiRect qualBtn = { rx - 94.0f, hudBar.top + 8.0f, rx, hudBar.bottom - 8.0f };
+        drawButton("sess_quality", qualBtn, qualLabel,
+                   COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 7.5f, [this, stats]() {
+                       QualityPreset nextQ = (stats.qualityPreset == QualityPreset::Ultra) ? QualityPreset::Balanced :
+                                             (stats.qualityPreset == QualityPreset::Balanced) ? QualityPreset::LowBandwidth :
+                                             QualityPreset::Ultra;
+                       network_.requestVideoSettings(nextQ, stats.activeMonitorIndex, true, stats.targetFps, stats.adaptiveFps ? 1 : 0);
+                   }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
+        rx = qualBtn.left - 6.0f;
+
+        if (stats.monitorCount > 1) {
+            std::string monLabel = "Display " + std::to_string(stats.activeMonitorIndex + 1);
+            UiRect monBtn = { rx - 78.0f, hudBar.top + 8.0f, rx, hudBar.bottom - 8.0f };
+            drawButton("sess_monitor", monBtn, monLabel,
+                       COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 7.5f, [this, stats]() {
+                           int nextMon = (stats.activeMonitorIndex + 1) % std::max(1, stats.monitorCount);
+                           network_.requestVideoSettings(stats.qualityPreset, nextMon, true, stats.targetFps, stats.adaptiveFps ? 1 : 0);
+                       }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
+            rx = monBtn.left - 6.0f;
+        }
+
+        bool canControl = (stats.grantedPermissions & PERM_INPUT) != 0;
+        bool inputActive = canControl && remoteInputEnabled_;
+        std::string inputLabel = !canControl ? "View Only" :
+                                 (inputActive ? "Control: ON" : "View Only");
+        UiRect inputBtn = { rx - 98.0f, hudBar.top + 8.0f, rx, hudBar.bottom - 8.0f };
+        drawButton("sess_input_toggle", inputBtn, inputLabel,
+                   inputActive ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
+                   inputActive ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
+                   inputActive ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
+                   7.5f, [this, canControl]() {
+                       if (canControl) {
+                           remoteInputEnabled_ = !remoteInputEnabled_;
+                           if (!remoteInputEnabled_) network_.sendReleaseAllModifiers();
+                           showToast(remoteInputEnabled_ ? "Control enabled" : "View-only mode");
+                       } else {
+                           showToast("Remote control disabled by host", true);
+                       }
+                   }, fmtSmall_, !inputActive, COL_BORDER,
+                   inputActive ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
+
+        stageRect = { bounds.left, hudBar.bottom, bounds.right, bounds.bottom };
+    }
 
     // Remote Desktop Canvas Stage
-    UiRect stageRect = { bounds.left, hudBar.bottom, bounds.right, bounds.bottom };
     fillRoundRect(stageRect, 0.0f, COL_STAGE_BG);
 
     if (network_.copyLatestViewerFrame(displayedFrameSeq_, frameBufferBgra_, frameBufferW_, frameBufferH_, remoteCursor_)) {
@@ -1623,8 +1656,8 @@ void AeroDeskWindow::drawRemoteSessionView(const UiRect& bounds, float alpha) {
     }
 
     if (remoteBitmap_ && bitmapW_ > 0 && bitmapH_ > 0) {
-        float availW = stageRect.width() - 24.0f;
-        float availH = stageRect.height() - 24.0f;
+        float availW = isFullscreen_ ? stageRect.width() : (stageRect.width() - 24.0f);
+        float availH = isFullscreen_ ? stageRect.height() : (stageRect.height() - 24.0f);
         float drawW = availW;
         float drawH = availH;
 
@@ -1641,8 +1674,10 @@ void AeroDeskWindow::drawRemoteSessionView(const UiRect& bounds, float alpha) {
         float top  = stageRect.top + (stageRect.height() - drawH) * 0.5f;
         renderedCanvasRect_ = { left, top, left + drawW, top + drawH };
 
-        drawCardShadow(renderedCanvasRect_, 8.0f, alpha);
-        strokeRoundRect(renderedCanvasRect_.inflate(1.2f, 1.2f), 6.0f, COL_BORDER_ALT, 1.2f);
+        if (!isFullscreen_) {
+            drawCardShadow(renderedCanvasRect_, 8.0f, alpha);
+            strokeRoundRect(renderedCanvasRect_.inflate(1.2f, 1.2f), 6.0f, COL_BORDER_ALT, 1.2f);
+        }
 
         D2D1_RECT_F dRect = D2D1::RectF(renderedCanvasRect_.left, renderedCanvasRect_.top,
                                         renderedCanvasRect_.right, renderedCanvasRect_.bottom);
@@ -2270,6 +2305,335 @@ void AeroDeskWindow::drawIncomingApprovalModal(float width, float height, float 
     renderTarget_->SetTransform(D2D1::Matrix3x2F::Identity());
 }
 
+// ---------------- macOS Dynamic Island Floating Top Bar ----------------
+
+void AeroDeskWindow::drawDynamicIslandToolbar(float width, float /*height*/) {
+    if (floatingToolbarY_ <= -58.0f) return;
+
+    auto stats = network_.viewerStats();
+    float pillW = 710.0f;
+    float pillH = 42.0f;
+    float pillLeft = (width - pillW) * 0.5f;
+    float pillRight = pillLeft + pillW;
+    float pillTop = floatingToolbarY_;
+    float pillBottom = pillTop + pillH;
+    UiRect pillRect = { pillLeft, pillTop, pillRight, pillBottom };
+
+    // Frosted card surface with shadow
+    drawCardShadow(pillRect, 21.0f, 0.95f);
+    fillRoundRect(pillRect, 21.0f, withAlpha(COL_BG_CARD, 0.96f));
+    strokeRoundRect(pillRect, 21.0f, withAlpha(COL_BORDER_FOCUS, 0.35f), 1.2f);
+    fillRoundRect({ pillRect.left + 24.0f, pillRect.top + 1.0f, pillRect.right - 24.0f, pillRect.top + 2.0f },
+                  0.5f, rgba(255, 255, 255, 0.40f));
+
+    // Left info: Pulse dot + Host title
+    float curX = pillLeft + 16.0f;
+    drawPulseDot(curX + 4.0f, pillRect.centerY(), 3.5f, COL_SUCCESS, 1.0f);
+    curX += 16.0f;
+
+    std::string peerTitle = stats.remoteHostname.empty()
+        ? CryptoUtils::formatDeskId(stats.remoteDeskId)
+        : stats.remoteHostname;
+    drawText(peerTitle, { curX, pillTop, curX + 130.0f, pillBottom }, fmtSmall_, COL_TEXT_PRIMARY);
+    curX += 136.0f;
+
+    // 1. Display Switcher
+    std::string monLabel = "Disp " + std::to_string(stats.activeMonitorIndex + 1) + " ▾";
+    UiRect monBtn = { curX, pillTop + 6.0f, curX + 78.0f, pillBottom - 6.0f };
+    drawButton("island_mon_btn", monBtn, monLabel,
+               showDisplayMenu_ ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
+               showDisplayMenu_ ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
+               showDisplayMenu_ ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
+               8.0f, [this]() {
+                   showDisplayMenu_ = !showDisplayMenu_;
+                   showAdminMenu_ = false;
+                   showQualityMenu_ = false;
+               }, fmtSmall_, true, COL_BORDER);
+    curX = monBtn.right + 6.0f;
+
+    // 2. Admin Actions Menu
+    UiRect adminBtn = { curX, pillTop + 6.0f, curX + 74.0f, pillBottom - 6.0f };
+    drawButton("island_admin_btn", adminBtn, "Admin ▾",
+               showAdminMenu_ ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
+               showAdminMenu_ ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
+               showAdminMenu_ ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
+               8.0f, [this]() {
+                   showAdminMenu_ = !showAdminMenu_;
+                   showDisplayMenu_ = false;
+                   showQualityMenu_ = false;
+               }, fmtSmall_, true, COL_BORDER);
+    curX = adminBtn.right + 6.0f;
+
+    // 3. Quality & FPS Menu
+    std::string qLabel = (stats.qualityPreset == QualityPreset::Ultra ? "Ultra ▾" :
+                         (stats.qualityPreset == QualityPreset::Balanced ? "Bal ▾" : "Low ▾"));
+    UiRect qualBtn = { curX, pillTop + 6.0f, curX + 72.0f, pillBottom - 6.0f };
+    drawButton("island_qual_btn", qualBtn, qLabel,
+               showQualityMenu_ ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
+               showQualityMenu_ ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
+               showQualityMenu_ ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
+               8.0f, [this]() {
+                   showQualityMenu_ = !showQualityMenu_;
+                   showDisplayMenu_ = false;
+                   showAdminMenu_ = false;
+               }, fmtSmall_, true, COL_BORDER);
+    curX = qualBtn.right + 6.0f;
+
+    // 4. Clipboard Sync Toggle
+    bool clipOn = network_.isClipboardSyncEnabled();
+    UiRect clipBtn = { curX, pillTop + 6.0f, curX + 76.0f, pillBottom - 6.0f };
+    drawButton("island_clip_btn", clipBtn, clipOn ? "Clip: ON" : "Clip: OFF",
+               clipOn ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
+               clipOn ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
+               clipOn ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
+               8.0f, [this, clipOn]() {
+                   bool n = !clipOn;
+                   network_.setClipboardSyncEnabled(n);
+                   showToast(n ? "Clipboard Sync: Enabled" : "Clipboard Sync: Disabled");
+               }, fmtSmall_, !clipOn, COL_BORDER);
+    curX = clipBtn.right + 6.0f;
+
+    // 5. Shortcuts Button "?"
+    UiRect helpBtn = { curX, pillTop + 6.0f, curX + 32.0f, pillBottom - 6.0f };
+    drawButton("island_help_btn", helpBtn, "?",
+               COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY,
+               8.0f, [this]() {
+                   toggleShortcutsModal();
+               }, fmtBodyBold_, true, COL_BORDER);
+    curX = helpBtn.right + 6.0f;
+
+    // 6. Pin Button
+    UiRect pinBtn = { curX, pillTop + 6.0f, curX + 54.0f, pillBottom - 6.0f };
+    drawButton("island_pin_btn", pinBtn, floatingToolbarPinned_ ? "Pinned" : "Pin",
+               floatingToolbarPinned_ ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
+               floatingToolbarPinned_ ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
+               floatingToolbarPinned_ ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
+               8.0f, [this]() {
+                   floatingToolbarPinned_ = !floatingToolbarPinned_;
+                   showToast(floatingToolbarPinned_ ? "Toolbar Pinned" : "Toolbar Auto-hide");
+               }, fmtSmall_, !floatingToolbarPinned_, COL_BORDER);
+    curX = pinBtn.right + 6.0f;
+
+    // 7. Fullscreen Exit Button
+    UiRect fsBtn = { curX, pillTop + 6.0f, pillRight - 12.0f, pillBottom - 6.0f };
+    drawButton("island_fs_btn", fsBtn, "Exit (F11)",
+               COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY,
+               8.0f, [this]() {
+                   toggleFullscreen();
+               }, fmtSmall_, true, COL_BORDER);
+
+    // Dropdown 1: Display Switcher Menu
+    if (showDisplayMenu_) {
+        float itemH = 32.0f;
+        int count = std::max(1, static_cast<int>(stats.monitors.size()));
+        float dropH = count * itemH + 16.0f;
+        UiRect dropRect = { monBtn.left - 20.0f, pillBottom + 6.0f, monBtn.left + 230.0f, pillBottom + 6.0f + dropH };
+        drawCardShadow(dropRect, 14.0f, 0.95f);
+        fillRoundRect(dropRect, 14.0f, withAlpha(COL_BG_CARD, 0.98f));
+        strokeRoundRect(dropRect, 14.0f, COL_BORDER, 1.2f);
+
+        float dy = dropRect.top + 8.0f;
+        if (stats.monitors.empty()) {
+            UiRect itemR = { dropRect.left + 8.0f, dy, dropRect.right - 8.0f, dy + 28.0f };
+            drawButton("drop_mon_0", itemR, "Primary Display (Default)",
+                       COL_PRIMARY_ACCENT, COL_PRIMARY_ACCENT_HV, COL_TEXT_ON_ACCENT, 6.0f,
+                       [this]() { showDisplayMenu_ = false; }, fmtSmall_);
+        } else {
+            for (size_t i = 0; i < stats.monitors.size(); ++i) {
+                const auto& m = stats.monitors[i];
+                bool isCur = (m.index == stats.activeMonitorIndex);
+                UiRect itemR = { dropRect.left + 8.0f, dy, dropRect.right - 8.0f, dy + 28.0f };
+                std::string btnId = "drop_mon_" + std::to_string(i);
+                std::string label = m.name.empty() ? ("Display " + std::to_string(m.index + 1)) : m.name;
+                drawButton(btnId, itemR, label,
+                           isCur ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
+                           isCur ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
+                           isCur ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
+                           6.0f, [this, m]() {
+                               network_.selectRemoteMonitor(m.index);
+                               showDisplayMenu_ = false;
+                               showToast("Switched to Display " + std::to_string(m.index + 1));
+                           }, fmtSmall_, !isCur, COL_BORDER);
+                dy += itemH;
+            }
+        }
+    }
+
+    // Dropdown 2: Admin Actions Menu
+    if (showAdminMenu_) {
+        float itemH = 32.0f;
+        float dropH = 4 * itemH + 16.0f;
+        UiRect dropRect = { adminBtn.left - 20.0f, pillBottom + 6.0f, adminBtn.left + 210.0f, pillBottom + 6.0f + dropH };
+        drawCardShadow(dropRect, 14.0f, 0.95f);
+        fillRoundRect(dropRect, 14.0f, withAlpha(COL_BG_CARD, 0.98f));
+        strokeRoundRect(dropRect, 14.0f, COL_BORDER, 1.2f);
+
+        float dy = dropRect.top + 8.0f;
+        UiRect r1 = { dropRect.left + 8.0f, dy, dropRect.right - 8.0f, dy + 28.0f };
+        drawButton("drop_adm_lock", r1, "Lock Workstation",
+                   COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 6.0f, [this]() {
+                       network_.sendSystemAction(SystemActionType::LockWorkstation);
+                       showAdminMenu_ = false;
+                       showToast("Remote Workstation Locked");
+                   }, fmtSmall_, true, COL_BORDER);
+        dy += itemH;
+
+        UiRect r2 = { dropRect.left + 8.0f, dy, dropRect.right - 8.0f, dy + 28.0f };
+        drawButton("drop_adm_desktop", r2, "Show Desktop",
+                   COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 6.0f, [this]() {
+                       network_.sendSystemAction(SystemActionType::ShowDesktop);
+                       showAdminMenu_ = false;
+                       showToast("Remote Show Desktop");
+                   }, fmtSmall_, true, COL_BORDER);
+        dy += itemH;
+
+        UiRect r3 = { dropRect.left + 8.0f, dy, dropRect.right - 8.0f, dy + 28.0f };
+        drawButton("drop_adm_sas", r3, "Task Manager / SAS",
+                   COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 6.0f, [this]() {
+                       network_.sendSystemAction(SystemActionType::SendCtrlAltDel);
+                       showAdminMenu_ = false;
+                       showToast("Remote TaskMgr / SAS triggered");
+                   }, fmtSmall_, true, COL_BORDER);
+        dy += itemH;
+
+        UiRect r4 = { dropRect.left + 8.0f, dy, dropRect.right - 8.0f, dy + 28.0f };
+        drawButton("drop_adm_reboot", r4, "Emergency Reboot...",
+                   COL_DANGER, COL_DANGER_HV, COL_TEXT_ON_ACCENT, 6.0f, [this]() {
+                       network_.sendSystemAction(SystemActionType::EmergencyReboot);
+                       showAdminMenu_ = false;
+                       showToast("Remote Emergency Reboot sent", true);
+                   }, fmtSmall_);
+    }
+
+    // Dropdown 3: Quality & FPS Menu
+    if (showQualityMenu_) {
+        float itemH = 30.0f;
+        float dropH = 6 * itemH + 20.0f;
+        UiRect dropRect = { qualBtn.left - 40.0f, pillBottom + 6.0f, qualBtn.left + 220.0f, pillBottom + 6.0f + dropH };
+        drawCardShadow(dropRect, 14.0f, 0.95f);
+        fillRoundRect(dropRect, 14.0f, withAlpha(COL_BG_CARD, 0.98f));
+        strokeRoundRect(dropRect, 14.0f, COL_BORDER, 1.2f);
+
+        float dy = dropRect.top + 8.0f;
+        auto addQualItem = [&](const std::string& id, const std::string& label, QualityPreset q, uint8_t fps, bool adap) {
+            bool isCur = (stats.qualityPreset == q);
+            UiRect ir = { dropRect.left + 8.0f, dy, dropRect.right - 8.0f, dy + 26.0f };
+            drawButton(id, ir, label,
+                       isCur ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
+                       isCur ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
+                       isCur ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
+                       6.0f, [this, q, fps, adap]() {
+                           network_.updateQualitySettings(q, fps, adap);
+                           showQualityMenu_ = false;
+                           showToast("Updated Video Quality");
+                       }, fmtSmall_, !isCur, COL_BORDER);
+            dy += itemH;
+        };
+
+        addQualItem("drop_q_ultra", "Ultra (60 FPS Lossless)", QualityPreset::Ultra, 60, false);
+        addQualItem("drop_q_bal", "Balanced (30 FPS Adaptive)", QualityPreset::Balanced, 30, true);
+        addQualItem("drop_q_low", "Low Bandwidth (15 FPS)", QualityPreset::LowBandwidth, 15, false);
+
+        fillRoundRect({ dropRect.left + 12.0f, dy + 1.0f, dropRect.right - 12.0f, dy + 2.0f }, 0.5f, COL_BORDER);
+        dy += 6.0f;
+
+        auto addFpsItem = [&](const std::string& id, const std::string& label, uint8_t fps) {
+            bool isCur = (stats.targetFps == fps);
+            UiRect ir = { dropRect.left + 8.0f, dy, dropRect.right - 8.0f, dy + 26.0f };
+            drawButton(id, ir, label,
+                       isCur ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
+                       isCur ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
+                       isCur ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
+                       6.0f, [this, stats, fps]() {
+                           network_.updateQualitySettings(stats.qualityPreset, fps, stats.adaptiveFps);
+                           showQualityMenu_ = false;
+                           showToast("FPS Target: " + std::to_string(fps));
+                       }, fmtSmall_, !isCur, COL_BORDER);
+            dy += itemH;
+        };
+
+        addFpsItem("drop_fps_60", "FPS Cap: 60 FPS", 60);
+        addFpsItem("drop_fps_30", "FPS Cap: 30 FPS", 30);
+        addFpsItem("drop_fps_15", "FPS Cap: 15 FPS", 15);
+    }
+}
+
+// ---------------- macOS Keyboard Shortcuts Sheet Modal ----------------
+
+void AeroDeskWindow::drawShortcutsModal(float width, float height, float modalProgress) {
+    if (modalProgress <= 0.005f) return;
+
+    float alpha = std::clamp(modalProgress, 0.0f, 1.0f);
+    fillRoundRect({ 0.0f, 0.0f, width, height }, 0.0f, rgba(5, 7, 12, 0.55f * alpha));
+
+    // Clicking scrim closes modal
+    clickRegions_.push_back({ { 0.0f, 0.0f, width, height }, "modal_sc_scrim", [this]() {
+        showShortcutsModal_ = false;
+    }, false });
+
+    float mw = 560.0f;
+    float mh = 440.0f;
+    UiRect modal = { (width - mw) * 0.5f, (height - mh) * 0.5f, (width + mw) * 0.5f, (height + mh) * 0.5f };
+
+    float scale = 0.90f + 0.10f * modalProgress;
+    renderTarget_->SetTransform(
+        D2D1::Matrix3x2F::Scale(scale, scale, D2D1::Point2F(modal.centerX(), modal.centerY()))
+    );
+
+    drawCardSurface(modal, 20.0f, alpha);
+
+    float mx = modal.left + 28.0f;
+    float mrx = modal.right - 28.0f;
+    float my = modal.top + 24.0f;
+
+    drawText("Keyboard Shortcuts", { mx, my, mrx - 40.0f, my + 28.0f }, fmtHeading_, COL_TEXT_PRIMARY);
+
+    UiRect closeBtn = { mrx - 28.0f, my, mrx, my + 28.0f };
+    drawButton("modal_sc_close", closeBtn, "×",
+               COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 14.0f,
+               [this]() { showShortcutsModal_ = false; }, fmtHeading_);
+    my += 38.0f;
+
+    drawText("Speed up remote navigation and desktop control with global hotkeys.",
+             { mx, my, mrx, my + 20.0f }, fmtSmall_, COL_TEXT_SECONDARY);
+    my += 26.0f;
+
+    struct ShortcutRow {
+        std::string key;
+        std::string desc;
+    };
+    std::vector<ShortcutRow> rows = {
+        { "F11", "Toggle Borderless Fullscreen Mode" },
+        { "F1  or  ?", "Open / Close this Shortcuts Cheat Sheet" },
+        { "F8", "Toggle Remote Input Control (View-Only vs Control)" },
+        { "Ctrl + Alt + [1-9]", "Switch Remote Display Monitor instantly" },
+        { "Ctrl + Alt + L", "Lock Remote Workstation" },
+        { "Ctrl + Alt + D", "Show Desktop (Minimize all remote windows)" },
+        { "Ctrl + Alt + Del", "Send Task Manager / Security Desktop (SAS)" },
+        { "Esc", "Dismiss open menus, modals, or exit fullscreen" }
+    };
+
+    float rowH = 30.0f;
+    for (size_t i = 0; i < rows.size(); ++i) {
+        const auto& r = rows[i];
+        UiRect badgeRect = { mx, my, mx + 160.0f, my + 24.0f };
+        fillRoundRect(badgeRect, 6.0f, COL_BG_SUBTLE);
+        strokeRoundRect(badgeRect, 6.0f, COL_BORDER, 1.0f);
+        drawText(r.key, badgeRect, fmtMono_, COL_TEXT_ACCENT, DWRITE_TEXT_ALIGNMENT_CENTER);
+
+        UiRect descRect = { mx + 172.0f, my, mrx, my + 24.0f };
+        drawText(r.desc, descRect, fmtBody_, COL_TEXT_PRIMARY, DWRITE_TEXT_ALIGNMENT_LEADING);
+
+        my += rowH;
+    }
+
+    my += 8.0f;
+    drawText("Tip: In Fullscreen, move your mouse to the top edge to reveal the Dynamic Island.",
+             { mx, my, mrx, my + 20.0f }, fmtSmall_, COL_TEXT_MUTED, DWRITE_TEXT_ALIGNMENT_CENTER);
+
+    renderTarget_->SetTransform(D2D1::Matrix3x2F::Identity());
+}
+
 // ---------------- macOS Dynamic Capsule Toast Banner ----------------
 
 void AeroDeskWindow::drawToastBanner(float width, float height, float toastProgress) {
@@ -2460,11 +2824,27 @@ void AeroDeskWindow::onCharInput(wchar_t ch) {
 
 void AeroDeskWindow::onKeyEvent(uint16_t vk, uint16_t scan, bool isDown, bool isExtended) {
     if (isDown) {
+        if (vk == VK_F1 || (vk == 0xBF /* VK_OEM_2 /? */ && (GetKeyState(VK_SHIFT) & 0x8000))) {
+            toggleShortcutsModal();
+            return;
+        }
         if (vk == VK_F11) {
             toggleFullscreen();
             return;
         }
         if (vk == VK_ESCAPE) {
+            if (showShortcutsModal_) {
+                showShortcutsModal_ = false;
+                InvalidateRect(hwnd_, nullptr, FALSE);
+                return;
+            }
+            if (showDisplayMenu_ || showAdminMenu_ || showQualityMenu_) {
+                showDisplayMenu_ = false;
+                showAdminMenu_ = false;
+                showQualityMenu_ = false;
+                InvalidateRect(hwnd_, nullptr, FALSE);
+                return;
+            }
             if (showFileDrawer_) {
                 showFileDrawer_ = false;
                 InvalidateRect(hwnd_, nullptr, FALSE);
@@ -2477,6 +2857,30 @@ void AeroDeskWindow::onKeyEvent(uint16_t vk, uint16_t scan, bool isDown, bool is
             if (focusedField_ != FocusedField::None && focusedField_ != FocusedField::RemoteCanvas) {
                 focusedField_ = FocusedField::None;
                 InvalidateRect(hwnd_, nullptr, FALSE);
+                return;
+            }
+        }
+        // Remote Hotkeys: Ctrl+Alt+[1-9], Ctrl+Alt+L, Ctrl+Alt+D, Ctrl+Alt+Del
+        if (activeTab_ == ActiveTab::RemoteSession && (GetKeyState(VK_CONTROL) & 0x8000) && (GetKeyState(VK_MENU) & 0x8000)) {
+            if (vk >= '1' && vk <= '9') {
+                int monIdx = (vk - '1');
+                network_.selectRemoteMonitor(monIdx);
+                showToast("Switched to Display " + std::to_string(monIdx + 1));
+                return;
+            }
+            if (vk == 'L') {
+                network_.sendSystemAction(SystemActionType::LockWorkstation);
+                showToast("Remote Workstation Locked");
+                return;
+            }
+            if (vk == 'D') {
+                network_.sendSystemAction(SystemActionType::ShowDesktop);
+                showToast("Remote Show Desktop");
+                return;
+            }
+            if (vk == VK_DELETE) {
+                network_.sendSystemAction(SystemActionType::SendCtrlAltDel);
+                showToast("Remote TaskMgr / SAS sent");
                 return;
             }
         }
@@ -2623,6 +3027,11 @@ void AeroDeskWindow::toggleFullscreen() {
                      SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
         isFullscreen_ = false;
     }
+}
+
+void AeroDeskWindow::toggleShortcutsModal() {
+    showShortcutsModal_ = !showShortcutsModal_;
+    InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
 void AeroDeskWindow::showToast(const std::string& message, bool isError) {

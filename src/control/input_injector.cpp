@@ -193,4 +193,58 @@ bool InputInjector::relaunchAsAdmin(void* hwndParent) {
     return ShellExecuteExW(&sei) != FALSE;
 }
 
+bool InputInjector::executeSystemAction(SystemActionType action) {
+    switch (action) {
+        case SystemActionType::TaskManager:
+            ShellExecuteA(nullptr, "open", "taskmgr.exe", nullptr, nullptr, SW_SHOWNORMAL);
+            return true;
+
+        case SystemActionType::ShowDesktop:
+            injectKeyEvent(VK_LWIN, 0, true, false);
+            injectKeyEvent('D', 0, true, false);
+            injectKeyEvent('D', 0, false, false);
+            injectKeyEvent(VK_LWIN, 0, false, false);
+            return true;
+
+        case SystemActionType::LockWorkstation:
+            return LockWorkStation() != FALSE;
+
+        case SystemActionType::SendCtrlAltDel: {
+            typedef VOID(WINAPI* SendSASFunc)(BOOL AsUser);
+            HMODULE hSas = LoadLibraryA("sas.dll");
+            bool sasSucceeded = false;
+            if (hSas) {
+                auto pFunc = GetProcAddress(hSas, "SendSAS");
+                if (pFunc) {
+                    auto pSendSAS = reinterpret_cast<SendSASFunc>(reinterpret_cast<void(*)()>(pFunc));
+                    pSendSAS(FALSE);
+                    sasSucceeded = true;
+                }
+                FreeLibrary(hSas);
+            }
+            if (!sasSucceeded) {
+                // Fallback: launch Task Manager
+                ShellExecuteA(nullptr, "open", "taskmgr.exe", nullptr, nullptr, SW_SHOWNORMAL);
+            }
+            return true;
+        }
+
+        case SystemActionType::EmergencyReboot: {
+            HANDLE hToken = nullptr;
+            if (OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &hToken)) {
+                TOKEN_PRIVILEGES tkp{};
+                LookupPrivilegeValueA(nullptr, "SeShutdownPrivilege", &tkp.Privileges[0].Luid);
+                tkp.PrivilegeCount = 1;
+                tkp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+                AdjustTokenPrivileges(hToken, FALSE, &tkp, 0, nullptr, nullptr);
+                CloseHandle(hToken);
+            }
+            return ExitWindowsEx(EWX_REBOOT | EWX_FORCEIFHUNG, SHTDN_REASON_MAJOR_OTHER | SHTDN_REASON_FLAG_PLANNED) != FALSE;
+        }
+
+        default:
+            return false;
+    }
+}
+
 } // namespace aerodesk

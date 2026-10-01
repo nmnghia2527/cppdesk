@@ -59,7 +59,8 @@ enum class ViewerConnectionState : uint8_t {
     Authenticating  = 3,
     WaitingApproval = 4,
     Connected       = 5,
-    Error           = 6
+    Error           = 6,
+    Reconnecting    = 7
 };
 
 struct ViewerSessionStats {
@@ -85,6 +86,7 @@ struct ViewerSessionStats {
     uint32_t              rttMs = 0;
     float                 kbps = 0.0f;
     CursorState           remoteCursor;
+    uint32_t              reconnectAttempt = 0;
 };
 
 class RelayServer {
@@ -184,6 +186,10 @@ public:
     void sendSystemAction(SystemActionType action);
     void requestVideoSettings(QualityPreset preset, int monitorIndex, bool forceKeyframe, uint8_t targetFps = 0, int adaptiveFps = -1);
     void setSessionFpsConfig(uint8_t targetFps, bool adaptiveFps);
+    void selectRemoteMonitor(int monitorIndex);
+    void updateQualitySettings(QualityPreset preset, uint8_t targetFps, bool adaptiveFps);
+    bool isClipboardSyncEnabled() const { return clipboardSyncEnabled_.load(); }
+    void setClipboardSyncEnabled(bool enabled) { clipboardSyncEnabled_.store(enabled); }
 
     // File transfer, clipboard & live encrypted chat
     uint32_t sendFile(const std::string& filePath);
@@ -303,6 +309,7 @@ private:
     // Shared FileTransfer, Clipboard & Chat state
     FileTransferManager             fileManager_;
     ClipboardManager                clipboardManager_;
+    std::atomic<bool>               clipboardSyncEnabled_{true};
     mutable std::mutex              chatMutex_;
     std::vector<ChatMessageEntry>   chatHistory_;
     std::atomic<uint32_t>           unreadChatCount_{0};

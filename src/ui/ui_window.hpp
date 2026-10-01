@@ -123,6 +123,8 @@ private:
     void drawSettingsView(const UiRect& bounds, float alpha = 1.0f);
     void drawFileTransferDrawer(const UiRect& bounds, float slideProgress);
     void drawIncomingApprovalModal(float width, float height, float modalProgress);
+    void drawDynamicIslandToolbar(float width, float height);
+    void drawShortcutsModal(float width, float height, float modalProgress);
     void drawToastBanner(float width, float height, float toastProgress);
 
     // Primitive drawing & vector icon helpers
@@ -162,6 +164,7 @@ private:
     void saveRemoteScreenshot();
     void sendChatFromInput();
     void toggleFullscreen();
+    void toggleShortcutsModal();
     void showToast(const std::string& message, bool isError = false);
     bool mapCanvasPointToNormalized(float x, float y, float& outNormX, float& outNormY) const;
     std::string* activeFocusedTextBuffer();
@@ -275,6 +278,19 @@ private:
     std::string             toastText_;
     bool                    toastIsError_ = false;
     uint64_t                toastExpireTick_ = 0;
+
+    // Fullscreen Dynamic Island Toolbar state
+    float                   floatingToolbarY_ = -64.0f;
+    float                   floatingToolbarVel_ = 0.0f;
+    bool                    floatingToolbarPinned_ = false;
+    bool                    showDisplayMenu_ = false;
+    bool                    showAdminMenu_ = false;
+    bool                    showQualityMenu_ = false;
+
+    // Keyboard Shortcuts Sheet Modal state
+    bool                    showShortcutsModal_ = false;
+    float                   shortcutsModalAnimT_ = 0.0f;
+    float                   shortcutsModalAnimVel_ = 0.0f;
 
     ViewerConnectionState   prevViewerState_ = ViewerConnectionState::Disconnected;
 };

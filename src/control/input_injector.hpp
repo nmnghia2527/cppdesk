@@ -23,6 +23,9 @@ public:
     static bool syncToInputDesktop();
     static bool isElevated();
     static bool relaunchAsAdmin(void* hwndParent = nullptr);
+
+    // Extended Remote System Actions
+    static bool executeSystemAction(SystemActionType action);
 };
 
 } // namespace aerodesk

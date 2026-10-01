@@ -479,6 +479,8 @@ bool ScreenCapturer::selectMonitor(int monitorIndex) {
     currentFrame_.assign(static_cast<size_t>(frameW_) * frameH_ * 4, 0);
     prevTileHashes_.clear();
     hasValidFrame_ = false;
+    dxgiRecoveryState_ = DxgiRecoveryState::Active;
+    lastDxgiAttemptTick_ = 0;
 
     initDxgiForMonitor(monitorIndex);
     return true;
@@ -487,6 +489,12 @@ bool ScreenCapturer::selectMonitor(int monitorIndex) {
 void ScreenCapturer::releaseDxgi() {
     if (dxgi_) dxgi_->release();
     dxgiInitialized_ = false;
+}
+
+void ScreenCapturer::triggerDxgiAccessLostForTest() {
+    dxgiRecoveryState_ = DxgiRecoveryState::FallbackGdi;
+    lastDxgiAttemptTick_ = GetTickCount64();
+    releaseDxgi();
 }
 
 bool ScreenCapturer::initDxgiForMonitor(int monitorIndex) {
@@ -610,6 +618,8 @@ bool ScreenCapturer::captureViaDxgi(bool& outFrameUpdated) {
         return hasValidFrame_;
     }
     if (FAILED(hr)) {
+        dxgiRecoveryState_ = DxgiRecoveryState::FallbackGdi;
+        lastDxgiAttemptTick_ = GetTickCount64();
         releaseDxgi();
         return false;
     }
@@ -750,7 +760,19 @@ bool ScreenCapturer::captureDirtyTiles(
     bool dxgiUpdated = false;
     bool captured = false;
 
-    if (dxgiInitialized_) {
+    // Check if background recovery from FallbackGdi should be attempted (500ms cooldown)
+    if (dxgiRecoveryState_ == DxgiRecoveryState::FallbackGdi) {
+        uint64_t now = GetTickCount64();
+        if (now - lastDxgiAttemptTick_ >= 500) {
+            lastDxgiAttemptTick_ = now;
+            if (initDxgiForMonitor(activeMonitorIdx_)) {
+                dxgiRecoveryState_ = DxgiRecoveryState::Active;
+                forceKeyframe = true;
+            }
+        }
+    }
+
+    if (dxgiInitialized_ && dxgiRecoveryState_ == DxgiRecoveryState::Active) {
         captured = captureViaDxgi(dxgiUpdated);
     }
     if (!captured || !hasValidFrame_) {

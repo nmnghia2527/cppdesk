@@ -107,11 +107,15 @@ public:
         bool& outIsKeyframe,
         CursorState& outCursor);
 
+    enum class DxgiRecoveryState { Active, FallbackGdi, Disabled };
+    DxgiRecoveryState dxgiRecoveryState() const { return dxgiRecoveryState_; }
+    void triggerDxgiAccessLostForTest();
+
     // Raw frame access for tests
     int frameWidth() const { return frameW_; }
     int frameHeight() const { return frameH_; }
     const std::vector<uint8_t>& currentFrameBgra() const { return currentFrame_; }
-    bool usingDxgi() const { return dxgiInitialized_; }
+    bool usingDxgi() const { return dxgiInitialized_ && dxgiRecoveryState_ == DxgiRecoveryState::Active; }
 
 private:
     bool initDxgiForMonitor(int monitorIndex);
@@ -123,6 +127,8 @@ private:
     struct DxgiImpl;
     std::unique_ptr<DxgiImpl> dxgi_;
     bool                      dxgiInitialized_ = false;
+    DxgiRecoveryState         dxgiRecoveryState_ = DxgiRecoveryState::Active;
+    uint64_t                  lastDxgiAttemptTick_ = 0;
     bool                      hasValidFrame_ = false;
 
     std::vector<MonitorDesc>  monitors_;

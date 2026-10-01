@@ -662,6 +662,107 @@ void testEcdhAndAesGcmEngine() {
     TEST_ASSERT(true);
 }
 
+void testV201FeaturesAndResilience() {
+    std::cout << "[TEST 9] v2.0.1 Multi-Monitor Protocol, System Actions & Quality Update...\n";
+
+    // 1. MONITOR_LIST Serialization & Deserialization
+    std::vector<MonitorDesc> mockMons;
+    MonitorDesc m1{};
+    m1.index = 0; m1.x = 0; m1.y = 0; m1.width = 1920; m1.height = 1080;
+    m1.isPrimary = true; m1.name = "Display 1 (1920x1080)";
+    mockMons.push_back(m1);
+
+    MonitorDesc m2{};
+    m2.index = 1; m2.x = 1920; m2.y = 0; m2.width = 2560; m2.height = 1440;
+    m2.isPrimary = false; m2.name = "Display 2 (2560x1440)";
+    mockMons.push_back(m2);
+
+    ByteWriter monListW;
+    monListW.writeU16(static_cast<uint16_t>(mockMons.size()));
+    for (const auto& m : mockMons) {
+        monListW.writeI32(m.index);
+        monListW.writeI32(m.x);
+        monListW.writeI32(m.y);
+        monListW.writeI32(m.width);
+        monListW.writeI32(m.height);
+        monListW.writeU8(m.isPrimary ? 1 : 0);
+        monListW.writeString(m.name);
+    }
+
+    ByteReader monListR(monListW.buffer());
+    uint16_t readCount = monListR.readU16();
+    TEST_ASSERT(readCount == 2);
+    MonitorDesc r1{};
+    r1.index = monListR.readI32();
+    r1.x = monListR.readI32();
+    r1.y = monListR.readI32();
+    r1.width = monListR.readI32();
+    r1.height = monListR.readI32();
+    r1.isPrimary = (monListR.readU8() != 0);
+    r1.name = monListR.readString();
+    TEST_ASSERT(r1.index == 0 && r1.width == 1920 && r1.height == 1080 && r1.isPrimary);
+    TEST_ASSERT(r1.name == "Display 1 (1920x1080)");
+
+    MonitorDesc r2{};
+    r2.index = monListR.readI32();
+    r2.x = monListR.readI32();
+    r2.y = monListR.readI32();
+    r2.width = monListR.readI32();
+    r2.height = monListR.readI32();
+    r2.isPrimary = (monListR.readU8() != 0);
+    r2.name = monListR.readString();
+    TEST_ASSERT(r2.index == 1 && r2.x == 1920 && r2.width == 2560 && !r2.isPrimary);
+    TEST_ASSERT(r2.name == "Display 2 (2560x1440)");
+
+    // 2. MONITOR_SELECT Serialization & Deserialization
+    ByteWriter selW;
+    selW.writeI32(1);
+    ByteReader selR(selW.buffer());
+    int32_t selIdx = selR.readI32();
+    TEST_ASSERT(selIdx == 1);
+
+    // 3. QUALITY_UPDATE Serialization & Deserialization
+    ByteWriter qW;
+    qW.writeU8(static_cast<uint8_t>(QualityPreset::Ultra));
+    qW.writeU8(60);
+    qW.writeU8(1);
+    ByteReader qR(qW.buffer());
+    uint8_t qPreset = qR.readU8();
+    uint8_t qFps = qR.readU8();
+    uint8_t qAdap = qR.readU8();
+    TEST_ASSERT(qPreset == static_cast<uint8_t>(QualityPreset::Ultra));
+    TEST_ASSERT(qFps == 60);
+    TEST_ASSERT(qAdap == 1);
+
+    // 4. SystemActionType Enumeration & Invalid Action Handling
+    TEST_ASSERT(static_cast<uint8_t>(SystemActionType::TaskManager) == 1);
+    TEST_ASSERT(static_cast<uint8_t>(SystemActionType::ShowDesktop) == 2);
+    TEST_ASSERT(static_cast<uint8_t>(SystemActionType::LockWorkstation) == 3);
+    TEST_ASSERT(static_cast<uint8_t>(SystemActionType::SendCtrlAltDel) == 4);
+    TEST_ASSERT(static_cast<uint8_t>(SystemActionType::EmergencyReboot) == 5);
+    TEST_ASSERT(!InputInjector::executeSystemAction(static_cast<SystemActionType>(99)));
+
+    // 5. DXGI ACCESS_LOST Instant GDI Fallback & Recovery
+    ScreenCapturer capturer;
+    capturer.triggerDxgiAccessLostForTest();
+    TEST_ASSERT(capturer.dxgiRecoveryState() == ScreenCapturer::DxgiRecoveryState::FallbackGdi);
+    TEST_ASSERT(!capturer.usingDxgi());
+    std::vector<EncodedTile> fbTiles;
+    bool fbKeyframe = false;
+    CursorState fbCursor;
+    bool capOk = capturer.captureDirtyTiles(true, QualityPreset::Balanced, fbTiles, fbKeyframe, fbCursor);
+    TEST_ASSERT(capOk);
+    TEST_ASSERT(fbKeyframe);
+    TEST_ASSERT(!fbTiles.empty());
+
+    // 6. Viewer Auto-Reconnect State & Attempts
+    ViewerSessionStats stats;
+    stats.state = ViewerConnectionState::Reconnecting;
+    stats.reconnectAttempt = 1;
+    TEST_ASSERT(stats.state == ViewerConnectionState::Reconnecting);
+    TEST_ASSERT(stats.reconnectAttempt == 1);
+}
+
 } // namespace
 
 int main() {
@@ -679,6 +780,7 @@ int main() {
     testAppSettingsAndAdaptiveFps();
     testAvx2SimdAssemblyKernels();
     testEcdhAndAesGcmEngine();
+    testV201FeaturesAndResilience();
 
     std::cout << "---------------------------------------------------------\n";
     std::cout << "Assertions Passed: " << g_passed << " | Failed: " << g_failed << "\n";

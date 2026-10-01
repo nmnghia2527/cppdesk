@@ -5,7 +5,7 @@
 <h1 align="center">AeroDesk — Standalone Windows Remote Desktop (<code>AeroDesk.exe</code>)</h1>
 
 <p align="center">
-  <a href="https://github.com/oocs07/Remote-Desktop/releases/latest"><strong>⬇ Download Latest Release (<code>AeroDesk.exe</code> v2.0.0)</strong></a>
+  <a href="https://github.com/oocs07/Remote-Desktop/releases/latest"><strong>⬇ Download Latest Release (<code>AeroDesk.exe</code> v2.0.1)</strong></a>
 </p>
 
 AeroDesk is a zero-install, hardware-accelerated Remote Desktop application for Windows distributed as a single portable executable (**`AeroDesk.exe`**). Built with **C++20** and hand-tuned **x86-64 AVX2 SIMD Assembly**, it delivers ultra-low-latency remote screen sharing, input control, clipboard synchronization, chunked file transfer, and live encrypted chat using a **9-Digit Desk ID** (`XXX XXX XXX`) and password or interactive approval.
@@ -23,21 +23,22 @@ AeroDesk is a zero-install, hardware-accelerated Remote Desktop application for 
 
 ---
 
-## Key Features
+## Key Features in v2.0.1
 
-### Security & Cryptography (Windows CNG + AVX2 Stream Cipher)
-- **End-to-End Stream Encryption (`FLAG_ENCRYPTED`)**: All post-handshake video, input, clipboard, file transfer, and chat frames are encrypted using a 256-bit session key derived via Windows `bcrypt.dll` (`SHA-256` challenge-response) and monotonic sequence counters, accelerated by x86-64 AVX2 `vpxor` blocks.
-- **Zero Plaintext Passwords on Disk**: Unattended passwords are stored exclusively as salted SHA-256 verifier tokens (`unattended_verifier`) in `%APPDATA%\AeroDesk`.
-- **Dynamic One-Time Session Code**: Generates a random 6-character alphanumeric session code in memory on startup that can be rotated with one click.
-- **8-Hex SAS Fingerprint**: Displays a Short Authentication String (`XXXX-XXXX`) on both Host and Viewer to verify zero MITM tampering.
-- **Brute-Force Protection**: Automatic per-IP rate limiting locks out callers for 60 seconds after 5 failed password attempts within 60 seconds.
+### Remote Display & Administration Suite
+- **Multi-Monitor Switching (`MONITOR_LIST` & `MONITOR_SELECT`)**: Seamlessly enumerate all host physical displays with native resolutions, and switch active display live with normalized mouse cursor mapping.
+- **Remote Admin Suite**: Execute remote `LockWorkstation()`, `ShowDesktop` (`Win+D`), `Task Manager / Security Desktop` (`sas.dll` / `taskmgr.exe`), and `Emergency Reboot` (`ExitWindowsEx`).
+- **Live Quality & FPS Switching**: Dynamically toggle between Ultra / Balanced / Low Bandwidth and 60 / 30 / 15 FPS targets mid-session without stream interruption.
+- **Clipboard Sync Toggle**: One-click mute/unmute of bidirectional clipboard text syncing with instant toast confirmation.
 
-### Video Capture, Encoding & Adaptive Frame Rate
-- **DXGI Desktop Duplication + GDI Fallback**: Captures 64×64 dirty screen tiles directly from the GPU with automatic fallback to GDI when needed.
-- **Hybrid Zstd & JPEG Tile Codec**: Uses lossless **Zstd** compression for crisp UI/text tiles and **GDI+ JPEG** for high-entropy photographic/video regions across 3 presets (`Ultra`, `Balanced`, `Low Bandwidth`).
-- **15 / 30 / 60 FPS + Adaptive Network Throttling**: Switch target frame rates live during a session; when `Adaptive FPS` is enabled, AeroDesk automatically steps down (`60 → 30 → 15 FPS`) during high RTT or socket congestion and recovers when latency stabilizes.
+### Engine Resilience & Auto-Recovery
+- **DXGI `ACCESS_LOST` Instant GDI Fallback**: When UAC prompts, display resolution changes, or GPU mode switches invalidate DXGI Desktop Duplication, AeroDesk bridges to GDI capture with zero dropped frames, attempting non-blocking DXGI re-initialization every 500ms.
+- **In-Session Client Auto-Reconnect**: Automatic 3-attempt backoff reconnect loop (1s, 3s, 5s) preserving the decoded remote desktop canvas and cryptographic credentials across network drops or router reconnects.
 
-### Direct2D Hardware-Accelerated UI
+### Direct2D UI/UX Pro Max Modernization
+- **Borderless Fullscreen (`F11`)**: Seamless borderless fullscreen covering active monitor bounds.
+- **macOS Dynamic Island Floating Top Bar**: In fullscreen mode, moving the cursor to the top edge smoothly glides down a floating Dynamic Island capsule pill powered by second-order spring physics (`stepSpring`), featuring live session indicators, Display switcher, Admin dropdown, Quality toggles, and pin dock.
+- **Keyboard Shortcuts Cheat Sheet (`F1` / `?`)**: Centered translucent acrylic modal showcasing all hotkeys (`F11`, `F1`, `F8`, `Ctrl+Alt+[1-9]`, `Ctrl+Alt+L`, `Ctrl+Alt+D`, `Ctrl+Alt+Del`).
 - **White & Blue / Black & Blue Themes**: Instant runtime switching between **Crisp White & Royal Blue (`#2563EB`)** and **Pitch Black & Electric Blue (`#3B82F6`)** palettes.
 - **VSync-Locked Smooth Animations**: QPC-driven Direct2D hardware VSync animation loop with zero-overhead native OS cursor handling.
 
