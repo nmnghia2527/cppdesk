@@ -197,9 +197,9 @@ EncodedTile TileCodec::encodeRect(
     tile.height = height;
 
     size_t rawSize = static_cast<size_t>(width) * height * 4;
-    auto zstdData = compressZstd(bgraRect, rawSize, 1);
 
     if (preset == QualityPreset::Ultra) {
+        auto zstdData = compressZstd(bgraRect, rawSize, 1);
         // Prefer lossless Zstd for UI/text unless the tile is large and poorly compressible
         if (!zstdData.empty() && zstdData.size() <= (rawSize * 45) / 100) {
             tile.encoding = TileEncoding::Zstd;
@@ -212,7 +212,13 @@ EncodedTile TileCodec::encodeRect(
             tile.data = std::move(jpegData);
             return tile;
         }
+        if (!zstdData.empty()) {
+            tile.encoding = TileEncoding::Zstd;
+            tile.data = std::move(zstdData);
+            return tile;
+        }
     } else if (preset == QualityPreset::Balanced) {
+        auto zstdData = compressZstd(bgraRect, rawSize, 1);
         if (!zstdData.empty() && zstdData.size() <= (rawSize * 22) / 100) {
             tile.encoding = TileEncoding::Zstd;
             tile.data = std::move(zstdData);
@@ -224,23 +230,29 @@ EncodedTile TileCodec::encodeRect(
             tile.data = std::move(jpegData);
             return tile;
         }
+        if (!zstdData.empty()) {
+            tile.encoding = TileEncoding::Zstd;
+            tile.data = std::move(zstdData);
+            return tile;
+        }
     } else {
-        // LowBandwidth
+        // LowBandwidth: JPEG is preferred; only fallback if JPEG failed
         auto jpegData = encodeJpeg(bgraRect, width, height, 50);
-        if (!jpegData.empty() && (zstdData.empty() || jpegData.size() <= zstdData.size())) {
+        if (!jpegData.empty()) {
             tile.encoding = TileEncoding::Jpeg;
             tile.data = std::move(jpegData);
             return tile;
         }
+        auto zstdData = compressZstd(bgraRect, rawSize, 1);
+        if (!zstdData.empty()) {
+            tile.encoding = TileEncoding::Zstd;
+            tile.data = std::move(zstdData);
+            return tile;
+        }
     }
 
-    if (!zstdData.empty()) {
-        tile.encoding = TileEncoding::Zstd;
-        tile.data = std::move(zstdData);
-    } else {
-        tile.encoding = TileEncoding::RawBGRA;
-        tile.data.assign(bgraRect, bgraRect + rawSize);
-    }
+    tile.encoding = TileEncoding::RawBGRA;
+    tile.data.assign(bgraRect, bgraRect + rawSize);
     return tile;
 }
 
@@ -357,6 +369,7 @@ void TileThreadPool::parallelEncode(std::vector<RectTask>& tasks) {
         return;
     }
 
+    std::lock_guard<std::mutex> dispatchLock(dispatchMutex_);
     {
         std::unique_lock<std::mutex> lock(mutex_);
         activeBatch_.clear();

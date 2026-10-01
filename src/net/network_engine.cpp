@@ -1132,6 +1132,7 @@ void NetworkEngine::runHostSession(uintptr_t clientSock, std::string clientIp) {
         {
             std::lock_guard<std::mutex> lock(hostCipherMutex_);
             hostCipher_.reset();
+            CryptoUtils::secureZero(hostSessionKey_.data(), hostSessionKey_.size());
         }
         uintptr_t s = activeHostClientSock_.exchange(~uintptr_t(0));
         if (s != ~uintptr_t(0)) {
@@ -2332,6 +2333,7 @@ void NetworkEngine::runViewerSession(std::string targetInput, std::string passwo
     {
         std::lock_guard<std::mutex> lock(viewerCipherMutex_);
         viewerCipher_.reset();
+        CryptoUtils::secureZero(viewerSessionKey_.data(), viewerSessionKey_.size());
     }
     viewerActive_.store(false);
     fileManager_.abortActiveTransfers();

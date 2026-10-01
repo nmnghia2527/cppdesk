@@ -76,6 +76,7 @@ private:
 
     std::vector<std::thread> workers_;
     std::mutex               mutex_;
+    std::mutex               dispatchMutex_;
     std::condition_variable  cvTask_;
     std::condition_variable  cvDone_;
     std::atomic<bool>        stop_{false};

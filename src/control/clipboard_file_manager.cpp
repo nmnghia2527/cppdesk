@@ -252,6 +252,9 @@ uint32_t FileTransferManager::startOutgoingFile(const std::string& filePath, con
         item.status = TransferStatus::InProgress;
         item.statusText = "Sending (0%)";
         items_.insert(items_.begin(), item);
+        if (items_.size() > 150) {
+            items_.pop_back();
+        }
 
         outgoingQueue_.push_back(std::move(out));
     }
@@ -487,6 +490,9 @@ void FileTransferManager::handleFileOffer(uint32_t transferId, uint64_t totalByt
         item.statusText = "Write Failed";
     }
     items_.insert(items_.begin(), item);
+    if (items_.size() > 150) {
+        items_.pop_back();
+    }
 }
 
 void FileTransferManager::handleFileChunk(uint32_t transferId, uint64_t /*offset*/, const uint8_t* chunkData, size_t chunkLen) {

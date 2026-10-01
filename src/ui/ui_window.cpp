@@ -102,8 +102,8 @@ D2D1_COLOR_F COL_BORDER           = rgba(226, 232, 240);
 D2D1_COLOR_F COL_BORDER_ALT       = rgba(191, 219, 254);
 D2D1_COLOR_F COL_BORDER_FOCUS     = rgba(37, 99, 235);
 
-D2D1_COLOR_F COL_PRIMARY_RED      = rgba(37, 99, 235);
-D2D1_COLOR_F COL_PRIMARY_RED_HV   = rgba(29, 78, 216);
+D2D1_COLOR_F COL_PRIMARY_ACCENT      = rgba(37, 99, 235);
+D2D1_COLOR_F COL_PRIMARY_ACCENT_HV   = rgba(29, 78, 216);
 D2D1_COLOR_F COL_SEC_BTN_BG       = rgba(241, 245, 249);
 D2D1_COLOR_F COL_SEC_BTN_HV       = rgba(226, 236, 252);
 
@@ -137,8 +137,8 @@ void updateActivePalette(float darkT) {
     COL_BORDER_FOCUS   = lerpColor(rgba(37, 99, 235),   rgba(59, 130, 246), darkT);
 
     // 10% Signature Accent: Royal Blue (#2563EB) <-> Electric Blue (#3B82F6)
-    COL_PRIMARY_RED    = lerpColor(rgba(37, 99, 235),   rgba(59, 130, 246), darkT);
-    COL_PRIMARY_RED_HV = lerpColor(rgba(29, 78, 216),   rgba(96, 165, 250), darkT);
+    COL_PRIMARY_ACCENT    = lerpColor(rgba(37, 99, 235),   rgba(59, 130, 246), darkT);
+    COL_PRIMARY_ACCENT_HV = lerpColor(rgba(29, 78, 216),   rgba(96, 165, 250), darkT);
     COL_SEC_BTN_BG     = lerpColor(rgba(241, 245, 249), rgba(18, 26, 41), darkT);
     COL_SEC_BTN_HV     = lerpColor(rgba(224, 236, 254), rgba(24, 38, 76), darkT);
 
@@ -740,7 +740,7 @@ void AeroDeskWindow::drawButton(
     UiRect animRect = r.inflate(dx, dy).offset(0.0f, liftY);
 
     if (hT > 0.02f && bgColor.a > 0.05f) {
-        fillRoundRect(animRect.offset(0.0f, 2.0f), radius, withAlpha(COL_PRIMARY_RED, 0.12f * hT * std::max(0.0f, 1.0f - pT)));
+        fillRoundRect(animRect.offset(0.0f, 2.0f), radius, withAlpha(COL_PRIMARY_ACCENT, 0.12f * hT * std::max(0.0f, 1.0f - pT)));
     }
 
     D2D1_COLOR_F curBg = lerpColor(bgColor, hoverColor, std::clamp(hT, 0.0f, 1.0f));
@@ -787,7 +787,7 @@ void AeroDeskWindow::drawTextField(
     float fT = std::clamp(anim.focusT, 0.0f, 1.2f);
     if (fT > 0.01f) {
         UiRect glowR = r.inflate(2.8f * fT, 2.8f * fT);
-        fillRoundRect(glowR, 11.5f, withAlpha(COL_PRIMARY_RED, 0.15f * std::clamp(fT, 0.0f, 1.0f)));
+        fillRoundRect(glowR, 11.5f, withAlpha(COL_PRIMARY_ACCENT, 0.15f * std::clamp(fT, 0.0f, 1.0f)));
     }
 
     D2D1_COLOR_F bg = lerpColor(COL_BG_INPUT, COL_BG_INPUT_FOCUS, std::max(std::clamp(fT, 0.0f, 1.0f), std::clamp(anim.hoverT, 0.0f, 1.0f) * 0.5f));
@@ -852,7 +852,7 @@ void AeroDeskWindow::drawToggleSwitch(
     D2D1_COLOR_F offBase = lerpColor(rgba(203, 213, 225), rgba(30, 41, 59), themeAnimT_);
     D2D1_COLOR_F offHover = lerpColor(rgba(165, 180, 200), rgba(51, 65, 85), themeAnimT_);
     D2D1_COLOR_F offCol = lerpColor(offBase, offHover, hT);
-    D2D1_COLOR_F onCol  = lerpColor(COL_PRIMARY_RED, COL_PRIMARY_RED_HV, hT);
+    D2D1_COLOR_F onCol  = lerpColor(COL_PRIMARY_ACCENT, COL_PRIMARY_ACCENT_HV, hT);
     fillRoundRect(pill, swH * 0.5f, lerpColor(offCol, onCol, tClamped));
 
     // macOS liquid thumb stretch when pressed or moving at high velocity
@@ -996,8 +996,8 @@ void AeroDeskWindow::drawTopNavBar(float width, float& outTopOffset) {
 
     // Left: Minimal Squircle Brand Badge + Online Dot
     UiRect logoBadge = { 20.0f, 13.0f, 52.0f, 45.0f };
-    fillRoundRect(logoBadge.offset(0.0f, 2.0f), 9.5f, withAlpha(COL_PRIMARY_RED, 0.22f));
-    fillRoundRect(logoBadge, 9.5f, COL_PRIMARY_RED);
+    fillRoundRect(logoBadge.offset(0.0f, 2.0f), 9.5f, withAlpha(COL_PRIMARY_ACCENT, 0.22f));
+    fillRoundRect(logoBadge, 9.5f, COL_PRIMARY_ACCENT);
     drawText("AD", logoBadge, fmtBodyBold_, COL_TEXT_ON_ACCENT, DWRITE_TEXT_ALIGNMENT_CENTER);
 
     std::string brandTitle = "AeroDesk";
@@ -1043,8 +1043,8 @@ void AeroDeskWindow::drawTopNavBar(float width, float& outTopOffset) {
     strokeRoundRect(trackRect, 11.0f, COL_BORDER, 1.0f);
 
     UiRect slidingPill = { navPillLeft_, 12.0f, navPillRight_, 46.0f };
-    fillRoundRect(slidingPill.offset(0.0f, 1.8f), 8.5f, withAlpha(COL_PRIMARY_RED, 0.24f));
-    fillRoundRect(slidingPill, 8.5f, COL_PRIMARY_RED);
+    fillRoundRect(slidingPill.offset(0.0f, 1.8f), 8.5f, withAlpha(COL_PRIMARY_ACCENT, 0.24f));
+    fillRoundRect(slidingPill, 8.5f, COL_PRIMARY_ACCENT);
 
     bool onDash = (activeTab_ == ActiveTab::Dashboard);
     drawButton("tab_dash", dashTab, "Dashboard",
@@ -1104,8 +1104,8 @@ void AeroDeskWindow::drawTopNavBar(float width, float& outTopOffset) {
     }
     UiRect filesBtn = { themeBtn.left - 126.0f, 12.0f, themeBtn.left - 8.0f, 46.0f };
     drawButton("btn_drawer", filesBtn, fileBtnLabel,
-               (showFileDrawer_ || unreadChat > 0) ? COL_PRIMARY_RED : COL_SEC_BTN_BG,
-               (showFileDrawer_ || unreadChat > 0) ? COL_PRIMARY_RED_HV : COL_SEC_BTN_HV,
+               (showFileDrawer_ || unreadChat > 0) ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
+               (showFileDrawer_ || unreadChat > 0) ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
                (showFileDrawer_ || unreadChat > 0) ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
                9.0f, [this, unreadChat]() {
                    if (!showFileDrawer_ && unreadChat > 0) {
@@ -1158,11 +1158,11 @@ void AeroDeskWindow::drawDashboardView(const UiRect& bounds, float alpha) {
     drawText("YOUR DESK ID", { idBox.left + 18.0f, idBox.top + 10.0f, idBox.right - 18.0f, idBox.top + 24.0f },
              fmtSmall_, withAlpha(COL_TEXT_ACCENT, alpha));
     drawText(identity_.formattedDeskId(), { idBox.left + 18.0f, idBox.top + 26.0f, idBox.right - 108.0f, idBox.bottom - 8.0f },
-             fmtHeroId_, withAlpha(COL_PRIMARY_RED, alpha));
+             fmtHeroId_, withAlpha(COL_PRIMARY_ACCENT, alpha));
 
     UiRect copyIdBtn = { idBox.right - 98.0f, idBox.top + 25.0f, idBox.right - 16.0f, idBox.bottom - 17.0f };
     drawButton("btn_copy_id", copyIdBtn, "Copy ID",
-               COL_PRIMARY_RED, COL_PRIMARY_RED_HV, COL_TEXT_ON_ACCENT, 8.5f, [this]() {
+               COL_PRIMARY_ACCENT, COL_PRIMARY_ACCENT_HV, COL_TEXT_ON_ACCENT, 8.5f, [this]() {
                    ClipboardManager::setClipboardUtf8(identity_.formattedDeskId());
                    showToast("Copied Desk ID");
                }, fmtSmall_);
@@ -1189,7 +1189,7 @@ void AeroDeskWindow::drawDashboardView(const UiRect& bounds, float alpha) {
     UiRect codeBadge = { ux + 100.0f, codeY, urx - 134.0f, codeY + 32.0f };
     fillRoundRect(codeBadge, 7.5f, COL_BG_CARD);
     strokeRoundRect(codeBadge, 7.5f, COL_BORDER);
-    drawText(identity_.sessionCode(), codeBadge, fmtMono_, COL_PRIMARY_RED, DWRITE_TEXT_ALIGNMENT_CENTER);
+    drawText(identity_.sessionCode(), codeBadge, fmtMono_, COL_PRIMARY_ACCENT, DWRITE_TEXT_ALIGNMENT_CENTER);
 
     UiRect copyCodeBtn = { codeBadge.right + 6.0f, codeY, codeBadge.right + 66.0f, codeY + 32.0f };
     drawButton("btn_copy_code", copyCodeBtn, "Copy",
@@ -1220,7 +1220,7 @@ void AeroDeskWindow::drawDashboardView(const UiRect& bounds, float alpha) {
 
     UiRect savePassBtn = { showPassBtn.right + 6.0f, passField.top, urx, passField.bottom };
     drawButton("btn_save_local_pass", savePassBtn, "Save",
-               COL_PRIMARY_RED, COL_PRIMARY_RED_HV, COL_TEXT_ON_ACCENT, 7.5f, [this]() {
+               COL_PRIMARY_ACCENT, COL_PRIMARY_ACCENT_HV, COL_TEXT_ON_ACCENT, 7.5f, [this]() {
                    if (!localPasswordEdit_.empty()) {
                        identity_.setUnattendedPassword(localPasswordEdit_);
                        showToast("Password saved");
@@ -1242,8 +1242,8 @@ void AeroDeskWindow::drawDashboardView(const UiRect& bounds, float alpha) {
     float hy = hostBox.top + 14.0f;
 
     if (hStatus.active) {
-        drawPulseDot(hx + 5.0f, hy + 10.0f, 4.0f, COL_PRIMARY_RED, alpha);
-        drawText("ACTIVE SESSION", { hx + 16.0f, hy, hrx, hy + 20.0f }, fmtSmall_, COL_PRIMARY_RED);
+        drawPulseDot(hx + 5.0f, hy + 10.0f, 4.0f, COL_PRIMARY_ACCENT, alpha);
+        drawText("ACTIVE SESSION", { hx + 16.0f, hy, hrx, hy + 20.0f }, fmtSmall_, COL_PRIMARY_ACCENT);
         hy += 22.0f;
         std::string who = hStatus.viewerHostname + " (" + CryptoUtils::formatDeskId(hStatus.viewerDeskId) + ")";
         drawText(who, { hx, hy, hrx, hy + 24.0f }, fmtSubheading_, COL_TEXT_PRIMARY);
@@ -1310,7 +1310,7 @@ void AeroDeskWindow::drawDashboardView(const UiRect& bounds, float alpha) {
 
     UiRect connectBtn = { remotePwField.right + 10.0f, cy, crx, cy + 42.0f };
     drawButton("btn_connect", connectBtn, "Connect",
-               COL_PRIMARY_RED, COL_PRIMARY_RED_HV, COL_TEXT_ON_ACCENT, 9.0f, [this]() {
+               COL_PRIMARY_ACCENT, COL_PRIMARY_ACCENT_HV, COL_TEXT_ON_ACCENT, 9.0f, [this]() {
                    initiateConnection();
                });
 
@@ -1385,7 +1385,7 @@ void AeroDeskWindow::drawDashboardView(const UiRect& bounds, float alpha) {
         strokeRoundRect(emptyBox, 13.0f, COL_BORDER);
 
         float cyEmpty = emptyBox.centerY();
-        drawPulseDot(emptyBox.centerX(), cyEmpty - 24.0f, 5.5f, COL_PRIMARY_RED, alpha);
+        drawPulseDot(emptyBox.centerX(), cyEmpty - 24.0f, 5.5f, COL_PRIMARY_ACCENT, alpha);
         drawText("No desks found nearby",
                  { emptyBox.left + 24.0f, cyEmpty - 8.0f, emptyBox.right - 24.0f, cyEmpty + 16.0f },
                  fmtSubheading_, COL_TEXT_PRIMARY, DWRITE_TEXT_ALIGNMENT_CENTER);
@@ -1413,17 +1413,17 @@ void AeroDeskWindow::drawDashboardView(const UiRect& bounds, float alpha) {
                 .offset(0.0f, -1.8f * cardHover);
             drawCardShadow(cardR, 12.0f, 0.4f + 0.6f * cardHover);
             fillRoundRect(cardR, 12.0f, lerpColor(COL_BG_SUBTLE, COL_BG_CARD, 0.5f + 0.5f * std::clamp(cardHover, 0.0f, 1.0f)));
-            strokeRoundRect(cardR, 12.0f, lerpColor(cardItems[i].isFavorite ? COL_BORDER_ALT : COL_BORDER, COL_PRIMARY_RED, std::clamp(cardHover, 0.0f, 1.0f) * 0.6f), 1.0f);
+            strokeRoundRect(cardR, 12.0f, lerpColor(cardItems[i].isFavorite ? COL_BORDER_ALT : COL_BORDER, COL_PRIMARY_ACCENT, std::clamp(cardHover, 0.0f, 1.0f) * 0.6f), 1.0f);
 
             if (cardItems[i].isLive) {
                 drawPulseDot(cardR.left + 19.0f, cardR.top + 18.0f, 3.4f, COL_SUCCESS, alpha);
                 std::string badge = cardItems[i].isFavorite ? "FAVORITE • ONLINE" : "ONLINE";
                 drawText(badge, { cardR.left + 28.0f, cardR.top + 10.0f, cardR.right - 72.0f, cardR.top + 26.0f },
-                         fmtSmall_, cardItems[i].isFavorite ? COL_PRIMARY_RED : COL_TEXT_SECONDARY);
+                         fmtSmall_, cardItems[i].isFavorite ? COL_PRIMARY_ACCENT : COL_TEXT_SECONDARY);
             } else {
                 std::string badge = cardItems[i].isFavorite ? "FAVORITE" : "RECENT";
                 drawText(badge, { cardR.left + 14.0f, cardR.top + 10.0f, cardR.right - 72.0f, cardR.top + 26.0f },
-                         fmtSmall_, cardItems[i].isFavorite ? COL_PRIMARY_RED : COL_TEXT_MUTED);
+                         fmtSmall_, cardItems[i].isFavorite ? COL_PRIMARY_ACCENT : COL_TEXT_MUTED);
             }
 
             uint64_t peerId = cardItems[i].deskId;
@@ -1440,7 +1440,7 @@ void AeroDeskWindow::drawDashboardView(const UiRect& bounds, float alpha) {
                                identity_.toggleFavoriteSession(peerId);
                            }, fmtSmall_);
                 drawIconStar(favBtn.centerX(), favBtn.centerY(), 5.8f, cardItems[i].isFavorite,
-                             cardItems[i].isFavorite ? COL_PRIMARY_RED : COL_TEXT_SECONDARY);
+                             cardItems[i].isFavorite ? COL_PRIMARY_ACCENT : COL_TEXT_SECONDARY);
             }
 
             // Vector Close button for recent items
@@ -1461,7 +1461,7 @@ void AeroDeskWindow::drawDashboardView(const UiRect& bounds, float alpha) {
                 ? CryptoUtils::formatDeskId(peerId)
                 : peerEp;
             drawText(idFormatted, { cardR.left + 14.0f, cardR.top + 28.0f, cardR.right - 108.0f, cardR.top + 54.0f },
-                     fmtSubheading_, lerpColor(COL_TEXT_PRIMARY, COL_PRIMARY_RED, std::clamp(cardHover, 0.0f, 1.0f) * 0.7f));
+                     fmtSubheading_, lerpColor(COL_TEXT_PRIMARY, COL_PRIMARY_ACCENT, std::clamp(cardHover, 0.0f, 1.0f) * 0.7f));
 
             std::string subInfo = peerHost.empty() ? peerEp : peerHost;
             drawText(subInfo, { cardR.left + 14.0f, cardR.top + 54.0f, cardR.right - 108.0f, cardR.bottom - 10.0f },
@@ -1470,7 +1470,7 @@ void AeroDeskWindow::drawDashboardView(const UiRect& bounds, float alpha) {
             std::string targetStr = (peerId > 0) ? CryptoUtils::formatDeskId(peerId) : peerEp;
             UiRect quickConnBtn = { cardR.right - 98.0f, cardR.top + 35.0f, cardR.right - 12.0f, cardR.bottom - 15.0f };
             drawButton(cardBtnId, quickConnBtn, "Connect",
-                       COL_PRIMARY_RED, COL_PRIMARY_RED_HV, COL_TEXT_ON_ACCENT, 8.0f, [this, targetStr]() {
+                       COL_PRIMARY_ACCENT, COL_PRIMARY_ACCENT_HV, COL_TEXT_ON_ACCENT, 8.0f, [this, targetStr]() {
                            remoteIdInput_ = targetStr;
                            initiateConnection();
                        }, fmtSmall_);
@@ -1581,8 +1581,8 @@ void AeroDeskWindow::drawRemoteSessionView(const UiRect& bounds, float alpha) {
                              (inputActive ? "Control: ON" : "View Only");
     UiRect inputBtn = { rx - 98.0f, hudBar.top + 8.0f, rx, hudBar.bottom - 8.0f };
     drawButton("sess_input_toggle", inputBtn, inputLabel,
-               inputActive ? COL_PRIMARY_RED : COL_SEC_BTN_BG,
-               inputActive ? COL_PRIMARY_RED_HV : COL_SEC_BTN_HV,
+               inputActive ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
+               inputActive ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
                inputActive ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
                7.5f, [this, canControl]() {
                    if (canControl) {
@@ -1651,7 +1651,7 @@ void AeroDeskWindow::drawRemoteSessionView(const UiRect& bounds, float alpha) {
         if (remoteCursor_.visible && appSett.showRemoteCursor) {
             float curX = renderedCanvasRect_.left + remoteCursor_.normX * renderedCanvasRect_.width();
             float curY = renderedCanvasRect_.top + remoteCursor_.normY * renderedCanvasRect_.height();
-            solidBrush_->SetColor(withAlpha(COL_PRIMARY_RED, 0.92f));
+            solidBrush_->SetColor(withAlpha(COL_PRIMARY_ACCENT, 0.92f));
             renderTarget_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(curX, curY), 5.0f, 5.0f), solidBrush_);
             solidBrush_->SetColor(rgba(255, 255, 255, 0.98f));
             renderTarget_->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(curX, curY), 6.0f, 6.0f), solidBrush_, 1.6f);
@@ -1707,8 +1707,8 @@ void AeroDeskWindow::drawSettingsView(const UiRect& bounds, float alpha) {
     UiRect darkBtn  = { lightBtn.right + 10.0f, themeBox.top + 32.0f, themeBox.right - 16.0f, themeBox.bottom - 10.0f };
 
     drawButton("sett_theme_light", lightBtn, "Light",
-               !s.darkTheme ? COL_PRIMARY_RED : COL_SEC_BTN_BG,
-               !s.darkTheme ? COL_PRIMARY_RED_HV : COL_SEC_BTN_HV,
+               !s.darkTheme ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
+               !s.darkTheme ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
                !s.darkTheme ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
                8.0f, [this]() {
                    AppSettings ns = identity_.settings();
@@ -1718,8 +1718,8 @@ void AeroDeskWindow::drawSettingsView(const UiRect& bounds, float alpha) {
                }, fmtSmall_, s.darkTheme, COL_BORDER, !s.darkTheme ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
 
     drawButton("sett_theme_dark", darkBtn, "Dark",
-               s.darkTheme ? COL_PRIMARY_RED : COL_SEC_BTN_BG,
-               s.darkTheme ? COL_PRIMARY_RED_HV : COL_SEC_BTN_HV,
+               s.darkTheme ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
+               s.darkTheme ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
                s.darkTheme ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
                8.0f, [this]() {
                    AppSettings ns = identity_.settings();
@@ -1753,22 +1753,22 @@ void AeroDeskWindow::drawSettingsView(const UiRect& bounds, float alpha) {
     };
 
     drawButton("sett_fps_15", fps15Btn, "15 FPS",
-               (curFps == 15) ? COL_PRIMARY_RED : COL_SEC_BTN_BG,
-               (curFps == 15) ? COL_PRIMARY_RED_HV : COL_SEC_BTN_HV,
+               (curFps == 15) ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
+               (curFps == 15) ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
                (curFps == 15) ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
                8.0f, [setFpsAction]() { setFpsAction(15); }, fmtSmall_, curFps != 15, COL_BORDER,
                (curFps == 15) ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
 
     drawButton("sett_fps_30", fps30Btn, "30 FPS",
-               (curFps == 30) ? COL_PRIMARY_RED : COL_SEC_BTN_BG,
-               (curFps == 30) ? COL_PRIMARY_RED_HV : COL_SEC_BTN_HV,
+               (curFps == 30) ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
+               (curFps == 30) ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
                (curFps == 30) ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
                8.0f, [setFpsAction]() { setFpsAction(30); }, fmtSmall_, curFps != 30, COL_BORDER,
                (curFps == 30) ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
 
     drawButton("sett_fps_60", fps60Btn, "60 FPS",
-               (curFps == 60) ? COL_PRIMARY_RED : COL_SEC_BTN_BG,
-               (curFps == 60) ? COL_PRIMARY_RED_HV : COL_SEC_BTN_HV,
+               (curFps == 60) ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
+               (curFps == 60) ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
                (curFps == 60) ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
                8.0f, [setFpsAction]() { setFpsAction(60); }, fmtSmall_, curFps != 60, COL_BORDER,
                (curFps == 60) ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
@@ -1807,22 +1807,22 @@ void AeroDeskWindow::drawSettingsView(const UiRect& bounds, float alpha) {
     };
 
     drawButton("sett_q_ultra", qUltraBtn, "High",
-               (defQ == QualityPreset::Ultra) ? COL_PRIMARY_RED : COL_SEC_BTN_BG,
-               (defQ == QualityPreset::Ultra) ? COL_PRIMARY_RED_HV : COL_SEC_BTN_HV,
+               (defQ == QualityPreset::Ultra) ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
+               (defQ == QualityPreset::Ultra) ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
                (defQ == QualityPreset::Ultra) ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
                8.0f, [setQualAction]() { setQualAction(QualityPreset::Ultra); }, fmtSmall_, defQ != QualityPreset::Ultra, COL_BORDER,
                (defQ == QualityPreset::Ultra) ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
 
     drawButton("sett_q_bal", qBalBtn, "Balanced",
-               (defQ == QualityPreset::Balanced) ? COL_PRIMARY_RED : COL_SEC_BTN_BG,
-               (defQ == QualityPreset::Balanced) ? COL_PRIMARY_RED_HV : COL_SEC_BTN_HV,
+               (defQ == QualityPreset::Balanced) ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
+               (defQ == QualityPreset::Balanced) ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
                (defQ == QualityPreset::Balanced) ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
                8.0f, [setQualAction]() { setQualAction(QualityPreset::Balanced); }, fmtSmall_, defQ != QualityPreset::Balanced, COL_BORDER,
                (defQ == QualityPreset::Balanced) ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
 
     drawButton("sett_q_fast", qFastBtn, "Fast",
-               (defQ == QualityPreset::LowBandwidth) ? COL_PRIMARY_RED : COL_SEC_BTN_BG,
-               (defQ == QualityPreset::LowBandwidth) ? COL_PRIMARY_RED_HV : COL_SEC_BTN_HV,
+               (defQ == QualityPreset::LowBandwidth) ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
+               (defQ == QualityPreset::LowBandwidth) ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
                (defQ == QualityPreset::LowBandwidth) ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
                8.0f, [setQualAction]() { setQualAction(QualityPreset::LowBandwidth); }, fmtSmall_, defQ != QualityPreset::LowBandwidth, COL_BORDER,
                (defQ == QualityPreset::LowBandwidth) ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
@@ -1840,22 +1840,22 @@ void AeroDeskWindow::drawSettingsView(const UiRect& bounds, float alpha) {
     };
 
     drawButton("sett_sc_fit", scFitBtn, "Fit",
-               (defScale == 0) ? COL_PRIMARY_RED : COL_SEC_BTN_BG,
-               (defScale == 0) ? COL_PRIMARY_RED_HV : COL_SEC_BTN_HV,
+               (defScale == 0) ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
+               (defScale == 0) ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
                (defScale == 0) ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
                8.0f, [setScaleAction]() { setScaleAction(0); }, fmtSmall_, defScale != 0, COL_BORDER,
                (defScale == 0) ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
 
     drawButton("sett_sc_str", scStrBtn, "Stretch",
-               (defScale == 1) ? COL_PRIMARY_RED : COL_SEC_BTN_BG,
-               (defScale == 1) ? COL_PRIMARY_RED_HV : COL_SEC_BTN_HV,
+               (defScale == 1) ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
+               (defScale == 1) ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
                (defScale == 1) ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
                8.0f, [setScaleAction]() { setScaleAction(1); }, fmtSmall_, defScale != 1, COL_BORDER,
                (defScale == 1) ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
 
     drawButton("sett_sc_orig", scOrigBtn, "Actual Size",
-               (defScale == 2) ? COL_PRIMARY_RED : COL_SEC_BTN_BG,
-               (defScale == 2) ? COL_PRIMARY_RED_HV : COL_SEC_BTN_HV,
+               (defScale == 2) ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
+               (defScale == 2) ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
                (defScale == 2) ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
                8.0f, [setScaleAction]() { setScaleAction(2); }, fmtSmall_, defScale != 2, COL_BORDER,
                (defScale == 2) ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
@@ -1967,7 +1967,7 @@ void AeroDeskWindow::drawSettingsView(const UiRect& bounds, float alpha) {
 
     UiRect applyRelayBtn = { settRelayField.right + 8.0f, netBox.top + 34.0f, settRelayField.right + 82.0f, netBox.top + 72.0f };
     drawButton("sett_apply_relay", applyRelayBtn, "Save",
-               COL_PRIMARY_RED, COL_PRIMARY_RED_HV, COL_TEXT_ON_ACCENT, 8.0f, [this]() {
+               COL_PRIMARY_ACCENT, COL_PRIMARY_ACCENT_HV, COL_TEXT_ON_ACCENT, 8.0f, [this]() {
                    identity_.setRelayServerAddress(relayServerEdit_);
                    showToast("Relay server saved");
                }, fmtSmall_);
@@ -1975,8 +1975,8 @@ void AeroDeskWindow::drawSettingsView(const UiRect& bounds, float alpha) {
     bool relayRunning = network_.isLocalRelayRunning();
     UiRect localRelayBtn = { applyRelayBtn.right + 8.0f, netBox.top + 34.0f, netBox.right - 16.0f, netBox.top + 72.0f };
     drawButton("sett_toggle_relay", localRelayBtn, relayRunning ? "Relay: ON" : "Relay: OFF",
-               relayRunning ? COL_PRIMARY_RED : COL_SEC_BTN_BG,
-               relayRunning ? COL_PRIMARY_RED_HV : COL_SEC_BTN_HV,
+               relayRunning ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
+               relayRunning ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
                relayRunning ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
                8.0f, [this, relayRunning]() {
                    if (relayRunning) {
@@ -2048,16 +2048,16 @@ void AeroDeskWindow::drawFileTransferDrawer(const UiRect& bounds, float slidePro
 
     bool onFiles = (drawerTab_ == DrawerTab::FilesAndClip);
     drawButton("drawer_tab_files", tabFiles, "Files",
-               onFiles ? COL_PRIMARY_RED : COL_SEC_BTN_BG,
-               onFiles ? COL_PRIMARY_RED_HV : COL_SEC_BTN_HV,
+               onFiles ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
+               onFiles ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
                onFiles ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
                8.0f, [this]() { drawerTab_ = DrawerTab::FilesAndClip; }, fmtSmall_);
 
     uint32_t unread = network_.unreadChatCount();
     std::string chatTabLbl = unread > 0 ? ("Chat (" + std::to_string(unread) + ")") : "Chat";
     drawButton("drawer_tab_chat", tabChat, chatTabLbl,
-               !onFiles ? COL_PRIMARY_RED : COL_SEC_BTN_BG,
-               !onFiles ? COL_PRIMARY_RED_HV : COL_SEC_BTN_HV,
+               !onFiles ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
+               !onFiles ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
                !onFiles ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
                8.0f, [this]() {
                    drawerTab_ = DrawerTab::LiveChat;
@@ -2081,7 +2081,7 @@ void AeroDeskWindow::drawFileTransferDrawer(const UiRect& bounds, float slidePro
         float halfW = (rx - x - 8.0f) * 0.5f;
         UiRect sendFileBtn = { x, y, x + halfW, y + 36.0f };
         drawButton("drawer_send_file", sendFileBtn, "Send File...",
-                   COL_PRIMARY_RED, COL_PRIMARY_RED_HV, COL_TEXT_ON_ACCENT, 8.0f, [this]() {
+                   COL_PRIMARY_ACCENT, COL_PRIMARY_ACCENT_HV, COL_TEXT_ON_ACCENT, 8.0f, [this]() {
                        openSendFileDialog();
                    }, fmtSmall_);
 
@@ -2128,7 +2128,7 @@ void AeroDeskWindow::drawFileTransferDrawer(const UiRect& bounds, float slidePro
                          fmtBodyBold_, COL_TEXT_PRIMARY);
                 drawText(it.statusText, { card.left + 12.0f, card.top + 24.0f, card.right - 70.0f, card.top + 40.0f },
                          fmtSmall_, it.status == TransferStatus::Completed ? COL_SUCCESS :
-                                    (it.status == TransferStatus::Failed || it.status == TransferStatus::Cancelled) ? COL_DANGER : COL_PRIMARY_RED);
+                                    (it.status == TransferStatus::Failed || it.status == TransferStatus::Cancelled) ? COL_DANGER : COL_PRIMARY_ACCENT);
 
                 if (it.status == TransferStatus::InProgress) {
                     uint32_t tid = it.transferId;
@@ -2145,7 +2145,7 @@ void AeroDeskWindow::drawFileTransferDrawer(const UiRect& bounds, float slidePro
                 float fillW = progBg.width() * transferProgSmooth_[i];
                 if (fillW > 1.0f) {
                     UiRect progFg = { progBg.left, progBg.top, progBg.left + fillW, progBg.bottom };
-                    fillRoundRect(progFg, 2.2f, it.status == TransferStatus::Completed ? COL_SUCCESS : COL_PRIMARY_RED);
+                    fillRoundRect(progFg, 2.2f, it.status == TransferStatus::Completed ? COL_SUCCESS : COL_PRIMARY_ACCENT);
                 }
 
                 y += 64.0f;
@@ -2180,7 +2180,7 @@ void AeroDeskWindow::drawFileTransferDrawer(const UiRect& bounds, float slidePro
                 strokeRoundRect(bubble, 9.5f, m.fromLocal ? COL_BORDER_ALT : COL_BORDER);
 
                 drawText(m.senderName, { bubble.left + 10.0f, bubble.top + 4.0f, bubble.right - 10.0f, bubble.top + 20.0f },
-                         fmtSmall_, m.fromLocal ? COL_PRIMARY_RED : COL_TEXT_ACCENT);
+                         fmtSmall_, m.fromLocal ? COL_PRIMARY_ACCENT : COL_TEXT_ACCENT);
                 drawText(m.text, { bubble.left + 10.0f, bubble.top + 20.0f, bubble.right - 10.0f, bubble.bottom - 4.0f },
                          fmtBody_, COL_TEXT_PRIMARY);
                 my += msgH + 6.0f;
@@ -2193,7 +2193,7 @@ void AeroDeskWindow::drawFileTransferDrawer(const UiRect& bounds, float slidePro
 
         UiRect sendChatBtn = { chatField.right + 6.0f, chatField.top, rx, chatField.bottom };
         drawButton("btn_send_chat", sendChatBtn, "Send",
-                   COL_PRIMARY_RED, COL_PRIMARY_RED_HV, COL_TEXT_ON_ACCENT, 8.5f, [this]() {
+                   COL_PRIMARY_ACCENT, COL_PRIMARY_ACCENT_HV, COL_TEXT_ON_ACCENT, 8.5f, [this]() {
                        sendChatFromInput();
                    }, fmtSmall_);
     }
@@ -2227,7 +2227,7 @@ void AeroDeskWindow::drawIncomingApprovalModal(float width, float height, float 
     my += 30.0f;
 
     std::string callerLine = req.callerHostname + " (" + CryptoUtils::formatDeskId(req.callerDeskId) + ")";
-    drawText(callerLine, { mx, my, mrx, my + 24.0f }, fmtSubheading_, COL_PRIMARY_RED);
+    drawText(callerLine, { mx, my, mrx, my + 24.0f }, fmtSubheading_, COL_PRIMARY_ACCENT);
     my += 24.0f;
 
     drawText("Wants to connect to your desktop.",
@@ -2262,7 +2262,7 @@ void AeroDeskWindow::drawIncomingApprovalModal(float width, float height, float 
 
     UiRect acceptBtn = { rejectBtn.right + 12.0f, my, mrx, my + 42.0f };
     drawButton("modal_accept", acceptBtn, "Accept",
-               COL_PRIMARY_RED, COL_PRIMARY_RED_HV, COL_TEXT_ON_ACCENT, 9.5f, [this]() {
+               COL_PRIMARY_ACCENT, COL_PRIMARY_ACCENT_HV, COL_TEXT_ON_ACCENT, 9.5f, [this]() {
                    network_.respondToIncomingRequest(true, modalPermissions_);
                    showToast("Connection accepted");
                });
@@ -2287,7 +2287,7 @@ void AeroDeskWindow::drawToastBanner(float width, float height, float toastProgr
     fillRoundRect(r, bh * 0.5f, withAlpha(COL_BG_CARD, 0.98f * alpha));
     strokeRoundRect(r, bh * 0.5f, withAlpha(toastIsError_ ? COL_DANGER : COL_BORDER_ALT, alpha), 1.2f);
 
-    drawPulseDot(r.left + 18.0f, r.centerY(), 3.6f, toastIsError_ ? COL_DANGER : COL_PRIMARY_RED, alpha);
+    drawPulseDot(r.left + 18.0f, r.centerY(), 3.6f, toastIsError_ ? COL_DANGER : COL_PRIMARY_ACCENT, alpha);
     drawText(toastText_, { r.left + 28.0f, r.top, r.right - 18.0f, r.bottom },
              fmtBodyBold_, withAlpha(COL_TEXT_PRIMARY, alpha), DWRITE_TEXT_ALIGNMENT_CENTER);
 }
