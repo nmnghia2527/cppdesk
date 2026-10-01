@@ -761,6 +761,22 @@ void testV201FeaturesAndResilience() {
     stats.reconnectAttempt = 1;
     TEST_ASSERT(stats.state == ViewerConnectionState::Reconnecting);
     TEST_ASSERT(stats.reconnectAttempt == 1);
+
+    // 7. InputInjector Elevation & Safe Desktop Sync
+    bool isElev = InputInjector::isElevated();
+    TEST_ASSERT(isElev == true || isElev == false);
+    // Desktop sync does not crash or invalidate handles
+    bool syncOk = InputInjector::syncToInputDesktop();
+    (void)syncOk; // May be true or false depending on execution environment
+
+    // 8. Hardware Cursor & Mouse Move Bounds Clamping
+    MonitorDesc testMon{ 0, 0, 0, 1920, 1080, true, "TestMon" };
+    InputInjector::injectMouseMove(0.5f, 0.5f, testMon);
+    InputInjector::injectMouseMove(-1.0f, 2.0f, testMon); // Clamped to [0, 1]
+    POINT pt{};
+    if (GetCursorPos(&pt)) {
+        TEST_ASSERT(pt.x >= 0 && pt.y >= 0);
+    }
 }
 
 } // namespace

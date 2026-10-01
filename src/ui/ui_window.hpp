@@ -207,6 +207,7 @@ private:
     std::string             localPasswordEdit_;
     std::string             relayServerEdit_;
     std::string             chatInput_;
+    int32_t                 chatScrollOffset_ = 0;
 
     // Pending incoming request local permission checkboxes
     uint8_t                 modalPermissions_ = PERM_ALL;

@@ -1172,7 +1172,17 @@ void AeroDeskWindow::drawDashboardView(const UiRect& bounds, float alpha) {
     float rx = leftCol.right - 24.0f;
     float curY = leftCol.top + 22.0f;
 
-    drawText("This Desk", { lx, curY, rx, curY + 26.0f }, fmtHeading_, withAlpha(COL_TEXT_PRIMARY, alpha));
+    bool elevated = InputInjector::isElevated();
+    drawText("This Desk", { lx, curY, rx - (elevated ? 0.0f : 110.0f), curY + 26.0f }, fmtHeading_, withAlpha(COL_TEXT_PRIMARY, alpha));
+    if (!elevated) {
+        UiRect elevBtn = { rx - 108.0f, curY, rx, curY + 26.0f };
+        drawButton("btn_elevate_admin", elevBtn, "Elevate Admin",
+                   COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_PRIMARY_ACCENT, 6.5f, [this]() {
+                       if (InputInjector::relaunchAsAdmin(hwnd_)) {
+                           PostQuitMessage(0);
+                       }
+                   }, fmtSmall_, true, COL_BORDER);
+    }
     curY += 26.0f;
     drawText("Share your ID and code to allow remote access.",
              { lx, curY, rx, curY + 20.0f }, fmtSmall_, withAlpha(COL_TEXT_SECONDARY, alpha));
@@ -1556,6 +1566,27 @@ void AeroDeskWindow::drawRemoteSessionView(const UiRect& bounds, float alpha) {
                        toggleFullscreen();
                    }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
         rx = fsBtn.left - 6.0f;
+
+        uint32_t unreadChat = network_.unreadChatCount();
+        bool chatOpen = (showFileDrawer_ && drawerTab_ == DrawerTab::LiveChat);
+        std::string chatLabel = (unreadChat > 0) ? ("Chat (" + std::to_string(unreadChat) + ")") : "Chat";
+        UiRect chatBtn = { rx - 76.0f, hudBar.top + 8.0f, rx, hudBar.bottom - 8.0f };
+        drawButton("sess_chat", chatBtn, chatLabel,
+                   (chatOpen || unreadChat > 0) ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
+                   (chatOpen || unreadChat > 0) ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
+                   (chatOpen || unreadChat > 0) ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
+                   7.5f, [this, chatOpen]() {
+                       if (chatOpen) {
+                           showFileDrawer_ = false;
+                       } else {
+                           showFileDrawer_ = true;
+                           drawerTab_ = DrawerTab::LiveChat;
+                           network_.markChatRead();
+                           focusedField_ = FocusedField::ChatInput;
+                       }
+                   }, fmtSmall_, !(chatOpen || unreadChat > 0), COL_BORDER,
+                   (chatOpen || unreadChat > 0) ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
+        rx = chatBtn.left - 6.0f;
 
         UiRect shotBtn = { rx - 80.0f, hudBar.top + 8.0f, rx, hudBar.bottom - 8.0f };
         drawButton("sess_screenshot", shotBtn, "Screenshot",
@@ -2203,10 +2234,14 @@ void AeroDeskWindow::drawFileTransferDrawer(const UiRect& bounds, float slidePro
         } else {
             float msgH = 46.0f;
             int maxVisible = std::max(1, static_cast<int>((chatBox.height() - 16.0f) / (msgH + 6.0f)));
-            size_t startIdx = (msgs.size() > static_cast<size_t>(maxVisible)) ? (msgs.size() - maxVisible) : 0;
+            int totalMsgs = static_cast<int>(msgs.size());
+            int maxOffset = std::max(0, totalMsgs - maxVisible);
+            chatScrollOffset_ = std::clamp(chatScrollOffset_, 0, maxOffset);
+            size_t startIdx = static_cast<size_t>(std::max(0, totalMsgs - maxVisible - chatScrollOffset_));
+            size_t endIdx = std::min(msgs.size(), startIdx + static_cast<size_t>(maxVisible));
             float my = chatBox.top + 8.0f;
 
-            for (size_t i = startIdx; i < msgs.size(); ++i) {
+            for (size_t i = startIdx; i < endIdx; ++i) {
                 const auto& m = msgs[i];
                 UiRect bubble = m.fromLocal
                     ? UiRect{ chatBox.left + 36.0f, my, chatBox.right - 10.0f, my + msgH }
@@ -2311,7 +2346,7 @@ void AeroDeskWindow::drawDynamicIslandToolbar(float width, float /*height*/) {
     if (floatingToolbarY_ <= -58.0f) return;
 
     auto stats = network_.viewerStats();
-    float pillW = 710.0f;
+    float pillW = 786.0f;
     float pillH = 42.0f;
     float pillLeft = (width - pillW) * 0.5f;
     float pillRight = pillLeft + pillW;
@@ -2393,7 +2428,29 @@ void AeroDeskWindow::drawDynamicIslandToolbar(float width, float /*height*/) {
                }, fmtSmall_, !clipOn, COL_BORDER);
     curX = clipBtn.right + 6.0f;
 
-    // 5. Shortcuts Button "?"
+    // 5. Chat Button
+    uint32_t unreadChat = network_.unreadChatCount();
+    bool islandChatOpen = (showFileDrawer_ && drawerTab_ == DrawerTab::LiveChat);
+    std::string islandChatLabel = (unreadChat > 0) ? ("Chat (" + std::to_string(unreadChat) + ")") : "Chat";
+    UiRect islandChatBtn = { curX, pillTop + 6.0f, curX + 72.0f, pillBottom - 6.0f };
+    drawButton("island_chat_btn", islandChatBtn, islandChatLabel,
+               (islandChatOpen || unreadChat > 0) ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
+               (islandChatOpen || unreadChat > 0) ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
+               (islandChatOpen || unreadChat > 0) ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
+               8.0f, [this, islandChatOpen]() {
+                   if (islandChatOpen) {
+                       showFileDrawer_ = false;
+                   } else {
+                       showFileDrawer_ = true;
+                       drawerTab_ = DrawerTab::LiveChat;
+                       network_.markChatRead();
+                       focusedField_ = FocusedField::ChatInput;
+                   }
+               }, fmtSmall_, !(islandChatOpen || unreadChat > 0), COL_BORDER,
+               (islandChatOpen || unreadChat > 0) ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
+    curX = islandChatBtn.right + 6.0f;
+
+    // 6. Shortcuts Button "?"
     UiRect helpBtn = { curX, pillTop + 6.0f, curX + 32.0f, pillBottom - 6.0f };
     drawButton("island_help_btn", helpBtn, "?",
                COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY,
@@ -2665,6 +2722,27 @@ bool AeroDeskWindow::mapCanvasPointToNormalized(float x, float y, float& outNorm
     if (!renderedCanvasRect_.contains(x, y)) {
         return false;
     }
+
+    if (modalAnimT_ > 0.004f || shortcutsModalAnimT_ > 0.004f) {
+        return false;
+    }
+    if (isFullscreen_ && floatingToolbarY_ > -50.0f && y <= (floatingToolbarY_ + 50.0f)) {
+        return false;
+    }
+    if (showDisplayMenu_ || showAdminMenu_ || showQualityMenu_) {
+        return false;
+    }
+
+    if (drawerAnimT_ > 0.004f && hwnd_) {
+        RECT rc{};
+        GetClientRect(hwnd_, &rc);
+        float w = static_cast<float>(rc.right - rc.left);
+        float drawerW = std::min(395.0f, w * 0.42f);
+        if (x >= (w - drawerW - 14.0f)) {
+            return false;
+        }
+    }
+
     outNormX = std::clamp((x - renderedCanvasRect_.left) / renderedCanvasRect_.width(), 0.0f, 1.0f);
     outNormY = std::clamp((y - renderedCanvasRect_.top) / renderedCanvasRect_.height(), 0.0f, 1.0f);
     return true;
@@ -2730,6 +2808,17 @@ void AeroDeskWindow::onMouseButton(MouseButtonId btn, bool isDown, float x, floa
     mouseY_ = y;
     mouseInsideClient_ = true;
 
+    bool insideDrawer = false;
+    if (drawerAnimT_ > 0.004f && hwnd_) {
+        RECT rc{};
+        GetClientRect(hwnd_, &rc);
+        float w = static_cast<float>(rc.right - rc.left);
+        float drawerW = std::min(395.0f, w * 0.42f);
+        if (x >= (w - drawerW - 14.0f)) {
+            insideDrawer = true;
+        }
+    }
+
     if (btn == MouseButtonId::Left) {
         mouseLeftDown_ = isDown;
         if (isDown) {
@@ -2746,18 +2835,34 @@ void AeroDeskWindow::onMouseButton(MouseButtonId btn, bool isDown, float x, floa
                 }
             }
             pressedWidgetId_.clear();
+            if (insideDrawer) {
+                InvalidateRect(hwnd_, nullptr, FALSE);
+                return;
+            }
         } else {
             if (!pressedWidgetId_.empty()) {
                 pressedWidgetId_.clear();
                 InvalidateRect(hwnd_, nullptr, FALSE);
             }
+            if (insideDrawer) {
+                return;
+            }
+            for (auto it = clickRegions_.rbegin(); it != clickRegions_.rend(); ++it) {
+                if (it->rect.contains(x, y)) {
+                    return;
+                }
+            }
         }
+    } else if (insideDrawer) {
+        return;
     }
 
     if (activeTab_ == ActiveTab::RemoteSession && !network_.pendingIncomingRequest().active) {
         float nx = 0.0f, ny = 0.0f;
         if (mapCanvasPointToNormalized(x, y, nx, ny)) {
-            focusedField_ = FocusedField::RemoteCanvas;
+            if (focusedField_ != FocusedField::ChatInput || !insideDrawer) {
+                focusedField_ = FocusedField::RemoteCanvas;
+            }
             if (remoteInputEnabled_) {
                 network_.sendMouseButton(btn, isDown, nx, ny);
             }
@@ -2766,9 +2871,27 @@ void AeroDeskWindow::onMouseButton(MouseButtonId btn, bool isDown, float x, floa
 }
 
 void AeroDeskWindow::onMouseWheel(int delta) {
+    if (drawerAnimT_ > 0.004f && hwnd_) {
+        RECT rc{};
+        GetClientRect(hwnd_, &rc);
+        float w = static_cast<float>(rc.right - rc.left);
+        float drawerW = std::min(395.0f, w * 0.42f);
+        if (mouseX_ >= (w - drawerW - 14.0f)) {
+            if (drawerTab_ == DrawerTab::LiveChat) {
+                chatScrollOffset_ += (delta > 0 ? 1 : -1);
+                if (chatScrollOffset_ < 0) chatScrollOffset_ = 0;
+                InvalidateRect(hwnd_, nullptr, FALSE);
+            }
+            return;
+        }
+    }
+
     if (activeTab_ == ActiveTab::RemoteSession && remoteInputEnabled_ &&
         renderedCanvasRect_.contains(mouseX_, mouseY_)) {
-        network_.sendMouseWheel(delta, 0);
+        float nx = 0.0f, ny = 0.0f;
+        if (mapCanvasPointToNormalized(mouseX_, mouseY_, nx, ny)) {
+            network_.sendMouseWheel(delta, 0);
+        }
     }
 }
 
@@ -2842,6 +2965,11 @@ void AeroDeskWindow::onKeyEvent(uint16_t vk, uint16_t scan, bool isDown, bool is
                 showDisplayMenu_ = false;
                 showAdminMenu_ = false;
                 showQualityMenu_ = false;
+                InvalidateRect(hwnd_, nullptr, FALSE);
+                return;
+            }
+            if (focusedField_ == FocusedField::ChatInput) {
+                focusedField_ = FocusedField::None;
                 InvalidateRect(hwnd_, nullptr, FALSE);
                 return;
             }

@@ -7,11 +7,11 @@
       type="win32"/>
   <description>AeroDesk Ultra-Low-Latency Remote Desktop</description>
 
-  <!-- UAC Execution Level: asInvoker allows running with standard privileges, elevation handled on-demand -->
+  <!-- UAC Execution Level: requireAdministrator ensures full UIPI access for Task Manager, UAC, and system administration -->
   <trustInfo xmlns="urn:schemas-microsoft-com:asm.v2">
     <security>
       <requestedPrivileges xmlns="urn:schemas-microsoft-com:asm.v3">
-        <requestedExecutionLevel level="asInvoker" uiAccess="false"/>
+        <requestedExecutionLevel level="requireAdministrator" uiAccess="false"/>
       </requestedPrivileges>
     </security>
   </trustInfo>

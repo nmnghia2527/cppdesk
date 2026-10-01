@@ -6,6 +6,7 @@
 #include <windows.h>
 #include <shellapi.h>
 #include <algorithm>
+#include <cmath>
 
 namespace aerodesk {
 
@@ -40,6 +41,15 @@ void mapNormalizedToVirtualDesktop(float normX, float normY, const MonitorDesc& 
 
 void InputInjector::injectMouseMove(float normX, float normY, const MonitorDesc& monitor) {
     ensureDesktopSynced();
+    normX = std::clamp(normX, 0.0f, 1.0f);
+    normY = std::clamp(normY, 0.0f, 1.0f);
+
+    double targetX = monitor.x + normX * std::max(1, monitor.width - 1);
+    double targetY = monitor.y + normY * std::max(1, monitor.height - 1);
+
+    // Hardware cursor positioning (always succeeds even over elevated windows/Task Manager)
+    SetCursorPos(static_cast<int>(std::round(targetX)), static_cast<int>(std::round(targetY)));
+
     LONG dx = 0, dy = 0;
     mapNormalizedToVirtualDesktop(normX, normY, monitor, dx, dy);
 
@@ -50,12 +60,21 @@ void InputInjector::injectMouseMove(float normX, float normY, const MonitorDesc&
     inp.mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK;
     if (SendInput(1, &inp, sizeof(INPUT)) == 0) {
         syncToInputDesktop();
-        SendInput(1, &inp, sizeof(INPUT));
+        if (SendInput(1, &inp, sizeof(INPUT)) == 0) {
+            mouse_event(MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK, dx, dy, 0, 0);
+        }
     }
 }
 
 void InputInjector::injectMouseButton(MouseButtonId button, bool isDown, float normX, float normY, const MonitorDesc& monitor) {
     ensureDesktopSynced();
+    normX = std::clamp(normX, 0.0f, 1.0f);
+    normY = std::clamp(normY, 0.0f, 1.0f);
+
+    double targetX = monitor.x + normX * std::max(1, monitor.width - 1);
+    double targetY = monitor.y + normY * std::max(1, monitor.height - 1);
+    SetCursorPos(static_cast<int>(std::round(targetX)), static_cast<int>(std::round(targetY)));
+
     LONG dx = 0, dy = 0;
     mapNormalizedToVirtualDesktop(normX, normY, monitor, dx, dy);
 
@@ -86,7 +105,10 @@ void InputInjector::injectMouseButton(MouseButtonId button, bool isDown, float n
 
     if (SendInput(2, inputs, sizeof(INPUT)) == 0) {
         syncToInputDesktop();
-        SendInput(2, inputs, sizeof(INPUT));
+        if (SendInput(2, inputs, sizeof(INPUT)) == 0) {
+            mouse_event(inputs[0].mi.dwFlags, inputs[0].mi.dx, inputs[0].mi.dy, 0, 0);
+            mouse_event(inputs[1].mi.dwFlags, inputs[1].mi.dx, inputs[1].mi.dy, 0, 0);
+        }
     }
 }
 
@@ -97,14 +119,18 @@ void InputInjector::injectMouseWheel(int32_t verticalDelta, int32_t horizontalDe
         inp.type = INPUT_MOUSE;
         inp.mi.mouseData = static_cast<DWORD>(verticalDelta);
         inp.mi.dwFlags = MOUSEEVENTF_WHEEL;
-        SendInput(1, &inp, sizeof(INPUT));
+        if (SendInput(1, &inp, sizeof(INPUT)) == 0) {
+            mouse_event(MOUSEEVENTF_WHEEL, 0, 0, static_cast<DWORD>(verticalDelta), 0);
+        }
     }
     if (horizontalDelta != 0) {
         INPUT inp{};
         inp.type = INPUT_MOUSE;
         inp.mi.mouseData = static_cast<DWORD>(horizontalDelta);
         inp.mi.dwFlags = MOUSEEVENTF_HWHEEL;
-        SendInput(1, &inp, sizeof(INPUT));
+        if (SendInput(1, &inp, sizeof(INPUT)) == 0) {
+            mouse_event(MOUSEEVENTF_HWHEEL, 0, 0, static_cast<DWORD>(horizontalDelta), 0);
+        }
     }
 }
 
@@ -132,7 +158,10 @@ void InputInjector::injectKeyEvent(uint16_t vkCode, uint16_t scanCode, bool isDo
 
     if (SendInput(1, &inp, sizeof(INPUT)) == 0) {
         syncToInputDesktop();
-        SendInput(1, &inp, sizeof(INPUT));
+        if (SendInput(1, &inp, sizeof(INPUT)) == 0) {
+            keybd_event(static_cast<BYTE>(vkCode), static_cast<BYTE>(scanCode),
+                        (isDown ? 0 : KEYEVENTF_KEYUP) | (isExtended ? KEYEVENTF_EXTENDEDKEY : 0), 0);
+        }
     }
 }
 
@@ -156,9 +185,14 @@ bool InputInjector::syncToInputDesktop() {
         hInputDesk = OpenInputDesktop(0, FALSE, DESKTOP_SWITCHDESKTOP);
     }
     if (hInputDesk) {
-        BOOL ok = SetThreadDesktop(hInputDesk);
-        CloseDesktop(hInputDesk);
-        return ok != FALSE;
+        HDESK hCurDesk = GetThreadDesktop(GetCurrentThreadId());
+        if (hCurDesk != hInputDesk) {
+            SetThreadDesktop(hInputDesk);
+        }
+        if (GetThreadDesktop(GetCurrentThreadId()) != hInputDesk) {
+            CloseDesktop(hInputDesk);
+        }
+        return true;
     }
     return false;
 }
