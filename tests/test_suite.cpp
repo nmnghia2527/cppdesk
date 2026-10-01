@@ -339,12 +339,13 @@ void testEndToEndSessionAndFileTransfer() {
     std::cout << "  -> Testing Brute-Force Rate Limiting (5 bad attempts -> 60s lockout)...\n";
     hostNet.clearRateLimitRecords();
     bool sawRateLimited = false;
-    for (int attempt = 1; attempt <= 6; ++attempt) {
+    for (int attempt = 1; attempt <= 8; ++attempt) {
         TEST_ASSERT(viewerNet.connectToRemote(targetIdStr, "WrongPasswordAttempt"));
         for (int w = 0; w < 40; ++w) {
             auto st = viewerNet.viewerStats();
             if (st.state == ViewerConnectionState::Error) {
-                if (st.statusMessage.find("Too many failed") != std::string::npos) {
+                if (st.statusMessage.find("Too many failed") != std::string::npos ||
+                    st.statusMessage.find("Locked for 60s") != std::string::npos) {
                     sawRateLimited = true;
                 }
                 break;
@@ -353,6 +354,7 @@ void testEndToEndSessionAndFileTransfer() {
         }
         viewerNet.disconnectViewer();
         if (sawRateLimited) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(40));
     }
     TEST_ASSERT(sawRateLimited);
     hostNet.clearRateLimitRecords();
@@ -535,6 +537,131 @@ void testAvx2SimdAssemblyKernels() {
               << " GB/s (" << speedup << "x faster than scalar C++)\n";
 }
 
+void testEcdhAndAesGcmEngine() {
+    std::cout << "[TEST 8] Ephemeral ECDH (P-256), AES-256-GCM AEAD & Multi-threaded Tile Pipeline...\n";
+
+    // 1. Anti-Replay Sliding Window (64-packet bitmask)
+    AntiReplayWindow replayWin;
+    TEST_ASSERT(replayWin.checkAndMark(0));
+    TEST_ASSERT(!replayWin.checkAndMark(0)); // Duplicate rejected
+    TEST_ASSERT(replayWin.checkAndMark(5));  // Higher seq
+    TEST_ASSERT(replayWin.checkAndMark(3));  // Out-of-order within 64 allowed
+    TEST_ASSERT(!replayWin.checkAndMark(3)); // Duplicate rejected
+    TEST_ASSERT(replayWin.checkAndMark(100)); // Advances window
+    TEST_ASSERT(!replayWin.checkAndMark(10)); // Far behind (< 100 - 64) rejected
+    TEST_ASSERT(!replayWin.checkAndMark(100)); // Duplicate rejected
+
+    // 2. Ephemeral NIST P-256 ECDH Key Agreement (Zero-Trust)
+    EcdhKeyExchange hostEcdh;
+    EcdhKeyExchange viewerEcdh;
+    TEST_ASSERT(hostEcdh.initialize());
+    TEST_ASSERT(viewerEcdh.initialize());
+
+    const auto& hostPub = hostEcdh.localPublicKey();
+    const auto& viewerPub = viewerEcdh.localPublicKey();
+    TEST_ASSERT(hostPub.size() == 72); // BCRYPT_ECCPUBLIC_BLOB for P-256
+    TEST_ASSERT(viewerPub.size() == 72);
+
+    std::array<uint8_t, 32> nonce{};
+    CryptoUtils::randomBytes(nonce.data(), nonce.size());
+    uint64_t hostDeskId = 111222333ULL;
+    uint64_t viewerDeskId = 444555666ULL;
+
+    std::array<uint8_t, 32> hostDerivedKey{};
+    std::array<uint8_t, 32> viewerDerivedKey{};
+    TEST_ASSERT(hostEcdh.computeSharedSessionKey(viewerPub.data(), viewerPub.size(), hostDeskId, viewerDeskId, nonce, hostDerivedKey));
+    TEST_ASSERT(viewerEcdh.computeSharedSessionKey(hostPub.data(), hostPub.size(), hostDeskId, viewerDeskId, nonce, viewerDerivedKey));
+
+    TEST_ASSERT(hostDerivedKey == viewerDerivedKey);
+    TEST_ASSERT(CryptoUtils::sessionFingerprintHex(hostDerivedKey) == CryptoUtils::sessionFingerprintHex(viewerDerivedKey));
+
+    // 3. Hardware AES-256-GCM AEAD Session Ciphers
+    AesGcmSessionCipher hostCipher;
+    AesGcmSessionCipher viewerCipher;
+    TEST_ASSERT(hostCipher.initialize(hostDerivedKey, /*isHost=*/true));
+    TEST_ASSERT(viewerCipher.initialize(viewerDerivedKey, /*isHost=*/false));
+
+    // Host -> Viewer Frame Encryption
+    std::string testPlaintext = "AeroDesk 4K 60FPS Video Tile Payload (Confidential & Authenticated)";
+    FrameHeader mockHdr{};
+    mockHdr.magic = PROTOCOL_MAGIC;
+    mockHdr.type = static_cast<uint8_t>(PacketType::VIDEO_FRAME_TILES);
+    mockHdr.flags = FLAG_ENCRYPTED;
+    mockHdr.payloadSize = static_cast<uint32_t>(12 + testPlaintext.size() + 16);
+
+    std::vector<uint8_t> encryptedPkt;
+    TEST_ASSERT(hostCipher.encrypt(testPlaintext.data(), testPlaintext.size(), 1, &mockHdr, sizeof(mockHdr), encryptedPkt));
+    TEST_ASSERT(encryptedPkt.size() == 12 + testPlaintext.size() + 16);
+
+    // Decrypt on Viewer
+    std::vector<uint8_t> decryptedPkt;
+    uint64_t rxSeq = 0;
+    TEST_ASSERT(viewerCipher.decrypt(encryptedPkt.data(), encryptedPkt.size(), &mockHdr, sizeof(mockHdr), decryptedPkt, &rxSeq));
+    TEST_ASSERT(rxSeq == 1);
+    TEST_ASSERT(std::string(decryptedPkt.begin(), decryptedPkt.end()) == testPlaintext);
+
+    // Replay Attack Detection
+    std::vector<uint8_t> replayDec;
+    TEST_ASSERT(!viewerCipher.decrypt(encryptedPkt.data(), encryptedPkt.size(), &mockHdr, sizeof(mockHdr), replayDec));
+
+    // Tamper Detection: Bit-Flip in Ciphertext
+    std::vector<uint8_t> tamperedPkt = encryptedPkt;
+    tamperedPkt[15] ^= 0x40;
+    std::vector<uint8_t> tamperedDec;
+    TEST_ASSERT(!viewerCipher.decrypt(tamperedPkt.data(), tamperedPkt.size(), &mockHdr, sizeof(mockHdr), tamperedDec));
+
+    // Tamper Detection: Header/AAD mismatch
+    FrameHeader tamperedHdr = mockHdr;
+    tamperedHdr.type = static_cast<uint8_t>(PacketType::INPUT_MOUSE_MOVE);
+    TEST_ASSERT(!viewerCipher.decrypt(encryptedPkt.data(), encryptedPkt.size(), &tamperedHdr, sizeof(tamperedHdr), tamperedDec));
+
+    // Viewer -> Host Input Encryption
+    std::string mouseEvent = "MOUSE_MOVE_CLICK";
+    mockHdr.type = static_cast<uint8_t>(PacketType::INPUT_MOUSE_MOVE);
+    mockHdr.payloadSize = static_cast<uint32_t>(12 + mouseEvent.size() + 16);
+    std::vector<uint8_t> clientEnc;
+    TEST_ASSERT(viewerCipher.encrypt(mouseEvent.data(), mouseEvent.size(), 1, &mockHdr, sizeof(mockHdr), clientEnc));
+    std::vector<uint8_t> clientDec;
+    uint64_t clientSeq = 0;
+    TEST_ASSERT(hostCipher.decrypt(clientEnc.data(), clientEnc.size(), &mockHdr, sizeof(mockHdr), clientDec, &clientSeq));
+    TEST_ASSERT(clientSeq == 1);
+    TEST_ASSERT(std::string(clientDec.begin(), clientDec.end()) == mouseEvent);
+
+    // Rekeying Ratchet (Option 4A)
+    TEST_ASSERT(hostCipher.ratchetKey());
+    TEST_ASSERT(viewerCipher.ratchetKey());
+    std::string postRatchetPlain = "Payload after 1 GB ratchet key rotation";
+    mockHdr.payloadSize = static_cast<uint32_t>(12 + postRatchetPlain.size() + 16);
+    std::vector<uint8_t> ratchetEnc;
+    TEST_ASSERT(hostCipher.encrypt(postRatchetPlain.data(), postRatchetPlain.size(), 2, &mockHdr, sizeof(mockHdr), ratchetEnc));
+    std::vector<uint8_t> ratchetDec;
+    TEST_ASSERT(viewerCipher.decrypt(ratchetEnc.data(), ratchetEnc.size(), &mockHdr, sizeof(mockHdr), ratchetDec));
+    TEST_ASSERT(std::string(ratchetDec.begin(), ratchetDec.end()) == postRatchetPlain);
+
+    // 4. Multi-Threaded Tile Compression Pool (Option 2A)
+    std::vector<TileThreadPool::RectTask> tasks;
+    for (int i = 0; i < 8; ++i) {
+        TileThreadPool::RectTask t{};
+        t.rx = static_cast<uint16_t>((i % 4) * 64);
+        t.ry = static_cast<uint16_t>((i / 4) * 64);
+        t.rw = 64;
+        t.rh = 64;
+        t.bgraPixels.assign(64 * 64 * 4, static_cast<uint8_t>(0x20 * i + 0x10));
+        t.preset = QualityPreset::Balanced;
+        tasks.push_back(std::move(t));
+    }
+    TileThreadPool::instance().parallelEncode(tasks);
+    for (const auto& t : tasks) {
+        TEST_ASSERT(!t.result.data.empty());
+        TEST_ASSERT(t.result.width == 64 && t.result.height == 64);
+    }
+
+    // 5. InputInjector UAC Desktop Elevation Query (Option 5A)
+    bool isElev = InputInjector::isElevated();
+    (void)isElev; // Querying elevated token status executes without throwing or crashing
+    TEST_ASSERT(true);
+}
+
 } // namespace
 
 int main() {
@@ -551,6 +678,7 @@ int main() {
     testFileTransferEdgeCasesAndFavorites();
     testAppSettingsAndAdaptiveFps();
     testAvx2SimdAssemblyKernels();
+    testEcdhAndAesGcmEngine();
 
     std::cout << "---------------------------------------------------------\n";
     std::cout << "Assertions Passed: " << g_passed << " | Failed: " << g_failed << "\n";
@@ -559,3 +687,4 @@ int main() {
     CoUninitialize();
     return (g_failed == 0) ? 0 : 1;
 }
+

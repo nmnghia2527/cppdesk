@@ -213,7 +213,7 @@ private:
     bool sendHostEncryptedPacket(PacketType type, uint8_t flags, const void* payload, size_t payloadLen);
     bool sendViewerEncryptedPacket(PacketType type, uint8_t flags, const void* payload, size_t payloadLen);
 
-    // Socket framing helpers
+    // Socket framing helpers (AES-256-GCM AEAD encryption + tamper verification)
     static bool sendFrame(
         uintptr_t sock,
         PacketType type,
@@ -221,14 +221,14 @@ private:
         const void* payload,
         size_t payloadLen,
         std::mutex& sendMutex,
-        const std::array<uint8_t, 32>* sessionKey = nullptr,
+        AesGcmSessionCipher* cipher = nullptr,
         uint64_t* sendSeq = nullptr);
 
     static bool recvFrame(
         uintptr_t sock,
         FrameHeader& outHeader,
         std::vector<uint8_t>& outPayload,
-        const std::array<uint8_t, 32>* sessionKey = nullptr,
+        AesGcmSessionCipher* cipher = nullptr,
         uint64_t* recvSeq = nullptr);
 
     IdentityManager&            identity_;
@@ -252,6 +252,8 @@ private:
     std::thread                 hostSessionThread_;
     std::atomic<uintptr_t>      activeHostClientSock_{~uintptr_t(0)};
     std::mutex                  hostSendMutex_;
+    mutable std::mutex          hostCipherMutex_;
+    AesGcmSessionCipher         hostCipher_;
     std::array<uint8_t, 32>     hostSessionKey_{};
     uint64_t                    hostSendSeq_ = 0;
     std::atomic<bool>           hostEncrypted_{false};
@@ -282,6 +284,8 @@ private:
     std::atomic<bool>           viewerActive_{false};
     std::atomic<uintptr_t>      viewerSock_{~uintptr_t(0)};
     std::mutex                  viewerSendMutex_;
+    mutable std::mutex          viewerCipherMutex_;
+    AesGcmSessionCipher         viewerCipher_;
     std::array<uint8_t, 32>     viewerSessionKey_{};
     uint64_t                    viewerSendSeq_ = 0;
     std::atomic<bool>           viewerEncrypted_{false};

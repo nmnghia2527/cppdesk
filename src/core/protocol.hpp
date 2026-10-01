@@ -199,6 +199,9 @@ public:
 
     const std::vector<uint8_t>& buffer() const { return buf_; }
     std::vector<uint8_t> takeBuffer() { return std::move(buf_); }
+    std::string toString() const {
+        return std::string(reinterpret_cast<const char*>(buf_.data()), buf_.size());
+    }
 
 private:
     std::vector<uint8_t> buf_;
@@ -211,6 +214,13 @@ public:
 
     bool hasRemaining(size_t n) const { return pos_ + n <= size_; }
     size_t remaining() const { return size_ - pos_; }
+
+    std::vector<uint8_t> readBytesVector(size_t n) {
+        require(n);
+        std::vector<uint8_t> v(data_ + pos_, data_ + pos_ + n);
+        pos_ += n;
+        return v;
+    }
 
     uint8_t readU8() {
         require(1);

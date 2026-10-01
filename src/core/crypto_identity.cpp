@@ -130,11 +130,95 @@ std::array<uint8_t, 32> CryptoUtils::computeChallengeResponse(
     return computeChallengeResponseFromToken(passToken, hostId, clientId, nonce);
 }
 
+void CryptoUtils::secureZero(void* ptr, size_t len) {
+    if (ptr && len > 0) {
+        SecureZeroMemory(ptr, len);
+    }
+}
+
+bool CryptoUtils::pinMemory(void* ptr, size_t len) {
+    if (ptr && len > 0) {
+        return VirtualLock(ptr, len) != FALSE;
+    }
+    return false;
+}
+
+void CryptoUtils::unpinMemory(void* ptr, size_t len) {
+    if (ptr && len > 0) {
+        VirtualUnlock(ptr, len);
+    }
+}
+
+std::array<uint8_t, 32> CryptoUtils::hmacSha256(const void* key, size_t keyLen, const void* msg, size_t msgLen) {
+    uint8_t kBlock[64] = {};
+    if (keyLen > 64) {
+        auto h = sha256(key, keyLen);
+        std::memcpy(kBlock, h.data(), 32);
+    } else if (key && keyLen > 0) {
+        std::memcpy(kBlock, key, keyLen);
+    }
+
+    uint8_t ipad[64];
+    uint8_t opad[64];
+    for (int i = 0; i < 64; ++i) {
+        ipad[i] = kBlock[i] ^ 0x36;
+        opad[i] = kBlock[i] ^ 0x5C;
+    }
+
+    std::vector<uint8_t> inner;
+    inner.reserve(64 + msgLen);
+    inner.insert(inner.end(), ipad, ipad + 64);
+    if (msg && msgLen > 0) {
+        const uint8_t* m = static_cast<const uint8_t*>(msg);
+        inner.insert(inner.end(), m, m + msgLen);
+    }
+    auto innerHash = sha256(inner.data(), inner.size());
+
+    std::vector<uint8_t> outer;
+    outer.reserve(64 + 32);
+    outer.insert(outer.end(), opad, opad + 64);
+    outer.insert(outer.end(), innerHash.begin(), innerHash.end());
+    auto result = sha256(outer.data(), outer.size());
+
+    secureZero(kBlock, sizeof(kBlock));
+    secureZero(ipad, sizeof(ipad));
+    secureZero(opad, sizeof(opad));
+    return result;
+}
+
+std::array<uint8_t, 32> CryptoUtils::hkdfSha256(
+    const void* ikm, size_t ikmLen,
+    const void* salt, size_t saltLen,
+    const std::string& info)
+{
+    // HKDF-Extract: PRK = HMAC-Hash(salt, IKM)
+    std::array<uint8_t, 32> prk = hmacSha256(salt, saltLen, ikm, ikmLen);
+
+    // HKDF-Expand: OKM = HMAC-Hash(PRK, info || 0x01)
+    std::vector<uint8_t> infoBytes(info.begin(), info.end());
+    infoBytes.push_back(0x01);
+    std::array<uint8_t, 32> okm = hmacSha256(prk.data(), prk.size(), infoBytes.data(), infoBytes.size());
+
+    secureZero(prk.data(), prk.size());
+    return okm;
+}
+
 std::array<uint8_t, 32> CryptoUtils::deriveSessionKey(
     uint64_t hostId,
     uint64_t clientId,
-    const std::array<uint8_t, 32>& nonce)
+    const std::array<uint8_t, 32>& nonce,
+    const uint8_t* ecdhSecret,
+    size_t ecdhSecretLen)
 {
+    if (ecdhSecret && ecdhSecretLen > 0) {
+        ByteWriter infoW;
+        infoW.writeString("AeroDesk-ECDH-AES256GCM-v2");
+        infoW.writeU64(hostId);
+        infoW.writeU64(clientId);
+        std::string infoStr(reinterpret_cast<const char*>(infoW.buffer().data()), infoW.buffer().size());
+        return hkdfSha256(ecdhSecret, ecdhSecretLen, nonce.data(), nonce.size(), infoStr);
+    }
+
     ByteWriter w;
     w.writeString("AeroDesk-SessionKey-v1");
     w.writeU64(hostId);
@@ -526,6 +610,351 @@ void IdentityManager::updateSettings(const AppSettings& newSettings) {
 void IdentityManager::resetSettingsToDefault() {
     settings_ = AppSettings{};
     save();
+}
+
+// ---------------- AntiReplayWindow (Option 4A) ----------------
+
+bool AntiReplayWindow::checkAndMark(uint64_t seq) {
+    if (seq == 0 && maxSeq_ == 0 && bitmap_ == 0) {
+        bitmap_ = 1ULL;
+        return true;
+    }
+    if (seq > maxSeq_) {
+        uint64_t diff = seq - maxSeq_;
+        if (diff < 64) {
+            bitmap_ <<= diff;
+            bitmap_ |= 1ULL;
+        } else {
+            bitmap_ = 1ULL;
+        }
+        maxSeq_ = seq;
+        return true;
+    }
+    uint64_t diff = maxSeq_ - seq;
+    if (diff >= 64) {
+        return false;
+    }
+    if (bitmap_ & (1ULL << diff)) {
+        return false;
+    }
+    bitmap_ |= (1ULL << diff);
+    return true;
+}
+
+void AntiReplayWindow::reset() {
+    maxSeq_ = 0;
+    bitmap_ = 0;
+}
+
+// ---------------- EcdhKeyExchange (Option 1A) ----------------
+
+EcdhKeyExchange::EcdhKeyExchange() = default;
+
+EcdhKeyExchange::~EcdhKeyExchange() {
+    reset();
+}
+
+bool EcdhKeyExchange::initialize() {
+    reset();
+
+    BCRYPT_ALG_HANDLE hAlg = nullptr;
+    NTSTATUS status = BCryptOpenAlgorithmProvider(&hAlg, BCRYPT_ECDH_P256_ALGORITHM, nullptr, 0);
+    if (status < 0) return false;
+    hAlg_ = reinterpret_cast<uintptr_t>(hAlg);
+
+    BCRYPT_KEY_HANDLE hKey = nullptr;
+    status = BCryptGenerateKeyPair(hAlg, &hKey, 256, 0);
+    if (status < 0) {
+        reset();
+        return false;
+    }
+    status = BCryptFinalizeKeyPair(hKey, 0);
+    if (status < 0) {
+        reset();
+        return false;
+    }
+    hKey_ = reinterpret_cast<uintptr_t>(hKey);
+
+    ULONG pubLen = 0;
+    BCryptExportKey(hKey, nullptr, BCRYPT_ECCPUBLIC_BLOB, nullptr, 0, &pubLen, 0);
+    if (pubLen == 0) {
+        reset();
+        return false;
+    }
+    localPubBlob_.resize(pubLen);
+    status = BCryptExportKey(hKey, nullptr, BCRYPT_ECCPUBLIC_BLOB, localPubBlob_.data(), pubLen, &pubLen, 0);
+    if (status < 0) {
+        reset();
+        return false;
+    }
+    localPubBlob_.resize(pubLen);
+    initialized_ = true;
+    return true;
+}
+
+bool EcdhKeyExchange::computeSharedSessionKey(
+    const uint8_t* peerPubBlob,
+    size_t peerPubLen,
+    uint64_t hostId,
+    uint64_t viewerId,
+    const std::array<uint8_t, 32>& nonce,
+    std::array<uint8_t, 32>& outSessionKey)
+{
+    if (!initialized_ || !peerPubBlob || peerPubLen == 0 || !hAlg_ || !hKey_) return false;
+
+    BCRYPT_ALG_HANDLE hAlg = reinterpret_cast<BCRYPT_ALG_HANDLE>(hAlg_);
+    BCRYPT_KEY_HANDLE hKey = reinterpret_cast<BCRYPT_KEY_HANDLE>(hKey_);
+
+    BCRYPT_KEY_HANDLE hPeerKey = nullptr;
+    NTSTATUS status = BCryptImportKeyPair(
+        hAlg,
+        nullptr,
+        BCRYPT_ECCPUBLIC_BLOB,
+        &hPeerKey,
+        const_cast<PUCHAR>(peerPubBlob),
+        static_cast<ULONG>(peerPubLen),
+        0
+    );
+    if (status < 0) return false;
+
+    BCRYPT_SECRET_HANDLE hSecret = nullptr;
+    status = BCryptSecretAgreement(hKey, hPeerKey, &hSecret, 0);
+    BCryptDestroyKey(hPeerKey);
+    if (status < 0) return false;
+
+    ULONG derivedLen = 0;
+    BCryptDeriveKey(hSecret, BCRYPT_KDF_RAW_SECRET, nullptr, nullptr, 0, &derivedLen, 0);
+    if (derivedLen == 0) {
+        BCryptDestroySecret(hSecret);
+        return false;
+    }
+
+    std::vector<uint8_t> secretBytes(derivedLen);
+    status = BCryptDeriveKey(hSecret, BCRYPT_KDF_RAW_SECRET, nullptr, secretBytes.data(), derivedLen, &derivedLen, 0);
+    BCryptDestroySecret(hSecret);
+    if (status < 0) {
+        CryptoUtils::secureZero(secretBytes.data(), secretBytes.size());
+        return false;
+    }
+    secretBytes.resize(derivedLen);
+
+    outSessionKey = CryptoUtils::deriveSessionKey(hostId, viewerId, nonce, secretBytes.data(), secretBytes.size());
+    CryptoUtils::secureZero(secretBytes.data(), secretBytes.size());
+    return true;
+}
+
+void EcdhKeyExchange::reset() {
+    if (hKey_) {
+        BCryptDestroyKey(reinterpret_cast<BCRYPT_KEY_HANDLE>(hKey_));
+        hKey_ = 0;
+    }
+    if (hAlg_) {
+        BCryptCloseAlgorithmProvider(reinterpret_cast<BCRYPT_ALG_HANDLE>(hAlg_), 0);
+        hAlg_ = 0;
+    }
+    CryptoUtils::secureZero(localPubBlob_.data(), localPubBlob_.size());
+    localPubBlob_.clear();
+    initialized_ = false;
+}
+
+// ---------------- AesGcmSessionCipher (Option 1A & 4A) ----------------
+
+AesGcmSessionCipher::AesGcmSessionCipher() = default;
+
+AesGcmSessionCipher::~AesGcmSessionCipher() {
+    reset();
+}
+
+bool AesGcmSessionCipher::initialize(const std::array<uint8_t, 32>& sessionKey, bool isHost) {
+    reset();
+    isHost_ = isHost;
+    sessionKey_ = sessionKey;
+    CryptoUtils::pinMemory(sessionKey_.data(), sessionKey_.size());
+
+    BCRYPT_ALG_HANDLE hAesAlg = nullptr;
+    NTSTATUS status = BCryptOpenAlgorithmProvider(&hAesAlg, BCRYPT_AES_ALGORITHM, nullptr, 0);
+    if (status < 0) return false;
+
+    status = BCryptSetProperty(
+        hAesAlg,
+        BCRYPT_CHAINING_MODE,
+        reinterpret_cast<PUCHAR>(const_cast<wchar_t*>(BCRYPT_CHAIN_MODE_GCM)),
+        sizeof(BCRYPT_CHAIN_MODE_GCM),
+        0
+    );
+    if (status < 0) {
+        BCryptCloseAlgorithmProvider(hAesAlg, 0);
+        return false;
+    }
+    hAesAlg_ = reinterpret_cast<uintptr_t>(hAesAlg);
+
+    DWORD keyObjSize = 0;
+    DWORD cbData = 0;
+    BCryptGetProperty(hAesAlg, BCRYPT_OBJECT_LENGTH, reinterpret_cast<PUCHAR>(&keyObjSize), sizeof(keyObjSize), &cbData, 0);
+    if (keyObjSize > 0) {
+        keyObjBuf_.resize(keyObjSize);
+    }
+
+    BCRYPT_KEY_HANDLE hAesKey = nullptr;
+    status = BCryptGenerateSymmetricKey(
+        hAesAlg,
+        &hAesKey,
+        keyObjBuf_.empty() ? nullptr : keyObjBuf_.data(),
+        static_cast<ULONG>(keyObjBuf_.size()),
+        const_cast<PUCHAR>(sessionKey_.data()),
+        static_cast<ULONG>(sessionKey_.size()),
+        0
+    );
+    if (status < 0) {
+        reset();
+        return false;
+    }
+    hAesKey_ = reinterpret_cast<uintptr_t>(hAesKey);
+
+    replayWindow_.reset();
+    initialized_ = true;
+    return true;
+}
+
+void AesGcmSessionCipher::reset() {
+    if (hAesKey_) {
+        BCryptDestroyKey(reinterpret_cast<BCRYPT_KEY_HANDLE>(hAesKey_));
+        hAesKey_ = 0;
+    }
+    if (hAesAlg_) {
+        BCryptCloseAlgorithmProvider(reinterpret_cast<BCRYPT_ALG_HANDLE>(hAesAlg_), 0);
+        hAesAlg_ = 0;
+    }
+    CryptoUtils::unpinMemory(sessionKey_.data(), sessionKey_.size());
+    CryptoUtils::secureZero(sessionKey_.data(), sessionKey_.size());
+    CryptoUtils::secureZero(keyObjBuf_.data(), keyObjBuf_.size());
+    keyObjBuf_.clear();
+    replayWindow_.reset();
+    initialized_ = false;
+}
+
+bool AesGcmSessionCipher::encrypt(
+    const void* plaintext,
+    size_t plainLen,
+    uint64_t seq,
+    const void* aad,
+    size_t aadLen,
+    std::vector<uint8_t>& outEncryptedPayload)
+{
+    if (!initialized_ || !hAesKey_) return false;
+    BCRYPT_KEY_HANDLE hKey = reinterpret_cast<BCRYPT_KEY_HANDLE>(hAesKey_);
+
+    uint8_t nonce[12] = {};
+    if (isHost_) {
+        nonce[0] = 'H'; nonce[1] = 'S'; nonce[2] = 'T'; nonce[3] = '1';
+    } else {
+        nonce[0] = 'V'; nonce[1] = 'I'; nonce[2] = 'W'; nonce[3] = '1';
+    }
+    std::memcpy(nonce + 4, &seq, 8);
+
+    uint8_t tag[16] = {};
+    BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO authInfo;
+    BCRYPT_INIT_AUTH_MODE_INFO(authInfo);
+    authInfo.pbNonce = nonce;
+    authInfo.cbNonce = sizeof(nonce);
+    authInfo.pbTag = tag;
+    authInfo.cbTag = sizeof(tag);
+    if (aad && aadLen > 0) {
+        authInfo.pbAuthData = const_cast<PUCHAR>(static_cast<const uint8_t*>(aad));
+        authInfo.cbAuthData = static_cast<ULONG>(aadLen);
+    }
+
+    outEncryptedPayload.resize(12 + plainLen + 16);
+    std::memcpy(outEncryptedPayload.data(), nonce, 12);
+
+    ULONG ctLen = 0;
+    NTSTATUS status = BCryptEncrypt(
+        hKey,
+        plainLen > 0 ? const_cast<PUCHAR>(static_cast<const uint8_t*>(plaintext)) : nullptr,
+        static_cast<ULONG>(plainLen),
+        &authInfo,
+        nullptr, 0,
+        plainLen > 0 ? outEncryptedPayload.data() + 12 : nullptr,
+        static_cast<ULONG>(plainLen),
+        &ctLen,
+        0
+    );
+
+    if (status < 0) {
+        outEncryptedPayload.clear();
+        return false;
+    }
+
+    std::memcpy(outEncryptedPayload.data() + 12 + plainLen, tag, 16);
+    return true;
+}
+
+bool AesGcmSessionCipher::decrypt(
+    const uint8_t* encryptedPayload,
+    size_t payloadLen,
+    const void* aad,
+    size_t aadLen,
+    std::vector<uint8_t>& outPlaintext,
+    uint64_t* outSeq)
+{
+    if (!initialized_ || !hAesKey_ || payloadLen < 28) return false;
+    BCRYPT_KEY_HANDLE hKey = reinterpret_cast<BCRYPT_KEY_HANDLE>(hAesKey_);
+
+    const uint8_t* nonce = encryptedPayload;
+    const uint8_t* ciphertext = encryptedPayload + 12;
+    size_t cipherLen = payloadLen - 28;
+    const uint8_t* tag = encryptedPayload + 12 + cipherLen;
+
+    uint64_t seq = 0;
+    std::memcpy(&seq, nonce + 4, 8);
+
+    if (!replayWindow_.checkAndMark(seq)) {
+        return false; // Replay / duplicate rejected
+    }
+
+    BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO authInfo;
+    BCRYPT_INIT_AUTH_MODE_INFO(authInfo);
+    authInfo.pbNonce = const_cast<PUCHAR>(nonce);
+    authInfo.cbNonce = 12;
+    authInfo.pbTag = const_cast<PUCHAR>(tag);
+    authInfo.cbTag = 16;
+    if (aad && aadLen > 0) {
+        authInfo.pbAuthData = const_cast<PUCHAR>(static_cast<const uint8_t*>(aad));
+        authInfo.cbAuthData = static_cast<ULONG>(aadLen);
+    }
+
+    outPlaintext.resize(cipherLen);
+    ULONG ptLen = 0;
+    NTSTATUS status = BCryptDecrypt(
+        hKey,
+        cipherLen > 0 ? const_cast<PUCHAR>(ciphertext) : nullptr,
+        static_cast<ULONG>(cipherLen),
+        &authInfo,
+        nullptr, 0,
+        cipherLen > 0 ? outPlaintext.data() : nullptr,
+        static_cast<ULONG>(cipherLen),
+        &ptLen,
+        0
+    );
+
+    if (status < 0) {
+        outPlaintext.clear();
+        return false; // Auth tag mismatch or decryption failure
+    }
+
+    outPlaintext.resize(ptLen);
+    if (outSeq) *outSeq = seq;
+    return true;
+}
+
+bool AesGcmSessionCipher::ratchetKey() {
+    if (!initialized_) return false;
+    std::array<uint8_t, 32> nextKey = CryptoUtils::hkdfSha256(
+        sessionKey_.data(), sessionKey_.size(),
+        sessionKey_.data(), sessionKey_.size(),
+        "AeroDesk-Ratchet-NextKey"
+    );
+    return initialize(nextKey, isHost_);
 }
 
 } // namespace aerodesk

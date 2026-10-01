@@ -2,6 +2,7 @@
 #include "../simd/simd_kernels.hpp"
 
 #include <windows.h>
+#include <shlwapi.h>
 #include <objidl.h>
 #include <gdiplus.h>
 #include <d3d11.h>
@@ -11,6 +12,8 @@
 #include <cstring>
 #include <algorithm>
 #include <mutex>
+#include <thread>
+#include <condition_variable>
 
 namespace aerodesk {
 
@@ -117,8 +120,8 @@ std::vector<uint8_t> TileCodec::encodeJpeg(const uint8_t* bgra, int width, int h
         const_cast<BYTE*>(bgra)
     );
 
-    IStream* pStream = nullptr;
-    if (FAILED(CreateStreamOnHGlobal(nullptr, TRUE, &pStream)) || !pStream) {
+    IStream* pStream = SHCreateMemStream(nullptr, 0);
+    if (!pStream) {
         return {};
     }
 
@@ -151,22 +154,8 @@ bool TileCodec::decodeJpeg(const uint8_t* jpegData, size_t jpegLen, std::vector<
     initGdiPlus();
     if (!jpegData || jpegLen == 0) return false;
 
-    HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, jpegLen);
-    if (!hMem) return false;
-
-    void* ptr = GlobalLock(hMem);
-    if (!ptr) {
-        GlobalFree(hMem);
-        return false;
-    }
-    std::memcpy(ptr, jpegData, jpegLen);
-    GlobalUnlock(hMem);
-
-    IStream* pStream = nullptr;
-    if (FAILED(CreateStreamOnHGlobal(hMem, TRUE, &pStream)) || !pStream) {
-        GlobalFree(hMem);
-        return false;
-    }
+    IStream* pStream = SHCreateMemStream(jpegData, static_cast<UINT>(jpegLen));
+    if (!pStream) return false;
 
     bool ok = false;
     Gdiplus::Bitmap* bmp = Gdiplus::Bitmap::FromStream(pStream, FALSE);
@@ -301,6 +290,89 @@ bool TileCodec::decodeTileIntoCanvas(
         }
     }
     return true;
+}
+
+// ---------------- TileThreadPool (Option 2A) ----------------
+
+TileThreadPool& TileThreadPool::instance() {
+    static TileThreadPool pool;
+    return pool;
+}
+
+TileThreadPool::TileThreadPool() {
+    unsigned int hw = std::thread::hardware_concurrency();
+    size_t numWorkers = std::clamp(hw, 2u, 8u);
+    workers_.reserve(numWorkers);
+    for (size_t i = 0; i < numWorkers; ++i) {
+        workers_.emplace_back(&TileThreadPool::workerLoop, this);
+    }
+}
+
+TileThreadPool::~TileThreadPool() {
+    stop_.store(true);
+    cvTask_.notify_all();
+    for (auto& t : workers_) {
+        if (t.joinable()) {
+            t.join();
+        }
+    }
+}
+
+void TileThreadPool::workerLoop() {
+    while (!stop_.load()) {
+        RectTask* task = nullptr;
+        {
+            std::unique_lock<std::mutex> lock(mutex_);
+            cvTask_.wait(lock, [&]() {
+                return stop_.load() || nextTaskIdx_.load() < activeBatch_.size();
+            });
+            if (stop_.load()) break;
+
+            size_t idx = nextTaskIdx_.fetch_add(1);
+            if (idx < activeBatch_.size()) {
+                task = activeBatch_[idx];
+            }
+        }
+
+        if (task) {
+            task->result = TileCodec::encodeRect(
+                task->rx, task->ry, task->rw, task->rh,
+                task->bgraPixels.data(), task->preset
+            );
+            if (remainingTasks_.fetch_sub(1) == 1) {
+                std::lock_guard<std::mutex> lock(mutex_);
+                cvDone_.notify_all();
+            }
+        }
+    }
+}
+
+void TileThreadPool::parallelEncode(std::vector<RectTask>& tasks) {
+    if (tasks.empty()) return;
+    if (tasks.size() == 1 || workers_.empty()) {
+        tasks[0].result = TileCodec::encodeRect(
+            tasks[0].rx, tasks[0].ry, tasks[0].rw, tasks[0].rh,
+            tasks[0].bgraPixels.data(), tasks[0].preset
+        );
+        return;
+    }
+
+    {
+        std::unique_lock<std::mutex> lock(mutex_);
+        activeBatch_.clear();
+        activeBatch_.reserve(tasks.size());
+        for (auto& t : tasks) {
+            activeBatch_.push_back(&t);
+        }
+        nextTaskIdx_.store(0);
+        remainingTasks_.store(tasks.size());
+        cvTask_.notify_all();
+
+        cvDone_.wait(lock, [&]() {
+            return remainingTasks_.load() == 0 || stop_.load();
+        });
+        activeBatch_.clear();
+    }
 }
 
 // ---------------- ScreenCapturer::DxgiImpl ----------------
@@ -715,7 +787,7 @@ bool ScreenCapturer::captureDirtyTiles(
     constexpr int MAX_MERGE_COLS = 8; // 8 * 64 = 512 px
     constexpr int MAX_MERGE_ROWS = 4; // 4 * 64 = 256 px
 
-    std::vector<uint8_t> rectBuf;
+    std::vector<TileThreadPool::RectTask> tasks;
     for (int ty = 0; ty < rows; ++ty) {
         for (int tx = 0; tx < cols; ++tx) {
             size_t idx = static_cast<size_t>(ty) * cols + tx;
@@ -754,14 +826,27 @@ bool ScreenCapturer::captureDirtyTiles(
             uint16_t rw = static_cast<uint16_t>(std::min(frameW_ - static_cast<int>(rx), spanCols * TILE_SIZE));
             uint16_t rh = static_cast<uint16_t>(std::min(frameH_ - static_cast<int>(ry), spanRows * TILE_SIZE));
 
-            rectBuf.resize(static_cast<size_t>(rw) * rh * 4);
+            TileThreadPool::RectTask task;
+            task.rx = rx;
+            task.ry = ry;
+            task.rw = rw;
+            task.rh = rh;
+            task.preset = preset;
+            task.bgraPixels.resize(static_cast<size_t>(rw) * rh * 4);
             for (int r = 0; r < rh; ++r) {
                 const uint8_t* srcRow = currentFrame_.data() + (static_cast<size_t>(ry + r) * frameW_ + rx) * 4;
-                uint8_t* dstRow = rectBuf.data() + static_cast<size_t>(r) * rw * 4;
+                uint8_t* dstRow = task.bgraPixels.data() + static_cast<size_t>(r) * rw * 4;
                 std::memcpy(dstRow, srcRow, static_cast<size_t>(rw) * 4);
             }
+            tasks.push_back(std::move(task));
+        }
+    }
 
-            outTiles.push_back(TileCodec::encodeRect(rx, ry, rw, rh, rectBuf.data(), preset));
+    if (!tasks.empty()) {
+        TileThreadPool::instance().parallelEncode(tasks);
+        outTiles.reserve(tasks.size());
+        for (auto& t : tasks) {
+            outTiles.push_back(std::move(t.result));
         }
     }
 

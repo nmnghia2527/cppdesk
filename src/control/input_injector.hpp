@@ -18,6 +18,11 @@ public:
     static void injectMouseWheel(int32_t verticalDelta, int32_t horizontalDelta = 0);
     static void injectKeyEvent(uint16_t vkCode, uint16_t scanCode, bool isDown, bool isExtended);
     static void releaseAllModifiers();
+
+    // Option 5A: Windows UAC & Desktop Elevation helpers
+    static bool syncToInputDesktop();
+    static bool isElevated();
+    static bool relaunchAsAdmin(void* hwndParent = nullptr);
 };
 
 } // namespace aerodesk

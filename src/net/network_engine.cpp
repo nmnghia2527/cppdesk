@@ -11,6 +11,7 @@
 #include <cstring>
 #include <chrono>
 #include <algorithm>
+#include <deque>
 
 namespace aerodesk {
 
@@ -229,7 +230,7 @@ bool NetworkEngine::sendFrame(
     const void* payload,
     size_t payloadLen,
     std::mutex& sendMutex,
-    const std::array<uint8_t, 32>* sessionKey,
+    AesGcmSessionCipher* cipher,
     uint64_t* sendSeq)
 {
     SOCKET s = toWinSock(sock);
@@ -241,21 +242,24 @@ bool NetworkEngine::sendFrame(
     hdr.magic = PROTOCOL_MAGIC;
     hdr.type = static_cast<uint8_t>(type);
     hdr.flags = flags;
-    hdr.payloadSize = static_cast<uint32_t>(payloadLen);
 
-    if (sessionKey && sendSeq) {
+    if (cipher && cipher->isInitialized() && sendSeq) {
         hdr.flags |= FLAG_ENCRYPTED;
         uint64_t seq = (*sendSeq)++;
-        if (payloadLen > 0 && payload != nullptr) {
-            std::vector<uint8_t> encrypted(static_cast<const uint8_t*>(payload),
-                                           static_cast<const uint8_t*>(payload) + payloadLen);
-            CryptoUtils::transformPayload(encrypted.data(), encrypted.size(), *sessionKey, seq);
-            if (!sendAllBytes(s, &hdr, sizeof(hdr))) return false;
-            return sendAllBytes(s, encrypted.data(), encrypted.size());
-        } else {
-            return sendAllBytes(s, &hdr, sizeof(hdr));
+
+        // Output layout: [12-byte Nonce][Ciphertext][16-byte Tag]
+        hdr.payloadSize = static_cast<uint32_t>(12 + payloadLen + 16);
+
+        std::vector<uint8_t> encrypted;
+        // Authenticate with AAD = hdr
+        if (!cipher->encrypt(payload, payloadLen, seq, &hdr, sizeof(hdr), encrypted)) {
+            return false;
         }
+
+        if (!sendAllBytes(s, &hdr, sizeof(hdr))) return false;
+        return sendAllBytes(s, encrypted.data(), encrypted.size());
     } else {
+        hdr.payloadSize = static_cast<uint32_t>(payloadLen);
         if (sendSeq) (*sendSeq)++;
         if (!sendAllBytes(s, &hdr, sizeof(hdr))) return false;
         if (payloadLen > 0 && payload != nullptr) {
@@ -269,7 +273,7 @@ bool NetworkEngine::recvFrame(
     uintptr_t sock,
     FrameHeader& outHeader,
     std::vector<uint8_t>& outPayload,
-    const std::array<uint8_t, 32>* sessionKey,
+    AesGcmSessionCipher* cipher,
     uint64_t* recvSeq)
 {
     SOCKET s = toWinSock(sock);
@@ -289,15 +293,19 @@ bool NetworkEngine::recvFrame(
         }
     }
 
-    if (sessionKey && recvSeq) {
+    if (cipher && cipher->isInitialized() && recvSeq) {
         // Post-authentication frames must carry FLAG_ENCRYPTED
         if ((outHeader.flags & FLAG_ENCRYPTED) == 0) {
             return false;
         }
-        uint64_t seq = (*recvSeq)++;
-        if (!outPayload.empty()) {
-            CryptoUtils::transformPayload(outPayload.data(), outPayload.size(), *sessionKey, seq);
+        std::vector<uint8_t> decrypted;
+        uint64_t pktSeq = 0;
+        // Authenticate with AAD = outHeader
+        if (!cipher->decrypt(outPayload.data(), outPayload.size(), &outHeader, sizeof(outHeader), decrypted, &pktSeq)) {
+            return false; // Authentication tag mismatch or replay detected!
         }
+        *recvSeq = pktSeq;
+        outPayload = std::move(decrypted);
     }
     return true;
 }
@@ -306,8 +314,9 @@ bool NetworkEngine::sendHostEncryptedPacket(PacketType type, uint8_t flags, cons
     uintptr_t cs = activeHostClientSock_.load();
     if (cs == ~uintptr_t(0)) return false;
     bool enc = hostEncrypted_.load();
+    std::lock_guard<std::mutex> lock(hostCipherMutex_);
     return sendFrame(cs, type, flags, payload, payloadLen, hostSendMutex_,
-                     enc ? &hostSessionKey_ : nullptr,
+                     enc ? &hostCipher_ : nullptr,
                      enc ? &hostSendSeq_ : nullptr);
 }
 
@@ -315,8 +324,9 @@ bool NetworkEngine::sendViewerEncryptedPacket(PacketType type, uint8_t flags, co
     uintptr_t vs = viewerSock_.load();
     if (vs == ~uintptr_t(0)) return false;
     bool enc = viewerEncrypted_.load();
+    std::lock_guard<std::mutex> lock(viewerCipherMutex_);
     return sendFrame(vs, type, flags, payload, payloadLen, viewerSendMutex_,
-                     enc ? &viewerSessionKey_ : nullptr,
+                     enc ? &viewerCipher_ : nullptr,
                      enc ? &viewerSendSeq_ : nullptr);
 }
 
@@ -1046,9 +1056,13 @@ void NetworkEngine::disconnectHostClient() {
     uintptr_t cs = activeHostClientSock_.exchange(~uintptr_t(0));
     if (cs != ~uintptr_t(0)) {
         bool enc = hostEncrypted_.exchange(false);
-        sendFrame(cs, PacketType::DISCONNECT, 0, nullptr, 0, hostSendMutex_,
-                  enc ? &hostSessionKey_ : nullptr,
-                  enc ? &hostSendSeq_ : nullptr);
+        {
+            std::lock_guard<std::mutex> lock(hostCipherMutex_);
+            sendFrame(cs, PacketType::DISCONNECT, 0, nullptr, 0, hostSendMutex_,
+                      enc ? &hostCipher_ : nullptr,
+                      enc ? &hostSendSeq_ : nullptr);
+            hostCipher_.reset();
+        }
         closeWinSock(cs);
     }
 }
@@ -1081,6 +1095,8 @@ void NetworkEngine::hostAcceptLoop() {
             w.writeString("Too many failed password attempts. Please wait 60 seconds.");
             std::mutex m;
             sendFrame(clientSock, PacketType::AUTH_RESULT, 0, w.buffer().data(), w.buffer().size(), m);
+            shutdown(toWinSock(clientSock), SD_SEND);
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
             closeWinSock(clientSock);
             continue;
         }
@@ -1092,6 +1108,8 @@ void NetworkEngine::hostAcceptLoop() {
             w.writeString("Host is already in an active remote session.");
             std::mutex m;
             sendFrame(clientSock, PacketType::AUTH_RESULT, 0, w.buffer().data(), w.buffer().size(), m);
+            shutdown(toWinSock(clientSock), SD_SEND);
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
             closeWinSock(clientSock);
             continue;
         }
@@ -1111,6 +1129,10 @@ void NetworkEngine::runHostSession(uintptr_t clientSock, std::string clientIp) {
         InputInjector::releaseAllModifiers();
         fileManager_.abortActiveTransfers();
         hostEncrypted_.store(false);
+        {
+            std::lock_guard<std::mutex> lock(hostCipherMutex_);
+            hostCipher_.reset();
+        }
         uintptr_t s = activeHostClientSock_.exchange(~uintptr_t(0));
         if (s != ~uintptr_t(0)) {
             closeWinSock(s);
@@ -1131,6 +1153,10 @@ void NetworkEngine::runHostSession(uintptr_t clientSock, std::string clientIp) {
         // Apply 8-second handshake socket timeout to prevent half-open stalls
         setSocketTimeoutMs(toWinSock(clientSock), 8000);
 
+        // Initialize Ephemeral ECDH (NIST P-256) for forward secrecy
+        EcdhKeyExchange hostEcdh;
+        hostEcdh.initialize();
+
         // 1. Receive HELLO
         FrameHeader hdr{};
         std::vector<uint8_t> payload;
@@ -1143,12 +1169,19 @@ void NetworkEngine::runHostSession(uintptr_t clientSock, std::string clientIp) {
         uint16_t protoVer = helloReader.readU16();
         uint64_t viewerId = helloReader.readU64();
         std::string viewerHostname = helloReader.readString();
+        std::vector<uint8_t> viewerPubBlob;
+        if (helloReader.hasRemaining(2)) {
+            uint16_t pubLen = helloReader.readU16();
+            if (helloReader.hasRemaining(pubLen)) {
+                viewerPubBlob = helloReader.readBytesVector(pubLen);
+            }
+        }
         if (protoVer != PROTOCOL_VERSION) {
             cleanup();
             return;
         }
 
-        // 2. Send AUTH_CHALLENGE
+        // 2. Send AUTH_CHALLENGE (including Host Ephemeral ECDH Public Key)
         std::array<uint8_t, 32> nonce{};
         CryptoUtils::randomBytes(nonce.data(), nonce.size());
 
@@ -1158,6 +1191,10 @@ void NetworkEngine::runHostSession(uintptr_t clientSock, std::string clientIp) {
             w.writeString(identity_.hostname());
             w.writeBytes(nonce.data(), nonce.size());
             w.writeU8(identity_.unattendedEnabled() ? 1 : 0);
+            w.writeU16(static_cast<uint16_t>(hostEcdh.localPublicKey().size()));
+            if (!hostEcdh.localPublicKey().empty()) {
+                w.writeBytes(hostEcdh.localPublicKey().data(), hostEcdh.localPublicKey().size());
+            }
             if (!sendFrame(clientSock, PacketType::AUTH_CHALLENGE, 0, w.buffer().data(), w.buffer().size(), hostSendMutex_)) {
                 cleanup();
                 return;
@@ -1253,15 +1290,25 @@ void NetworkEngine::runHostSession(uintptr_t clientSock, std::string clientIp) {
         }
 
         if (!accepted) {
+            shutdown(toWinSock(clientSock), SD_SEND);
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
             cleanup();
             return;
         }
 
-        // Clear handshake timeout & activate mandatory end-to-end stream encryption!
+        // Clear handshake timeout & activate mandatory end-to-end AES-256-GCM AEAD encryption!
         setSocketTimeoutMs(toWinSock(clientSock), 0);
-        {
-            std::lock_guard<std::mutex> lock(hostSendMutex_);
+        if (!viewerPubBlob.empty()) {
+            hostEcdh.computeSharedSessionKey(
+                viewerPubBlob.data(), viewerPubBlob.size(),
+                identity_.deskId(), viewerId, nonce, hostSessionKey_);
+        } else {
             hostSessionKey_ = CryptoUtils::deriveSessionKey(identity_.deskId(), viewerId, nonce);
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(hostCipherMutex_);
+            hostCipher_.initialize(hostSessionKey_, /*isHost=*/true);
             hostSendSeq_ = 0;
             hostEncrypted_.store(true);
         }
@@ -1316,19 +1363,83 @@ void NetworkEngine::runHostSession(uintptr_t clientSock, std::string clientIp) {
         std::atomic<uint32_t> hostMeasuredRttMs{0};
         std::atomic<int> requestedMonitor{0};
         std::atomic<bool> forceKeyframeFlag{true};
+        std::atomic<float> avgSendMs{4.0f};
         MonitorDesc currentMonDesc = capturer.currentMonitor();
         std::mutex monDescMutex;
 
-        auto sendPacketHelper = [&](PacketType pt, const std::vector<uint8_t>& buf) -> bool {
-            return sendHostEncryptedPacket(pt, 0, buf.data(), buf.size());
+        struct HostOutboxItem {
+            PacketType type;
+            uint8_t flags;
+            std::vector<uint8_t> payload;
+            bool isVideoTile = false;
         };
+
+        std::mutex outboxMutex;
+        std::condition_variable outboxCv;
+        std::deque<HostOutboxItem> outbox;
+        uint64_t totalBytesSent = 0;
+
+        auto enqueueHostPacket = [&](PacketType pt, uint8_t flags, std::vector<uint8_t> payload, bool isVideo) {
+            std::lock_guard<std::mutex> lk(outboxMutex);
+            if (isVideo) {
+                for (auto it = outbox.begin(); it != outbox.end(); ++it) {
+                    if (it->isVideoTile) {
+                        outbox.erase(it);
+                        break;
+                    }
+                }
+            }
+            outbox.push_back({ pt, flags, std::move(payload), isVideo });
+            outboxCv.notify_one();
+        };
+
+        auto sendPacketHelper = [&](PacketType pt, const std::vector<uint8_t>& buf) -> bool {
+            enqueueHostPacket(pt, 0, buf, false);
+            return true;
+        };
+
+        // Stage 3: Dedicated Network Send Worker Thread (Option 3A)
+        std::thread sendWorkerThread([&]() {
+            while (sessionAlive.load() && running_.load()) {
+                HostOutboxItem item;
+                {
+                    std::unique_lock<std::mutex> lock(outboxMutex);
+                    outboxCv.wait(lock, [&]() {
+                        return !sessionAlive.load() || !running_.load() || !outbox.empty();
+                    });
+                    if (!sessionAlive.load() || !running_.load()) break;
+                    item = std::move(outbox.front());
+                    outbox.pop_front();
+                }
+
+                uint64_t sendT0 = nowTickMs();
+                if (!sendHostEncryptedPacket(item.type, item.flags, item.payload.data(), item.payload.size())) {
+                    sessionAlive.store(false);
+                    break;
+                }
+
+                totalBytesSent += item.payload.size();
+                // Periodic rekeying ratchet every 1 GB (Option 4A)
+                if (totalBytesSent >= 1024ULL * 1024ULL * 1024ULL) {
+                    totalBytesSent = 0;
+                    std::lock_guard<std::mutex> lock(hostCipherMutex_);
+                    hostCipher_.ratchetKey();
+                }
+
+                if (item.isVideoTile) {
+                    float sendDur = static_cast<float>(nowTickMs() - sendT0);
+                    float cur = avgSendMs.load();
+                    avgSendMs.store(cur * 0.78f + sendDur * 0.22f);
+                }
+            }
+        });
 
         // Spawn reader thread for low-latency encrypted input/control handling on Host
         std::thread readerThread([&]() {
             while (sessionAlive.load() && running_.load()) {
                 FrameHeader rhdr{};
                 std::vector<uint8_t> rpay;
-                if (!recvFrame(clientSock, rhdr, rpay, &hostSessionKey_, &hostRecvSeq)) {
+                if (!recvFrame(clientSock, rhdr, rpay, &hostCipher_, &hostRecvSeq)) {
                     sessionAlive.store(false);
                     break;
                 }
@@ -1489,7 +1600,6 @@ void NetworkEngine::runHostSession(uintptr_t clientSock, std::string clientIp) {
         // Main capture & streaming loop with 15 / 30 / 60 FPS pacing + Automatic Network Congestion FPS Drop
         uint64_t lastClipboardCheck = 0;
         CursorState prevCursor{};
-        float avgSendMs = 4.0f;
 
         while (sessionAlive.load() && running_.load() && activeHostClientSock_.load() != ~uintptr_t(0)) {
             uint64_t frameStart = nowTickMs();
@@ -1507,7 +1617,7 @@ void NetworkEngine::runHostSession(uintptr_t clientSock, std::string clientIp) {
 
             uint8_t userFps = requestedTargetFps.load();
             bool adaptiveOn = adaptiveFpsEnabled.load();
-            uint8_t effectiveFps = computeAdaptiveFpsCap(userFps, adaptiveOn, hostMeasuredRttMs.load(), avgSendMs);
+            uint8_t effectiveFps = computeAdaptiveFpsCap(userFps, adaptiveOn, hostMeasuredRttMs.load(), avgSendMs.load());
 
             QualityPreset preset = static_cast<QualityPreset>(requestedQuality.load());
             if (adaptiveOn && effectiveFps == 15 && userFps > 15 && preset == QualityPreset::Ultra) {
@@ -1550,15 +1660,10 @@ void NetworkEngine::runHostSession(uintptr_t clientSock, std::string clientIp) {
                         }
                     }
                     uint8_t flags = isKf ? FLAG_KEYFRAME : FLAG_NONE;
-                    uint64_t sendT0 = nowTickMs();
-                    if (!sendHostEncryptedPacket(PacketType::VIDEO_FRAME_TILES, flags, w.buffer().data(), w.buffer().size())) {
-                        sessionAlive.store(false);
-                        break;
-                    }
-                    float sendDur = static_cast<float>(nowTickMs() - sendT0);
-                    avgSendMs = avgSendMs * 0.78f + sendDur * 0.22f;
+                    enqueueHostPacket(PacketType::VIDEO_FRAME_TILES, flags, w.buffer(), true);
                 } else {
-                    avgSendMs = avgSendMs * 0.92f;
+                    float cur = avgSendMs.load();
+                    avgSendMs.store(cur * 0.92f);
                 }
 
                 if (std::abs(curState.normX - prevCursor.normX) > 0.001f ||
@@ -1569,7 +1674,7 @@ void NetworkEngine::runHostSession(uintptr_t clientSock, std::string clientIp) {
                     cw.writeF32(curState.normX);
                     cw.writeF32(curState.normY);
                     cw.writeU8(curState.visible ? 1 : 0);
-                    sendHostEncryptedPacket(PacketType::CURSOR_UPDATE, 0, cw.buffer().data(), cw.buffer().size());
+                    enqueueHostPacket(PacketType::CURSOR_UPDATE, 0, cw.buffer(), false);
                 }
             }
 
@@ -1583,7 +1688,7 @@ void NetworkEngine::runHostSession(uintptr_t clientSock, std::string clientIp) {
                 if (clipboardManager_.pollLocalChange(newClip)) {
                     ByteWriter clipW;
                     clipW.writeString(newClip);
-                    sendHostEncryptedPacket(PacketType::CLIPBOARD_TEXT, 0, clipW.buffer().data(), clipW.buffer().size());
+                    enqueueHostPacket(PacketType::CLIPBOARD_TEXT, 0, clipW.buffer(), false);
                 }
             }
 
@@ -1596,7 +1701,9 @@ void NetworkEngine::runHostSession(uintptr_t clientSock, std::string clientIp) {
         }
 
         sessionAlive.store(false);
+        outboxCv.notify_all();
         closeWinSock(clientSock);
+        if (sendWorkerThread.joinable()) sendWorkerThread.join();
         if (readerThread.joinable()) readerThread.join();
 
         if (identity_.settings().lockWorkstationOnDisconnect) {
@@ -1637,9 +1744,13 @@ void NetworkEngine::disconnectViewer() {
     uintptr_t s = viewerSock_.exchange(~uintptr_t(0));
     if (s != ~uintptr_t(0)) {
         bool enc = viewerEncrypted_.exchange(false);
-        sendFrame(s, PacketType::DISCONNECT, 0, nullptr, 0, viewerSendMutex_,
-                  enc ? &viewerSessionKey_ : nullptr,
-                  enc ? &viewerSendSeq_ : nullptr);
+        {
+            std::lock_guard<std::mutex> lock(viewerCipherMutex_);
+            sendFrame(s, PacketType::DISCONNECT, 0, nullptr, 0, viewerSendMutex_,
+                      enc ? &viewerCipher_ : nullptr,
+                      enc ? &viewerSendSeq_ : nullptr);
+            viewerCipher_.reset();
+        }
         closeWinSock(s);
     }
     fileManager_.abortActiveTransfers();
@@ -1811,14 +1922,31 @@ void NetworkEngine::runViewerSession(std::string targetInput, std::string passwo
     try {
         setStatus(ViewerConnectionState::Authenticating, "Performing cryptographic handshake...");
 
+        // Initialize Ephemeral ECDH (NIST P-256) for forward secrecy (Option 1A)
+        EcdhKeyExchange viewerEcdh;
+        viewerEcdh.initialize();
+
         // 1. Send HELLO
         {
             ByteWriter w;
             w.writeU16(PROTOCOL_VERSION);
             w.writeU64(identity_.deskId());
             w.writeString(identity_.hostname());
+            w.writeU16(static_cast<uint16_t>(viewerEcdh.localPublicKey().size()));
+            if (!viewerEcdh.localPublicKey().empty()) {
+                w.writeBytes(viewerEcdh.localPublicKey().data(), viewerEcdh.localPublicKey().size());
+            }
             if (!sendFrame(vSock, PacketType::HELLO, 0, w.buffer().data(), w.buffer().size(), viewerSendMutex_)) {
-                setStatus(ViewerConnectionState::Error, "Connection closed during handshake.");
+                FrameHeader ehdr{};
+                std::vector<uint8_t> epay;
+                if (recvFrame(vSock, ehdr, epay) && static_cast<PacketType>(ehdr.type) == PacketType::AUTH_RESULT) {
+                    ByteReader r(epay);
+                    r.readU8(); r.readU8();
+                    std::string msg = r.readString();
+                    setStatus(ViewerConnectionState::Error, msg.empty() ? "Host busy or rate-limited." : msg);
+                } else {
+                    setStatus(ViewerConnectionState::Error, "Connection closed during handshake.");
+                }
                 closeWinSock(vSock);
                 viewerSock_.store(~uintptr_t(0));
                 viewerActive_.store(false);
@@ -1863,6 +1991,13 @@ void NetworkEngine::runViewerSession(std::string targetInput, std::string passwo
         std::array<uint8_t, 32> nonce{};
         chalReader.readBytes(nonce.data(), nonce.size());
         /*uint8_t unattendedAllowed =*/ chalReader.readU8();
+        std::vector<uint8_t> hostPubBlob;
+        if (chalReader.hasRemaining(2)) {
+            uint16_t pubLen = chalReader.readU16();
+            if (chalReader.hasRemaining(pubLen)) {
+                hostPubBlob = chalReader.readBytesVector(pubLen);
+            }
+        }
 
         // 3. Compute & send AUTH_RESPONSE
         {
@@ -1914,11 +2049,19 @@ void NetworkEngine::runViewerSession(std::string targetInput, std::string passwo
                     return;
                 }
 
-                // Activate mandatory end-to-end stream encryption!
+                // Activate mandatory end-to-end stream encryption (Option 1A)!
+                if (!hostPubBlob.empty()) {
+                    viewerEcdh.computeSharedSessionKey(
+                        hostPubBlob.data(), hostPubBlob.size(),
+                        remoteId, identity_.deskId(), nonce, viewerSessionKey_);
+                } else {
+                    viewerSessionKey_ = CryptoUtils::deriveSessionKey(remoteId, identity_.deskId(), nonce);
+                }
+
                 std::string sasFingerprint;
                 {
-                    std::lock_guard<std::mutex> lock(viewerSendMutex_);
-                    viewerSessionKey_ = CryptoUtils::deriveSessionKey(remoteId, identity_.deskId(), nonce);
+                    std::lock_guard<std::mutex> lock(viewerCipherMutex_);
+                    viewerCipher_.initialize(viewerSessionKey_, /*isHost=*/false);
                     viewerSendSeq_ = 0;
                     viewerEncrypted_.store(true);
                     sasFingerprint = CryptoUtils::sessionFingerprintHex(viewerSessionKey_);
@@ -1996,7 +2139,7 @@ void NetworkEngine::runViewerSession(std::string targetInput, std::string passwo
             if (sel < 0) break;
             if (sel == 0) continue;
 
-            if (!recvFrame(vSock, hdr, payload, &viewerSessionKey_, &viewerRecvSeq)) {
+            if (!recvFrame(vSock, hdr, payload, &viewerCipher_, &viewerRecvSeq)) {
                 break;
             }
 
@@ -2186,6 +2329,10 @@ void NetworkEngine::runViewerSession(std::string targetInput, std::string passwo
     uintptr_t s = viewerSock_.exchange(~uintptr_t(0));
     closeWinSock(s);
     viewerEncrypted_.store(false);
+    {
+        std::lock_guard<std::mutex> lock(viewerCipherMutex_);
+        viewerCipher_.reset();
+    }
     viewerActive_.store(false);
     fileManager_.abortActiveTransfers();
     {

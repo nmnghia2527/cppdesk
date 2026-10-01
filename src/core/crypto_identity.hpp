@@ -34,10 +34,22 @@ public:
     static bool randomBytes(void* buffer, size_t len);
     static uint64_t generateNineDigitId();
 
+    // Memory protection & zeroization (Option 4A)
+    static void secureZero(void* ptr, size_t len);
+    static bool pinMemory(void* ptr, size_t len);
+    static void unpinMemory(void* ptr, size_t len);
+
     static std::array<uint8_t, 32> sha256(const void* data, size_t len);
     static std::array<uint8_t, 32> sha256(const std::string& text);
     static std::string toHex(const uint8_t* data, size_t len);
     static std::string sha256Hex(const std::string& text);
+
+    // Cryptographic PRF / KDF helpers (RFC 5869 HKDF-SHA256)
+    static std::array<uint8_t, 32> hmacSha256(const void* key, size_t keyLen, const void* msg, size_t msgLen);
+    static std::array<uint8_t, 32> hkdfSha256(
+        const void* ikm, size_t ikmLen,
+        const void* salt, size_t saltLen,
+        const std::string& info);
 
     // Salted password hash for storage & verification (never stores plaintext on disk)
     static std::string hashPassword(const std::string& password, const std::string& salt);
@@ -56,16 +68,18 @@ public:
         uint64_t clientId,
         const std::array<uint8_t, 32>& nonce);
 
-    // Derive a 256-bit session key from handshake parameters
+    // Derive a 256-bit session key from handshake parameters (supports ECDH shared secret)
     static std::array<uint8_t, 32> deriveSessionKey(
         uint64_t hostId,
         uint64_t clientId,
-        const std::array<uint8_t, 32>& nonce);
+        const std::array<uint8_t, 32>& nonce,
+        const uint8_t* ecdhSecret = nullptr,
+        size_t ecdhSecretLen = 0);
 
     // 8-character uppercase SAS fingerprint ("XXXX-XXXX") derived from sessionKey to verify zero MITM
     static std::string sessionFingerprintHex(const std::array<uint8_t, 32>& sessionKey);
 
-    // Fast stream cipher for payload confidentiality
+    // Fast stream cipher for payload confidentiality (fallback / test)
     static void transformPayload(
         uint8_t* data,
         size_t len,
@@ -77,6 +91,101 @@ public:
 
     // Parse "123 456 789" or "123456789" -> 123456789 (returns 0 if not a 9-digit ID)
     static uint64_t parseDeskId(const std::string& input);
+};
+
+// ---------------- AntiReplayWindow (Option 4A) ----------------
+class AntiReplayWindow {
+public:
+    AntiReplayWindow() = default;
+
+    // Returns true if packet sequence number is valid and un-replayed, and updates window.
+    // Returns false if sequence number is duplicate or too far in the past.
+    bool checkAndMark(uint64_t seq);
+    void reset();
+
+private:
+    uint64_t maxSeq_ = 0;
+    uint64_t bitmap_ = 0; // 64-packet sliding window bitmask
+};
+
+// ---------------- EcdhKeyExchange (Option 1A) ----------------
+// Ephemeral NIST P-256 Elliptic-Curve Diffie-Hellman via Windows CNG
+class EcdhKeyExchange {
+public:
+    EcdhKeyExchange();
+    ~EcdhKeyExchange();
+
+    EcdhKeyExchange(const EcdhKeyExchange&) = delete;
+    EcdhKeyExchange& operator=(const EcdhKeyExchange&) = delete;
+
+    bool initialize();
+    bool isInitialized() const { return initialized_; }
+    const std::vector<uint8_t>& localPublicKey() const { return localPubBlob_; }
+
+    // Computes shared secret with peer's public key, mixes with nonce & IDs via HKDF-SHA256
+    bool computeSharedSessionKey(
+        const uint8_t* peerPubBlob,
+        size_t peerPubLen,
+        uint64_t hostId,
+        uint64_t viewerId,
+        const std::array<uint8_t, 32>& nonce,
+        std::array<uint8_t, 32>& outSessionKey);
+
+    void reset();
+
+private:
+    bool                 initialized_ = false;
+    uintptr_t            hAlg_ = 0;
+    uintptr_t            hKey_ = 0;
+    std::vector<uint8_t> localPubBlob_;
+};
+
+// ---------------- AesGcmSessionCipher (Option 1A & 4A) ----------------
+// Hardware AES-NI accelerated AES-256-GCM AEAD cipher with 16-byte auth tags and anti-replay protection
+class AesGcmSessionCipher {
+public:
+    AesGcmSessionCipher();
+    ~AesGcmSessionCipher();
+
+    AesGcmSessionCipher(const AesGcmSessionCipher&) = delete;
+    AesGcmSessionCipher& operator=(const AesGcmSessionCipher&) = delete;
+
+    bool initialize(const std::array<uint8_t, 32>& sessionKey, bool isHost);
+    void reset();
+    bool isInitialized() const { return initialized_; }
+
+    // Wire format: [12-byte Nonce][Ciphertext][16-byte GCM Tag]
+    // AAD: typically 10-byte FrameHeader with final payloadSize = 12 + plainLen + 16
+    bool encrypt(
+        const void* plaintext,
+        size_t plainLen,
+        uint64_t seq,
+        const void* aad,
+        size_t aadLen,
+        std::vector<uint8_t>& outEncryptedPayload);
+
+    // Decrypts and authenticates payload with GCM tag and anti-replay check
+    bool decrypt(
+        const uint8_t* encryptedPayload,
+        size_t payloadLen,
+        const void* aad,
+        size_t aadLen,
+        std::vector<uint8_t>& outPlaintext,
+        uint64_t* outSeq = nullptr);
+
+    // Periodic key ratcheting (Option 4A)
+    bool ratchetKey();
+
+    const std::array<uint8_t, 32>& currentKey() const { return sessionKey_; }
+
+private:
+    bool                    initialized_ = false;
+    bool                    isHost_ = false;
+    std::array<uint8_t, 32> sessionKey_{};
+    uintptr_t               hAesAlg_ = 0;
+    uintptr_t               hAesKey_ = 0;
+    std::vector<uint8_t>    keyObjBuf_;
+    AntiReplayWindow        replayWindow_;
 };
 
 class IdentityManager {

@@ -6,6 +6,10 @@
 #include <vector>
 #include <string>
 #include <memory>
+#include <thread>
+#include <mutex>
+#include <condition_variable>
+#include <atomic>
 
 namespace aerodesk {
 
@@ -41,6 +45,44 @@ public:
     static bool decompressZstd(const void* src, size_t srcLen, void* dst, size_t dstCapacity);
     static std::vector<uint8_t> encodeJpeg(const uint8_t* bgra, int width, int height, int quality);
     static bool decodeJpeg(const uint8_t* jpegData, size_t jpegLen, std::vector<uint8_t>& outBgra, int& outW, int& outH);
+};
+
+// ---------------- TileThreadPool (Option 2A) ----------------
+// High-performance CPU worker thread pool for parallel tile compression
+class TileThreadPool {
+public:
+    static TileThreadPool& instance();
+
+    TileThreadPool();
+    ~TileThreadPool();
+
+    TileThreadPool(const TileThreadPool&) = delete;
+    TileThreadPool& operator=(const TileThreadPool&) = delete;
+
+    struct RectTask {
+        uint16_t rx = 0;
+        uint16_t ry = 0;
+        uint16_t rw = 0;
+        uint16_t rh = 0;
+        std::vector<uint8_t> bgraPixels;
+        QualityPreset preset = QualityPreset::Balanced;
+        EncodedTile result;
+    };
+
+    void parallelEncode(std::vector<RectTask>& tasks);
+
+private:
+    void workerLoop();
+
+    std::vector<std::thread> workers_;
+    std::mutex               mutex_;
+    std::condition_variable  cvTask_;
+    std::condition_variable  cvDone_;
+    std::atomic<bool>        stop_{false};
+
+    std::vector<RectTask*>   activeBatch_;
+    std::atomic<size_t>      nextTaskIdx_{0};
+    std::atomic<size_t>      remainingTasks_{0};
 };
 
 class ScreenCapturer {

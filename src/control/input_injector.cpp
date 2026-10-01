@@ -4,11 +4,21 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#include <shellapi.h>
 #include <algorithm>
 
 namespace aerodesk {
 
 namespace {
+
+void ensureDesktopSynced() {
+    static uint64_t lastSyncTick = 0;
+    uint64_t now = GetTickCount64();
+    if (now - lastSyncTick > 1000) {
+        lastSyncTick = now;
+        InputInjector::syncToInputDesktop();
+    }
+}
 
 void mapNormalizedToVirtualDesktop(float normX, float normY, const MonitorDesc& mon, LONG& outDx, LONG& outDy) {
     normX = std::clamp(normX, 0.0f, 1.0f);
@@ -29,6 +39,7 @@ void mapNormalizedToVirtualDesktop(float normX, float normY, const MonitorDesc& 
 } // namespace
 
 void InputInjector::injectMouseMove(float normX, float normY, const MonitorDesc& monitor) {
+    ensureDesktopSynced();
     LONG dx = 0, dy = 0;
     mapNormalizedToVirtualDesktop(normX, normY, monitor, dx, dy);
 
@@ -37,10 +48,14 @@ void InputInjector::injectMouseMove(float normX, float normY, const MonitorDesc&
     inp.mi.dx = dx;
     inp.mi.dy = dy;
     inp.mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK;
-    SendInput(1, &inp, sizeof(INPUT));
+    if (SendInput(1, &inp, sizeof(INPUT)) == 0) {
+        syncToInputDesktop();
+        SendInput(1, &inp, sizeof(INPUT));
+    }
 }
 
 void InputInjector::injectMouseButton(MouseButtonId button, bool isDown, float normX, float normY, const MonitorDesc& monitor) {
+    ensureDesktopSynced();
     LONG dx = 0, dy = 0;
     mapNormalizedToVirtualDesktop(normX, normY, monitor, dx, dy);
 
@@ -69,10 +84,14 @@ void InputInjector::injectMouseButton(MouseButtonId button, bool isDown, float n
     inputs[1].mi.dy = dy;
     inputs[1].mi.dwFlags = btnFlag | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK;
 
-    SendInput(2, inputs, sizeof(INPUT));
+    if (SendInput(2, inputs, sizeof(INPUT)) == 0) {
+        syncToInputDesktop();
+        SendInput(2, inputs, sizeof(INPUT));
+    }
 }
 
 void InputInjector::injectMouseWheel(int32_t verticalDelta, int32_t horizontalDelta) {
+    ensureDesktopSynced();
     if (verticalDelta != 0) {
         INPUT inp{};
         inp.type = INPUT_MOUSE;
@@ -90,6 +109,7 @@ void InputInjector::injectMouseWheel(int32_t verticalDelta, int32_t horizontalDe
 }
 
 void InputInjector::injectKeyEvent(uint16_t vkCode, uint16_t scanCode, bool isDown, bool isExtended) {
+    ensureDesktopSynced();
     if (scanCode == 0 && vkCode != 0) {
         scanCode = static_cast<uint16_t>(MapVirtualKeyW(vkCode, MAPVK_VK_TO_VSC));
     }
@@ -110,7 +130,10 @@ void InputInjector::injectKeyEvent(uint16_t vkCode, uint16_t scanCode, bool isDo
         inp.ki.dwFlags |= KEYEVENTF_KEYUP;
     }
 
-    SendInput(1, &inp, sizeof(INPUT));
+    if (SendInput(1, &inp, sizeof(INPUT)) == 0) {
+        syncToInputDesktop();
+        SendInput(1, &inp, sizeof(INPUT));
+    }
 }
 
 void InputInjector::releaseAllModifiers() {
@@ -125,6 +148,49 @@ void InputInjector::releaseAllModifiers() {
             injectKeyEvent(vk, 0, false, (vk == VK_RCONTROL || vk == VK_RMENU || vk == VK_LWIN || vk == VK_RWIN));
         }
     }
+}
+
+bool InputInjector::syncToInputDesktop() {
+    HDESK hInputDesk = OpenInputDesktop(0, FALSE, GENERIC_ALL);
+    if (!hInputDesk) {
+        hInputDesk = OpenInputDesktop(0, FALSE, DESKTOP_SWITCHDESKTOP);
+    }
+    if (hInputDesk) {
+        BOOL ok = SetThreadDesktop(hInputDesk);
+        CloseDesktop(hInputDesk);
+        return ok != FALSE;
+    }
+    return false;
+}
+
+bool InputInjector::isElevated() {
+    bool elevated = false;
+    HANDLE hToken = nullptr;
+    if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &hToken)) {
+        TOKEN_ELEVATION elevation{};
+        DWORD cbSize = sizeof(TOKEN_ELEVATION);
+        if (GetTokenInformation(hToken, TokenElevation, &elevation, sizeof(elevation), &cbSize)) {
+            elevated = (elevation.TokenIsElevated != 0);
+        }
+        CloseHandle(hToken);
+    }
+    return elevated;
+}
+
+bool InputInjector::relaunchAsAdmin(void* hwndParent) {
+    wchar_t szPath[MAX_PATH] = {};
+    if (GetModuleFileNameW(nullptr, szPath, MAX_PATH) == 0) {
+        return false;
+    }
+
+    SHELLEXECUTEINFOW sei{};
+    sei.cbSize = sizeof(sei);
+    sei.lpVerb = L"runas";
+    sei.lpFile = szPath;
+    sei.hwnd = reinterpret_cast<HWND>(hwndParent);
+    sei.nShow = SW_NORMAL;
+
+    return ShellExecuteExW(&sei) != FALSE;
 }
 
 } // namespace aerodesk
