@@ -134,6 +134,7 @@ void NotificationManager::showContextMenu(int x, int y, const std::string& statu
     if (!hMenu) return;
 
     AppendMenuW(hMenu, MF_STRING, IDM_TRAY_RESTORE, L"Open AeroDesk");
+    SetMenuDefaultItem(hMenu, IDM_TRAY_RESTORE, FALSE);
 
     std::wstring wStatus = L"Status: " + utf8ToWide(statusText.empty() ? "Online" : statusText);
     AppendMenuW(hMenu, MF_STRING | MF_DISABLED | MF_GRAYED, IDM_TRAY_STATUS, wStatus.c_str());
@@ -145,7 +146,7 @@ void NotificationManager::showContextMenu(int x, int y, const std::string& statu
     AppendMenuW(hMenu, MF_STRING, IDM_TRAY_EXIT, L"Exit AeroDesk");
 
     SetForegroundWindow(hwnd_);
-    TrackPopupMenuEx(hMenu, TPM_RIGHTBUTTON | TPM_BOTTOMALIGN, x, y, hwnd_, nullptr);
+    TrackPopupMenuEx(hMenu, TPM_RIGHTBUTTON, x, y, hwnd_, nullptr);
     PostMessageW(hwnd_, WM_NULL, 0, 0);
     DestroyMenu(hMenu);
 }

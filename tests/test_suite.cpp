@@ -846,6 +846,24 @@ void testNotificationSystemAndTray() {
     notifMgr.stopFlash();
     TEST_ASSERT(!notifMgr.isFlashing());
 
+    // 4. NOTIFYICON_VERSION_4 event decoding (uID packed in HIWORD, event packed in LOWORD)
+    constexpr uint16_t testIconId = 1;
+    LPARAM v4ContextMenu = MAKELPARAM(WM_CONTEXTMENU, testIconId);
+    LPARAM v4LButtonUp   = MAKELPARAM(WM_LBUTTONUP, testIconId);
+    LPARAM v4LButtonDbl  = MAKELPARAM(WM_LBUTTONDBLCLK, testIconId);
+    LPARAM v4Select      = MAKELPARAM(NIN_SELECT, testIconId);
+    LPARAM v4KeySelect   = MAKELPARAM(NIN_KEYSELECT, testIconId);
+    LPARAM v4BalloonClk  = MAKELPARAM(NIN_BALLOONUSERCLICK, testIconId);
+
+    TEST_ASSERT(LOWORD(v4ContextMenu) == WM_CONTEXTMENU);
+    TEST_ASSERT(LOWORD(v4LButtonUp) == WM_LBUTTONUP);
+    TEST_ASSERT(LOWORD(v4LButtonDbl) == WM_LBUTTONDBLCLK);
+    TEST_ASSERT(LOWORD(v4Select) == NIN_SELECT);
+    TEST_ASSERT(LOWORD(v4KeySelect) == NIN_KEYSELECT);
+    TEST_ASSERT(LOWORD(v4BalloonClk) == NIN_BALLOONUSERCLICK);
+    TEST_ASSERT(HIWORD(v4ContextMenu) == testIconId);
+    TEST_ASSERT(HIWORD(v4LButtonDbl) == testIconId);
+
     notifMgr.shutdown();
 }
 

@@ -490,9 +490,12 @@ LRESULT AeroDeskWindow::handleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
             break;
         }
         case WM_TRAYICON: {
-            switch (lParam) {
+            UINT event = LOWORD(lParam);
+            switch (event) {
                 case WM_LBUTTONUP:
+                case WM_LBUTTONDBLCLK:
                 case NIN_SELECT:
+                case NIN_KEYSELECT:
                 case NIN_BALLOONUSERCLICK: {
                     NotificationType nType = notificationMgr_ ? notificationMgr_->lastNotificationType() : NotificationType::GeneralInfo;
                     restoreFromTray(nType);
@@ -502,7 +505,10 @@ LRESULT AeroDeskWindow::handleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
                 case WM_RBUTTONUP:
                 case WM_CONTEXTMENU: {
                     POINT pt;
-                    GetCursorPos(&pt);
+                    if (!GetCursorPos(&pt)) {
+                        pt.x = static_cast<short>(LOWORD(wParam));
+                        pt.y = static_cast<short>(HIWORD(wParam));
+                    }
                     std::string status = "Online";
                     auto vStats = network_.viewerStats();
                     if (vStats.state == ViewerConnectionState::Connected) {
@@ -3355,11 +3361,11 @@ void AeroDeskWindow::showToast(const std::string& message, bool isError) {
 }
 
 void AeroDeskWindow::restoreFromTray(NotificationType contextType) {
+    ShowWindow(hwnd_, SW_SHOW);
     if (IsIconic(hwnd_)) {
         ShowWindow(hwnd_, SW_RESTORE);
-    } else {
-        ShowWindow(hwnd_, SW_SHOW);
     }
+    SetWindowPos(hwnd_, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
     SetForegroundWindow(hwnd_);
     if (notificationMgr_) {
         notificationMgr_->stopFlash();
