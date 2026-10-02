@@ -14,6 +14,9 @@ struct RecentSessionEntry {
     std::string hostname;
     std::string address;
     bool        isFavorite = false;
+    std::string alias;
+    std::string tag;
+    std::string notes;
 };
 
 struct AppSettings {
@@ -228,7 +231,9 @@ public:
     void setRelayServerAddress(const std::string& addr);
 
     const std::vector<RecentSessionEntry>& recentSessions() const { return recentSessions_; }
-    void addOrUpdateRecentSession(uint64_t id, const std::string& host, const std::string& addr);
+    void addOrUpdateRecentSession(uint64_t id, const std::string& host, const std::string& addr,
+                                 const std::string& alias = "", const std::string& tag = "", const std::string& notes = "");
+    void updateRecentSessionMetadata(uint64_t id, const std::string& alias, const std::string& tag, const std::string& notes);
     void toggleFavoriteSession(uint64_t id);
     void removeRecentSession(uint64_t id);
     void clearRecentSessions();

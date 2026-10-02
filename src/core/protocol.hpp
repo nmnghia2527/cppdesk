@@ -40,6 +40,13 @@ enum class PacketType : uint8_t {
     MONITOR_LIST        = 0x14, // Host -> Viewer: List of active remote monitors
     MONITOR_SELECT      = 0x15, // Viewer -> Host: Request active monitor switch
     QUALITY_UPDATE      = 0x16, // Viewer -> Host: Live quality preset & FPS update
+    AUDIO_STREAM_CHUNK  = 0x17, // Host -> Viewer: 48kHz 16-bit stereo PCM audio samples
+    PRIVACY_MODE_TOGGLE = 0x18, // Viewer <-> Host: Enable/Disable Host Privacy Screen & input lock
+    TUNNEL_OPEN         = 0x19, // Viewer -> Host: Request proxy connection to target port
+    TUNNEL_DATA         = 0x1A, // Bidirectional: Multiplexed TCP payload chunk
+    TUNNEL_CLOSE        = 0x1B, // Bidirectional: Terminate tunnel connection
+    TERMINAL_DATA       = 0x1C, // Bidirectional: Interactive command shell I/O
+    WHITEBOARD_PACKET   = 0x1D, // Bidirectional: Whiteboard strokes & laser pointer updates
 
     // Remote Input Injection
     INPUT_MOUSE_MOVE    = 0x20,
@@ -158,7 +165,78 @@ struct TileHeader {
     uint8_t  encoding;    // TileEncoding
     uint32_t dataSize;
 };
+
+struct AudioChunkHeader {
+    uint32_t sampleRate;     // Target sample rate (e.g. 48000)
+    uint8_t  channels;       // Channel count (e.g. 2 for stereo)
+    uint8_t  bitsPerSample;  // e.g. 16
+    uint8_t  isSilent;       // 1 = silent/zero payload, 0 = active PCM
+    uint32_t sampleFrames;   // number of sample frames in this chunk
+};
+
+struct PrivacyModePayload {
+    uint8_t enable;          // 1 = engage, 0 = disengage
+    uint8_t acknowledge;     // 0 = request, 1 = ACK confirmation
+};
+
+struct TunnelOpenHeader {
+    uint32_t tunnelId;
+    uint16_t targetPort;
+    uint8_t  flags;
+};
+
+struct TunnelDataHeader {
+    uint32_t tunnelId;
+    uint32_t dataLen;
+};
+
+struct TunnelCloseHeader {
+    uint32_t tunnelId;
+    uint8_t  reasonCode;     // 0 = Normal, 1 = Refused, 2 = Timeout/Reset
+};
+
+enum class TerminalStreamKind : uint8_t {
+    StdoutChunk = 1,
+    StdinInput  = 2,
+    ResetShell  = 3,
+    SwitchShell = 4
+};
+
+struct TerminalDataHeader {
+    uint8_t  streamKind;     // TerminalStreamKind
+    uint32_t textLen;
+};
+
+enum class WhiteboardTool : uint8_t {
+    Pen          = 0,
+    Highlighter  = 1,
+    Arrow        = 2,
+    Laser        = 3,
+    LaserPointer = 3,
+    ClearAll     = 4
+};
+
+enum class WhiteboardAction : uint8_t {
+    BeginStroke  = 0,
+    AppendPoints = 1,
+    EndStroke    = 2,
+    LaserUpdate  = 3,
+    ClearCanvas  = 4
+};
+
+struct WhiteboardPoint {
+    float x; // Normalized 0.0 to 1.0
+    float y; // Normalized 0.0 to 1.0
+};
 #pragma pack(pop)
+
+struct WhiteboardStroke {
+    uint32_t strokeId = 0;
+    WhiteboardTool tool = WhiteboardTool::Pen;
+    uint32_t colorRgba = 0xE50914FF; // Default Crimson Red
+    float strokeWidth = 3.0f;
+    std::vector<WhiteboardPoint> points;
+};
 
 struct MonitorDesc {
     int32_t     index = 0;

@@ -383,6 +383,14 @@ bool AeroDeskWindow::stepAnimations(float dt) {
     float targetShortcuts = showShortcutsModal_ ? 1.0f : 0.0f;
     if (stepSpring(shortcutsModalAnimT_, shortcutsModalAnimVel_, targetShortcuts, 28.0f, 0.74f, dt)) active = true;
 
+    // 9. TCP Port Forwarding Manager Modal Spring
+    float targetPortModal = showPortForwardModal_ ? 1.0f : 0.0f;
+    if (stepSpring(portForwardModalAnimT_, portForwardModalAnimVel_, targetPortModal, 28.0f, 0.74f, dt)) active = true;
+
+    // 10. Address Book Edit Modal Spring
+    float targetABModal = showAddressBookEditModal_ ? 1.0f : 0.0f;
+    if (stepSpring(addressBookModalAnimT_, addressBookModalAnimVel_, targetABModal, 28.0f, 0.74f, dt)) active = true;
+
     // 7. Per-widget macOS tactile hover & press springs
     for (auto& kv : widgetAnims_) {
         const std::string& id = kv.first;
@@ -1132,6 +1140,16 @@ void AeroDeskWindow::onPaint() {
         drawShortcutsModal(width, height, shortcutsModalAnimT_);
     }
 
+    // TCP Port Forwarding Manager Sheet Modal
+    if (portForwardModalAnimT_ > 0.004f) {
+        drawPortForwardModal(width, height, portForwardModalAnimT_);
+    }
+
+    // Address Book Edit Sheet Modal
+    if (addressBookModalAnimT_ > 0.004f) {
+        drawAddressBookModal(width, height, addressBookModalAnimT_);
+    }
+
     // Floating Capsule Toast
     if (toastAnimT_ > 0.004f) {
         drawToastBanner(width, height, toastAnimT_);
@@ -1521,6 +1539,32 @@ void AeroDeskWindow::drawDashboardView(const UiRect& bounds, float alpha) {
 
     py += 38.0f;
 
+    // Address Book search bar & tag filter chips (v2.1.0)
+    float searchW = 160.0f;
+    UiRect searchBox = { px, py, px + searchW, py + 26.0f };
+    drawTextField("field_dash_search", FocusedField::DashboardSearch, searchBox,
+                  dashboardSearchQuery_, "Search desks...", false);
+
+    // Tag filter chips: All, Favorites, Work, Servers, Personal
+    float chipX = searchBox.right + 8.0f;
+    std::vector<std::string> tags = { "All", "Favorites", "Work", "Servers", "Personal" };
+    for (const auto& t : tags) {
+        float chipW = static_cast<float>(t.size()) * 7.2f + 16.0f;
+        if (chipX + chipW > prx) break;
+        UiRect chipRect = { chipX, py, chipX + chipW, py + 26.0f };
+        bool isActive = (dashboardFilterTag_ == t);
+        drawButton("tag_chip_" + t, chipRect, t,
+                   isActive ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
+                   isActive ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
+                   isActive ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
+                   6.0f, [this, t]() {
+                       dashboardFilterTag_ = t;
+                   }, fmtSmall_, !isActive, COL_BORDER,
+                   isActive ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
+        chipX = chipRect.right + 5.0f;
+    }
+    py += 34.0f;
+
     struct PeerCardItem {
         uint64_t    deskId;
         std::string hostname;
@@ -1528,6 +1572,9 @@ void AeroDeskWindow::drawDashboardView(const UiRect& bounds, float alpha) {
         bool        isLive;
         bool        isFavorite;
         bool        isFromRecent;
+        std::string alias;
+        std::string tag;
+        std::string notes;
     };
     std::vector<PeerCardItem> cardItems;
 
@@ -1542,7 +1589,7 @@ void AeroDeskWindow::drawDashboardView(const UiRect& bounds, float alpha) {
                 break;
             }
         }
-        cardItems.push_back({ r.deskId, r.hostname, ep, liveNow, true, true });
+        cardItems.push_back({ r.deskId, r.hostname, ep, liveNow, true, true, r.alias, r.tag, r.notes });
     }
 
     for (const auto& d : discovered) {
@@ -1551,7 +1598,16 @@ void AeroDeskWindow::drawDashboardView(const UiRect& bounds, float alpha) {
             if (c.deskId == d.deskId) { already = true; break; }
         }
         if (!already) {
-            cardItems.push_back({ d.deskId, d.hostname, d.ip + ":" + std::to_string(d.port), true, false, false });
+            std::string dAlias, dTag, dNotes;
+            for (const auto& r : recents) {
+                if (r.deskId == d.deskId) {
+                    dAlias = r.alias;
+                    dTag = r.tag;
+                    dNotes = r.notes;
+                    break;
+                }
+            }
+            cardItems.push_back({ d.deskId, d.hostname, d.ip + ":" + std::to_string(d.port), true, false, false, dAlias, dTag, dNotes });
         }
     }
 
@@ -1561,8 +1617,40 @@ void AeroDeskWindow::drawDashboardView(const UiRect& bounds, float alpha) {
             if (r.deskId > 0 && c.deskId == r.deskId) { already = true; break; }
         }
         if (!already) {
-            cardItems.push_back({ r.deskId, r.hostname, r.address, false, r.isFavorite, true });
+            cardItems.push_back({ r.deskId, r.hostname, r.address, false, r.isFavorite, true, r.alias, r.tag, r.notes });
         }
+    }
+
+    // Filter cards by Tag and Search Query
+    {
+        std::vector<PeerCardItem> filtered;
+        std::string qLower = dashboardSearchQuery_;
+        std::transform(qLower.begin(), qLower.end(), qLower.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
+        for (const auto& item : cardItems) {
+            if (dashboardFilterTag_ == "Favorites") {
+                if (!item.isFavorite) continue;
+            } else if (dashboardFilterTag_ != "All") {
+                std::string itemTagLower = item.tag;
+                std::transform(itemTagLower.begin(), itemTagLower.end(), itemTagLower.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                std::string filterTagLower = dashboardFilterTag_;
+                std::transform(filterTagLower.begin(), filterTagLower.end(), filterTagLower.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                if (itemTagLower != filterTagLower) continue;
+            }
+
+            if (!qLower.empty()) {
+                std::string haystack = std::to_string(item.deskId) + " " +
+                                       CryptoUtils::formatDeskId(item.deskId) + " " +
+                                       item.hostname + " " + item.endpoint + " " +
+                                       item.alias + " " + item.tag + " " + item.notes;
+                std::transform(haystack.begin(), haystack.end(), haystack.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                if (haystack.find(qLower) == std::string::npos) {
+                    continue;
+                }
+            }
+            filtered.push_back(item);
+        }
+        cardItems = std::move(filtered);
     }
 
     if (cardItems.empty()) {
@@ -1572,17 +1660,17 @@ void AeroDeskWindow::drawDashboardView(const UiRect& bounds, float alpha) {
 
         float cyEmpty = emptyBox.centerY();
         drawPulseDot(emptyBox.centerX(), cyEmpty - 24.0f, 5.5f, COL_PRIMARY_ACCENT, alpha);
-        drawText("No desks found nearby",
+        drawText("No matching desks found",
                  { emptyBox.left + 24.0f, cyEmpty - 8.0f, emptyBox.right - 24.0f, cyEmpty + 16.0f },
                  fmtSubheading_, COL_TEXT_PRIMARY, DWRITE_TEXT_ALIGNMENT_CENTER);
-        drawText("Computers on your local network will appear here automatically.",
+        drawText("Try changing search keywords or active filter tag.",
                  { emptyBox.left + 24.0f, cyEmpty + 18.0f, emptyBox.right - 24.0f, cyEmpty + 42.0f },
                  fmtSmall_, COL_TEXT_SECONDARY, DWRITE_TEXT_ALIGNMENT_CENTER);
     } else {
         int cols = 2;
         float gap = 14.0f;
         float cardW = (prx - px - gap) / 2.0f;
-        float cardH = 92.0f;
+        float cardH = 96.0f;
 
         for (size_t i = 0; i < cardItems.size(); ++i) {
             int row = static_cast<int>(i) / cols;
@@ -1604,17 +1692,33 @@ void AeroDeskWindow::drawDashboardView(const UiRect& bounds, float alpha) {
             if (cardItems[i].isLive) {
                 drawPulseDot(cardR.left + 19.0f, cardR.top + 18.0f, 3.4f, COL_SUCCESS, alpha);
                 std::string badge = cardItems[i].isFavorite ? "FAVORITE • ONLINE" : "ONLINE";
-                drawText(badge, { cardR.left + 28.0f, cardR.top + 10.0f, cardR.right - 72.0f, cardR.top + 26.0f },
+                if (!cardItems[i].tag.empty()) badge += " • [" + cardItems[i].tag + "]";
+                drawText(badge, { cardR.left + 28.0f, cardR.top + 10.0f, cardR.right - 92.0f, cardR.top + 26.0f },
                          fmtSmall_, cardItems[i].isFavorite ? COL_PRIMARY_ACCENT : COL_TEXT_SECONDARY);
             } else {
                 std::string badge = cardItems[i].isFavorite ? "FAVORITE" : "RECENT";
-                drawText(badge, { cardR.left + 14.0f, cardR.top + 10.0f, cardR.right - 72.0f, cardR.top + 26.0f },
+                if (!cardItems[i].tag.empty()) badge += " • [" + cardItems[i].tag + "]";
+                drawText(badge, { cardR.left + 14.0f, cardR.top + 10.0f, cardR.right - 92.0f, cardR.top + 26.0f },
                          fmtSmall_, cardItems[i].isFavorite ? COL_PRIMARY_ACCENT : COL_TEXT_MUTED);
             }
 
             uint64_t peerId = cardItems[i].deskId;
             std::string peerHost = cardItems[i].hostname;
             std::string peerEp = cardItems[i].endpoint;
+
+            // Edit Alias / Tag / Notes Button
+            if (peerId > 0) {
+                UiRect editBtn = { cardR.right - 92.0f, cardR.top + 7.0f, cardR.right - 68.0f, cardR.top + 27.0f };
+                drawButton("peer_edit_" + std::to_string(i), editBtn, "✎",
+                           COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_SECONDARY,
+                           6.0f, [this, peerId, item = cardItems[i]]() {
+                               editingDeskId_ = peerId;
+                               editAliasInput_ = item.alias;
+                               editTagInput_ = item.tag;
+                               editNotesInput_ = item.notes;
+                               showAddressBookEditModal_ = true;
+                           }, fmtSmall_, true, COL_BORDER, COL_PRIMARY_ACCENT);
+            }
 
             // Vector Star Favorite button
             if (peerId > 0) {
@@ -1643,18 +1747,22 @@ void AeroDeskWindow::drawDashboardView(const UiRect& bounds, float alpha) {
                               lerpColor(COL_TEXT_SECONDARY, COL_TEXT_ON_ACCENT, delHover), 1.5f);
             }
 
-            std::string idFormatted = (peerId > 0)
-                ? CryptoUtils::formatDeskId(peerId)
-                : peerEp;
-            drawText(idFormatted, { cardR.left + 14.0f, cardR.top + 28.0f, cardR.right - 108.0f, cardR.top + 54.0f },
+            std::string idFormatted = (peerId > 0) ? CryptoUtils::formatDeskId(peerId) : peerEp;
+            std::string mainTitle = !cardItems[i].alias.empty() ? cardItems[i].alias : idFormatted;
+            drawText(mainTitle, { cardR.left + 14.0f, cardR.top + 28.0f, cardR.right - 108.0f, cardR.top + 54.0f },
                      fmtSubheading_, lerpColor(COL_TEXT_PRIMARY, COL_PRIMARY_ACCENT, std::clamp(cardHover, 0.0f, 1.0f) * 0.7f));
 
-            std::string subInfo = peerHost.empty() ? peerEp : peerHost;
+            std::string subInfo;
+            if (!cardItems[i].alias.empty()) {
+                subInfo = idFormatted + (!peerHost.empty() ? (" (" + peerHost + ")") : "");
+            } else {
+                subInfo = peerHost.empty() ? peerEp : peerHost;
+            }
             drawText(subInfo, { cardR.left + 14.0f, cardR.top + 54.0f, cardR.right - 108.0f, cardR.bottom - 10.0f },
                      fmtSmall_, COL_TEXT_SECONDARY);
 
             std::string targetStr = (peerId > 0) ? CryptoUtils::formatDeskId(peerId) : peerEp;
-            UiRect quickConnBtn = { cardR.right - 98.0f, cardR.top + 35.0f, cardR.right - 12.0f, cardR.bottom - 15.0f };
+            UiRect quickConnBtn = { cardR.right - 98.0f, cardR.top + 38.0f, cardR.right - 12.0f, cardR.bottom - 16.0f };
             drawButton(cardBtnId, quickConnBtn, "Connect",
                        COL_PRIMARY_ACCENT, COL_PRIMARY_ACCENT_HV, COL_TEXT_ON_ACCENT, 8.0f, [this, targetStr]() {
                            remoteIdInput_ = targetStr;
@@ -1804,6 +1912,62 @@ void AeroDeskWindow::drawRemoteSessionView(const UiRect& bounds, float alpha) {
                        }
                    }, fmtSmall_, !inputActive, COL_BORDER,
                    inputActive ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
+        rx = inputBtn.left - 6.0f;
+
+        // Audio Mute / Volume Button
+        bool isMuted = network_.isAudioMuted();
+        int vol = network_.audioVolume();
+        std::string audioLabel = isMuted ? "Audio: Mute" : ("Vol: " + std::to_string(vol) + "%");
+        UiRect audioBtn = { rx - 88.0f, hudBar.top + 8.0f, rx, hudBar.bottom - 8.0f };
+        drawButton("sess_audio_btn", audioBtn, audioLabel,
+                   isMuted ? COL_SEC_BTN_BG : COL_PRIMARY_ACCENT,
+                   isMuted ? COL_SEC_BTN_HV : COL_PRIMARY_ACCENT_HV,
+                   isMuted ? COL_TEXT_PRIMARY : COL_TEXT_ON_ACCENT,
+                   7.5f, [this, isMuted]() {
+                       network_.setAudioMuted(!isMuted);
+                       showToast(!isMuted ? "Audio muted" : "Audio unmuted");
+                   }, fmtSmall_, isMuted, COL_BORDER,
+                   isMuted ? COL_TEXT_ACCENT : COL_TEXT_ON_ACCENT);
+        rx = audioBtn.left - 6.0f;
+
+        // Privacy Mode Curtain Button
+        bool privacyOn = stats.privacyModeEngaged;
+        std::string privLabel = privacyOn ? "Privacy: ON" : "Privacy: OFF";
+        UiRect privBtn = { rx - 92.0f, hudBar.top + 8.0f, rx, hudBar.bottom - 8.0f };
+        drawButton("sess_privacy_btn", privBtn, privLabel,
+                   privacyOn ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
+                   privacyOn ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
+                   privacyOn ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
+                   7.5f, [this]() {
+                       network_.requestTogglePrivacyMode();
+                   }, fmtSmall_, !privacyOn, COL_BORDER,
+                   privacyOn ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
+        rx = privBtn.left - 6.0f;
+
+        // Port Forwarding Tunnels Button
+        UiRect tunnelsBtn = { rx - 76.0f, hudBar.top + 8.0f, rx, hudBar.bottom - 8.0f };
+        drawButton("sess_tunnels_btn", tunnelsBtn, "Tunnels",
+                   showPortForwardModal_ ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
+                   showPortForwardModal_ ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
+                   showPortForwardModal_ ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
+                   7.5f, [this]() {
+                       showPortForwardModal_ = !showPortForwardModal_;
+                   }, fmtSmall_, !showPortForwardModal_, COL_BORDER,
+                   showPortForwardModal_ ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
+        rx = tunnelsBtn.left - 6.0f;
+
+        // Whiteboard Annotation Button
+        std::string wbLabel = whiteboardActive_ ? "Board: ON" : "Board";
+        UiRect wbBtn = { rx - 78.0f, hudBar.top + 8.0f, rx, hudBar.bottom - 8.0f };
+        drawButton("sess_whiteboard_btn", wbBtn, wbLabel,
+                   whiteboardActive_ ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
+                   whiteboardActive_ ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
+                   whiteboardActive_ ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
+                   7.5f, [this]() {
+                       whiteboardActive_ = !whiteboardActive_;
+                       showToast(whiteboardActive_ ? "Whiteboard active" : "Whiteboard hidden");
+                   }, fmtSmall_, !whiteboardActive_, COL_BORDER,
+                   whiteboardActive_ ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
 
         stageRect = { bounds.left, hudBar.bottom, bounds.right, bounds.bottom };
     }
@@ -1870,6 +2034,9 @@ void AeroDeskWindow::drawRemoteSessionView(const UiRect& bounds, float alpha) {
             solidBrush_->SetColor(rgba(255, 255, 255, 0.98f));
             renderTarget_->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(curX, curY), 6.0f, 6.0f), solidBrush_, 1.6f);
         }
+
+        // Draw Whiteboard overlay annotations and floating tool palette
+        drawWhiteboardOverlay(renderedCanvasRect_);
     } else {
         renderedCanvasRect_ = {};
         drawText(stats.statusMessage, stageRect, fmtSubheading_, COL_TEXT_SECONDARY, DWRITE_TEXT_ALIGNMENT_CENTER);
@@ -2299,11 +2466,15 @@ void AeroDeskWindow::drawFileTransferDrawer(const UiRect& bounds, float slidePro
     float rx = r.right - 20.0f;
     float y = r.top + 16.0f;
 
-    float halfTabW = (rx - x - 38.0f - 6.0f) * 0.5f;
-    UiRect tabFiles = { x, y, x + halfTabW, y + 32.0f };
-    UiRect tabChat  = { tabFiles.right + 6.0f, y, tabFiles.right + 6.0f + halfTabW, y + 32.0f };
+    float tabW = (rx - x - 38.0f - 12.0f) / 3.0f;
+    UiRect tabFiles = { x, y, x + tabW, y + 32.0f };
+    UiRect tabChat  = { tabFiles.right + 6.0f, y, tabFiles.right + 6.0f + tabW, y + 32.0f };
+    UiRect tabTerm  = { tabChat.right + 6.0f, y, tabChat.right + 6.0f + tabW, y + 32.0f };
 
     bool onFiles = (drawerTab_ == DrawerTab::FilesAndClip);
+    bool onChat  = (drawerTab_ == DrawerTab::LiveChat);
+    bool onTerm  = (drawerTab_ == DrawerTab::RemoteTerminal);
+
     drawButton("drawer_tab_files", tabFiles, "Files",
                onFiles ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
                onFiles ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
@@ -2313,12 +2484,21 @@ void AeroDeskWindow::drawFileTransferDrawer(const UiRect& bounds, float slidePro
     uint32_t unread = network_.unreadChatCount();
     std::string chatTabLbl = unread > 0 ? ("Chat (" + std::to_string(unread) + ")") : "Chat";
     drawButton("drawer_tab_chat", tabChat, chatTabLbl,
-               !onFiles ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
-               !onFiles ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
-               !onFiles ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
+               onChat ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
+               onChat ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
+               onChat ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
                8.0f, [this]() {
                    drawerTab_ = DrawerTab::LiveChat;
                    network_.markChatRead();
+               }, fmtSmall_);
+
+    drawButton("drawer_tab_term", tabTerm, "Terminal",
+               onTerm ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
+               onTerm ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
+               onTerm ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
+               8.0f, [this]() {
+                   drawerTab_ = DrawerTab::RemoteTerminal;
+                   focusedField_ = FocusedField::TerminalInput;
                }, fmtSmall_);
 
     UiRect closeBtn = { rx - 30.0f, y + 1.0f, rx, y + 31.0f };
@@ -2408,7 +2588,7 @@ void AeroDeskWindow::drawFileTransferDrawer(const UiRect& bounds, float slidePro
                 y += 64.0f;
             }
         }
-    } else {
+    } else if (drawerTab_ == DrawerTab::LiveChat) {
         drawText("Messages",
                  { x, y, rx, y + 18.0f }, fmtSmall_, COL_TEXT_SECONDARY);
         y += 24.0f;
@@ -2456,6 +2636,79 @@ void AeroDeskWindow::drawFileTransferDrawer(const UiRect& bounds, float slidePro
         drawButton("btn_send_chat", sendChatBtn, "Send",
                    COL_PRIMARY_ACCENT, COL_PRIMARY_ACCENT_HV, COL_TEXT_ON_ACCENT, 8.5f, [this]() {
                        sendChatFromInput();
+                   }, fmtSmall_);
+    } else if (drawerTab_ == DrawerTab::RemoteTerminal) {
+        drawText("Interactive Remote Host Console",
+                 { x, y, rx, y + 18.0f }, fmtSmall_, COL_TEXT_SECONDARY);
+        y += 24.0f;
+
+        float qBtnW = (rx - x - 20.0f) / 5.0f;
+        UiRect b1 = { x, y, x + qBtnW, y + 26.0f };
+        UiRect b2 = { b1.right + 5.0f, y, b1.right + 5.0f + qBtnW, y + 26.0f };
+        UiRect b3 = { b2.right + 5.0f, y, b2.right + 5.0f + qBtnW, y + 26.0f };
+        UiRect b4 = { b3.right + 5.0f, y, b3.right + 5.0f + qBtnW, y + 26.0f };
+        UiRect b5 = { b4.right + 5.0f, y, rx, y + 26.0f };
+
+        drawButton("term_ipconfig", b1, "ipconfig", COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 6.0f, [this]() {
+            network_.sendTerminalCommand("ipconfig");
+        }, fmtSmall_, true, COL_BORDER);
+
+        drawButton("term_tasklist", b2, "tasklist", COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 6.0f, [this]() {
+            network_.sendTerminalCommand("tasklist");
+        }, fmtSmall_, true, COL_BORDER);
+
+        drawButton("term_netstat", b3, "netstat", COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 6.0f, [this]() {
+            network_.sendTerminalCommand("netstat -ano");
+        }, fmtSmall_, true, COL_BORDER);
+
+        drawButton("term_whoami", b4, "whoami", COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 6.0f, [this]() {
+            network_.sendTerminalCommand("whoami");
+        }, fmtSmall_, true, COL_BORDER);
+
+        drawButton("term_clear", b5, "Clear", COL_SEC_BTN_BG, COL_DANGER, COL_TEXT_SECONDARY, 6.0f, [this]() {
+            network_.clearTerminalScrollback();
+        }, fmtSmall_, false, D2D1::ColorF(0, 0, 0, 0), COL_TEXT_ON_ACCENT);
+
+        y += 32.0f;
+
+        UiRect termBox = { x, y, rx, r.bottom - 64.0f };
+        fillRoundRect(termBox, 11.0f, rgba(12, 16, 24, 0.95f));
+        strokeRoundRect(termBox, 11.0f, COL_BORDER);
+
+        auto lines = network_.getTerminalScrollback();
+        if (lines.empty()) {
+            drawText("Host console ready. Type commands below or click quick actions.",
+                     { termBox.left + 14.0f, termBox.centerY() - 14.0f, termBox.right - 14.0f, termBox.centerY() + 14.0f },
+                     fmtSmall_, COL_TEXT_MUTED, DWRITE_TEXT_ALIGNMENT_CENTER);
+        } else {
+            float lineH = 18.0f;
+            int maxVisible = std::max(1, static_cast<int>((termBox.height() - 16.0f) / lineH));
+            int totalLines = static_cast<int>(lines.size());
+            int scroll = static_cast<int>(terminalScrollOffset_);
+            int maxOffset = std::max(0, totalLines - maxVisible);
+            scroll = std::clamp(scroll, 0, maxOffset);
+            size_t startIdx = static_cast<size_t>(std::max(0, totalLines - maxVisible - scroll));
+            size_t endIdx = std::min(lines.size(), startIdx + static_cast<size_t>(maxVisible));
+            float ly = termBox.top + 8.0f;
+
+            for (size_t i = startIdx; i < endIdx; ++i) {
+                UiRect lr = { termBox.left + 10.0f, ly, termBox.right - 10.0f, ly + lineH };
+                D2D1_COLOR_F lineCol = (lines[i].rfind("> ", 0) == 0)
+                    ? COL_PRIMARY_ACCENT
+                    : rgba(140, 235, 175, 0.95f);
+                drawText(lines[i], lr, fmtMono_, lineCol, DWRITE_TEXT_ALIGNMENT_LEADING);
+                ly += lineH;
+            }
+        }
+
+        UiRect termField = { x, r.bottom - 52.0f, rx - 76.0f, r.bottom - 14.0f };
+        drawTextField("field_term_input", FocusedField::TerminalInput, termField,
+                      terminalInputText_, "Command...", false);
+
+        UiRect sendTermBtn = { termField.right + 6.0f, termField.top, rx, termField.bottom };
+        drawButton("btn_send_term", sendTermBtn, "Run",
+                   COL_PRIMARY_ACCENT, COL_PRIMARY_ACCENT_HV, COL_TEXT_ON_ACCENT, 8.5f, [this]() {
+                       sendTerminalFromInput();
                    }, fmtSmall_);
     }
 }
@@ -2537,7 +2790,7 @@ void AeroDeskWindow::drawDynamicIslandToolbar(float width, float /*height*/) {
     if (floatingToolbarY_ <= -58.0f) return;
 
     auto stats = network_.viewerStats();
-    float pillW = 786.0f;
+    float pillW = 1024.0f;
     float pillH = 42.0f;
     float pillLeft = (width - pillW) * 0.5f;
     float pillRight = pillLeft + pillW;
@@ -2618,6 +2871,55 @@ void AeroDeskWindow::drawDynamicIslandToolbar(float width, float /*height*/) {
                    showToast(n ? "Clipboard Sync: Enabled" : "Clipboard Sync: Disabled");
                }, fmtSmall_, !clipOn, COL_BORDER);
     curX = clipBtn.right + 6.0f;
+
+    // Audio Mute Button
+    bool islandAudioMuted = network_.isAudioMuted();
+    std::string islandAudioLabel = islandAudioMuted ? "Muted" : "Vol: 100%";
+    UiRect islandAudioBtn = { curX, pillTop + 6.0f, curX + 76.0f, pillBottom - 6.0f };
+    drawButton("island_audio_btn", islandAudioBtn, islandAudioLabel,
+               islandAudioMuted ? COL_SEC_BTN_BG : COL_PRIMARY_ACCENT,
+               islandAudioMuted ? COL_SEC_BTN_HV : COL_PRIMARY_ACCENT_HV,
+               islandAudioMuted ? COL_TEXT_PRIMARY : COL_TEXT_ON_ACCENT,
+               8.0f, [this, islandAudioMuted]() {
+                   network_.setAudioMuted(!islandAudioMuted);
+                   showToast(!islandAudioMuted ? "Audio muted" : "Audio unmuted");
+               }, fmtSmall_, islandAudioMuted, COL_BORDER);
+    curX = islandAudioBtn.right + 6.0f;
+
+    // Privacy Mode Curtain Button
+    bool islandPrivacyOn = stats.privacyModeEngaged;
+    UiRect islandPrivacyBtn = { curX, pillTop + 6.0f, curX + 76.0f, pillBottom - 6.0f };
+    drawButton("island_privacy_btn", islandPrivacyBtn, islandPrivacyOn ? "Curtain: ON" : "Curtain",
+               islandPrivacyOn ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
+               islandPrivacyOn ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
+               islandPrivacyOn ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
+               8.0f, [this]() {
+                   network_.requestTogglePrivacyMode();
+               }, fmtSmall_, !islandPrivacyOn, COL_BORDER);
+    curX = islandPrivacyBtn.right + 6.0f;
+
+    // Port Forwarding Tunnels Button
+    UiRect islandTunnelBtn = { curX, pillTop + 6.0f, curX + 70.0f, pillBottom - 6.0f };
+    drawButton("island_tunnel_btn", islandTunnelBtn, "Tunnels",
+               showPortForwardModal_ ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
+               showPortForwardModal_ ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
+               showPortForwardModal_ ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
+               8.0f, [this]() {
+                   showPortForwardModal_ = !showPortForwardModal_;
+               }, fmtSmall_, !showPortForwardModal_, COL_BORDER);
+    curX = islandTunnelBtn.right + 6.0f;
+
+    // Whiteboard Button
+    UiRect islandWbBtn = { curX, pillTop + 6.0f, curX + 70.0f, pillBottom - 6.0f };
+    drawButton("island_wb_btn", islandWbBtn, whiteboardActive_ ? "Board: ON" : "Board",
+               whiteboardActive_ ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
+               whiteboardActive_ ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
+               whiteboardActive_ ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
+               8.0f, [this]() {
+                   whiteboardActive_ = !whiteboardActive_;
+                   showToast(whiteboardActive_ ? "Whiteboard active" : "Whiteboard hidden");
+               }, fmtSmall_, !whiteboardActive_, COL_BORDER);
+    curX = islandWbBtn.right + 6.0f;
 
     // 5. Chat Button
     uint32_t unreadChat = network_.unreadChatCount();
@@ -2882,6 +3184,421 @@ void AeroDeskWindow::drawShortcutsModal(float width, float height, float modalPr
     renderTarget_->SetTransform(D2D1::Matrix3x2F::Identity());
 }
 
+// ---------------- TCP Port Forwarding Manager Sheet Modal (v2.1.0) ----------------
+
+void AeroDeskWindow::drawPortForwardModal(float width, float height, float modalProgress) {
+    if (!showPortForwardModal_ && modalProgress <= 0.01f) return;
+
+    float alpha = std::clamp(modalProgress, 0.0f, 1.0f);
+    fillRoundRect({ 0.0f, 0.0f, width, height }, 0.0f, rgba(5, 8, 15, 0.52f * alpha));
+
+    float mw = 620.0f;
+    float mh = 510.0f;
+    UiRect modal = { (width - mw) * 0.5f, (height - mh) * 0.5f, (width + mw) * 0.5f, (height + mh) * 0.5f };
+
+    float scale = 0.90f + 0.10f * modalProgress;
+    renderTarget_->SetTransform(
+        D2D1::Matrix3x2F::Scale(scale, scale, D2D1::Point2F(modal.centerX(), modal.centerY()))
+    );
+
+    drawCardSurface(modal, 20.0f, alpha);
+
+    float mx = modal.left + 28.0f;
+    float mrx = modal.right - 28.0f;
+    float my = modal.top + 22.0f;
+
+    drawText("TCP Port Forwarding & Tunneling", { mx, my, mrx - 40.0f, my + 28.0f }, fmtHeading_, COL_TEXT_PRIMARY);
+
+    UiRect closeBtn = { mrx - 28.0f, my, mrx, my + 28.0f };
+    drawButton("modal_pf_close", closeBtn, "×",
+               COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 14.0f,
+               [this]() { showPortForwardModal_ = false; }, fmtHeading_);
+    my += 34.0f;
+
+    drawText("Tunnel local ports over AES-256-GCM encrypted link directly to services on the remote host.",
+             { mx, my, mrx, my + 20.0f }, fmtSmall_, COL_TEXT_SECONDARY);
+    my += 26.0f;
+
+    // Presets Row
+    drawText("QUICK PRESETS", { mx, my, mrx, my + 16.0f }, fmtSmall_, COL_TEXT_MUTED);
+    my += 20.0f;
+
+    float preW = (mrx - mx - 18.0f) / 4.0f;
+    UiRect p1 = { mx, my, mx + preW, my + 28.0f };
+    UiRect p2 = { p1.right + 6.0f, my, p1.right + 6.0f + preW, my + 28.0f };
+    UiRect p3 = { p2.right + 6.0f, my, p2.right + 6.0f + preW, my + 28.0f };
+    UiRect p4 = { p3.right + 6.0f, my, mrx, my + 28.0f };
+
+    drawButton("pre_rdp", p1, "RDP (33890->3389)", COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 6.5f, [this]() {
+        forwardLocalPortEdit_ = "33890";
+        forwardTargetPortEdit_ = "3389";
+        forwardDescEdit_ = "RDP Remote Desktop";
+    }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
+
+    drawButton("pre_ssh", p2, "SSH (2222->22)", COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 6.5f, [this]() {
+        forwardLocalPortEdit_ = "2222";
+        forwardTargetPortEdit_ = "22";
+        forwardDescEdit_ = "SSH Terminal";
+    }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
+
+    drawButton("pre_web", p3, "Web (8080->80)", COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 6.5f, [this]() {
+        forwardLocalPortEdit_ = "8080";
+        forwardTargetPortEdit_ = "80";
+        forwardDescEdit_ = "Web Server";
+    }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
+
+    drawButton("pre_vnc", p4, "VNC (5901->5900)", COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 6.5f, [this]() {
+        forwardLocalPortEdit_ = "5901";
+        forwardTargetPortEdit_ = "5900";
+        forwardDescEdit_ = "VNC Server";
+    }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
+
+    my += 36.0f;
+
+    // Add Rule Inputs Row
+    drawText("NEW TUNNEL RULE", { mx, my, mrx, my + 16.0f }, fmtSmall_, COL_TEXT_MUTED);
+    my += 20.0f;
+
+    float fLocalW = 100.0f;
+    float fTargetW = 100.0f;
+    float fAddW = 76.0f;
+    float fDescW = mrx - mx - fLocalW - fTargetW - fAddW - 24.0f;
+
+    UiRect rLocal = { mx, my, mx + fLocalW, my + 32.0f };
+    drawTextField("field_fwd_local", FocusedField::ForwardLocal, rLocal, forwardLocalPortEdit_, "Local Port", false);
+
+    UiRect rTarget = { rLocal.right + 8.0f, my, rLocal.right + 8.0f + fTargetW, my + 32.0f };
+    drawTextField("field_fwd_target", FocusedField::ForwardTarget, rTarget, forwardTargetPortEdit_, "Target Port", false);
+
+    UiRect rDesc = { rTarget.right + 8.0f, my, rTarget.right + 8.0f + fDescW, my + 32.0f };
+    drawTextField("field_fwd_desc", FocusedField::ForwardDesc, rDesc, forwardDescEdit_, "Description (optional)", false);
+
+    UiRect rAdd = { rDesc.right + 8.0f, my, mrx, my + 32.0f };
+    drawButton("btn_add_fwd_rule", rAdd, "Add Rule", COL_PRIMARY_ACCENT, COL_PRIMARY_ACCENT_HV, COL_TEXT_ON_ACCENT, 7.5f, [this]() {
+        try {
+            int lp = std::stoi(forwardLocalPortEdit_);
+            int tp = std::stoi(forwardTargetPortEdit_);
+            if (lp > 0 && lp <= 65535 && tp > 0 && tp <= 65535) {
+                network_.addPortForwardRule(static_cast<uint16_t>(lp), static_cast<uint16_t>(tp), forwardDescEdit_, true);
+                showToast("Tunnel rule added: " + std::to_string(lp) + " -> " + std::to_string(tp));
+            } else {
+                showToast("Ports must be between 1 and 65535", true);
+            }
+        } catch (...) {
+            showToast("Invalid port number", true);
+        }
+    }, fmtSmall_);
+
+    my += 44.0f;
+
+    // Active Rules Table
+    drawText("ACTIVE TUNNELS", { mx, my, mrx, my + 16.0f }, fmtSmall_, COL_TEXT_MUTED);
+    my += 20.0f;
+
+    UiRect tableBox = { mx, my, mrx, modal.bottom - 22.0f };
+    fillRoundRect(tableBox, 10.0f, COL_BG_SUBTLE);
+    strokeRoundRect(tableBox, 10.0f, COL_BORDER);
+
+    auto rules = network_.portForwardRules();
+    if (rules.empty()) {
+        drawText("No port forwarding rules configured. Add one above or select a preset.",
+                 { tableBox.left + 16.0f, tableBox.centerY() - 14.0f, tableBox.right - 16.0f, tableBox.centerY() + 14.0f },
+                 fmtSmall_, COL_TEXT_MUTED, DWRITE_TEXT_ALIGNMENT_CENTER);
+    } else {
+        float rTop = tableBox.top + 8.0f;
+        float itemH = 46.0f;
+
+        for (size_t i = 0; i < rules.size() && (rTop + itemH <= tableBox.bottom - 6.0f); ++i) {
+            const auto& r = rules[i];
+            UiRect cardR = { tableBox.left + 8.0f, rTop, tableBox.right - 8.0f, rTop + itemH - 4.0f };
+            fillRoundRect(cardR, 8.0f, COL_BG_CARD);
+            strokeRoundRect(cardR, 8.0f, COL_BORDER);
+
+            drawPulseDot(cardR.left + 14.0f, cardR.centerY(), 3.5f, r.active ? COL_SUCCESS : COL_TEXT_MUTED);
+
+            std::string routeStr = "127.0.0.1:" + std::to_string(r.localPort) + "  ➔  Remote :" + std::to_string(r.targetPort);
+            drawText(routeStr, { cardR.left + 26.0f, cardR.top + 4.0f, cardR.right - 140.0f, cardR.top + 22.0f },
+                     fmtBodyBold_, COL_TEXT_PRIMARY);
+
+            std::string sub = r.description.empty() ? "TCP Proxy" : r.description;
+            char statsBuf[96];
+            std::snprintf(statsBuf, sizeof(statsBuf), " • In: %.1f KB  Out: %.1f KB",
+                          r.bytesTransferredIn / 1024.0f, r.bytesTransferredOut / 1024.0f);
+            sub += statsBuf;
+            drawText(sub, { cardR.left + 26.0f, cardR.top + 22.0f, cardR.right - 140.0f, cardR.bottom - 4.0f },
+                     fmtSmall_, COL_TEXT_SECONDARY);
+
+            uint32_t rid = r.ruleId;
+            bool isAct = r.active;
+            UiRect toggleBtn = { cardR.right - 130.0f, cardR.top + 7.0f, cardR.right - 66.0f, cardR.bottom - 7.0f };
+            drawButton("rule_tog_" + std::to_string(rid), toggleBtn, isAct ? "Pause" : "Resume",
+                       isAct ? COL_SEC_BTN_BG : COL_PRIMARY_ACCENT,
+                       isAct ? COL_SEC_BTN_HV : COL_PRIMARY_ACCENT_HV,
+                       isAct ? COL_TEXT_PRIMARY : COL_TEXT_ON_ACCENT,
+                       6.0f, [this, rid, isAct]() {
+                           network_.setPortForwardRuleActive(rid, !isAct);
+                       }, fmtSmall_, isAct, COL_BORDER);
+
+            UiRect delBtn = { cardR.right - 60.0f, cardR.top + 7.0f, cardR.right - 8.0f, cardR.bottom - 7.0f };
+            drawButton("rule_del_" + std::to_string(rid), delBtn, "Del",
+                       COL_SEC_BTN_BG, COL_DANGER, COL_TEXT_SECONDARY,
+                       6.0f, [this, rid]() {
+                           network_.removePortForwardRule(rid);
+                           showToast("Tunnel rule removed");
+                       }, fmtSmall_, false, D2D1::ColorF(0, 0, 0, 0), COL_TEXT_ON_ACCENT);
+
+            rTop += itemH;
+        }
+    }
+
+    renderTarget_->SetTransform(D2D1::Matrix3x2F::Identity());
+}
+
+// ---------------- Address Book Edit Sheet Modal (v2.1.0) ----------------
+
+void AeroDeskWindow::drawAddressBookModal(float width, float height, float modalProgress) {
+    if (!showAddressBookEditModal_ && modalProgress <= 0.01f) return;
+
+    float alpha = std::clamp(modalProgress, 0.0f, 1.0f);
+    fillRoundRect({ 0.0f, 0.0f, width, height }, 0.0f, rgba(5, 8, 15, 0.52f * alpha));
+
+    float mw = 480.0f;
+    float mh = 380.0f;
+    UiRect modal = { (width - mw) * 0.5f, (height - mh) * 0.5f, (width + mw) * 0.5f, (height + mh) * 0.5f };
+
+    float scale = 0.90f + 0.10f * modalProgress;
+    renderTarget_->SetTransform(
+        D2D1::Matrix3x2F::Scale(scale, scale, D2D1::Point2F(modal.centerX(), modal.centerY()))
+    );
+
+    drawCardSurface(modal, 20.0f, alpha);
+
+    float mx = modal.left + 28.0f;
+    float mrx = modal.right - 28.0f;
+    float my = modal.top + 22.0f;
+
+    drawText("Edit Desk Details", { mx, my, mrx - 40.0f, my + 26.0f }, fmtHeading_, COL_TEXT_PRIMARY);
+
+    UiRect closeBtn = { mrx - 28.0f, my, mrx, my + 28.0f };
+    drawButton("modal_ab_close", closeBtn, "×",
+               COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 14.0f,
+               [this]() { showAddressBookEditModal_ = false; }, fmtHeading_);
+    my += 34.0f;
+
+    std::string idText = "Desk ID: " + CryptoUtils::formatDeskId(editingDeskId_);
+    drawText(idText, { mx, my, mrx, my + 18.0f }, fmtSmall_, COL_PRIMARY_ACCENT);
+    my += 24.0f;
+
+    // Alias Field
+    drawText("Machine Alias / Display Name", { mx, my, mrx, my + 16.0f }, fmtSmall_, COL_TEXT_SECONDARY);
+    my += 18.0f;
+    UiRect aliasField = { mx, my, mrx, my + 34.0f };
+    drawTextField("field_edit_alias", FocusedField::EditAlias, aliasField,
+                  editAliasInput_, "e.g. Office Workstation...", false);
+    my += 44.0f;
+
+    // Tag Field
+    drawText("Category Tag (e.g. Work, Servers, Personal)", { mx, my, mrx, my + 16.0f }, fmtSmall_, COL_TEXT_SECONDARY);
+    my += 18.0f;
+    UiRect tagField = { mx, my, mrx, my + 34.0f };
+    drawTextField("field_edit_tag", FocusedField::EditTag, tagField,
+                  editTagInput_, "e.g. Work, Servers, Personal...", false);
+    my += 44.0f;
+
+    // Notes Field
+    drawText("Notes & Remarks", { mx, my, mrx, my + 16.0f }, fmtSmall_, COL_TEXT_SECONDARY);
+    my += 18.0f;
+    UiRect notesField = { mx, my, mrx, my + 34.0f };
+    drawTextField("field_edit_notes", FocusedField::EditNotes, notesField,
+                  editNotesInput_, "e.g. Port 3389 forwarded, VPN needed...", false);
+    my += 48.0f;
+
+    // Action Buttons
+    float btnW = (mrx - mx - 12.0f) * 0.5f;
+    UiRect cancelBtn = { mx, my, mx + btnW, my + 36.0f };
+    drawButton("modal_ab_cancel", cancelBtn, "Cancel",
+               COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 8.0f, [this]() {
+                   showAddressBookEditModal_ = false;
+               }, fmtSmall_, true, COL_BORDER);
+
+    UiRect saveBtn = { cancelBtn.right + 12.0f, my, mrx, my + 36.0f };
+    drawButton("modal_ab_save", saveBtn, "Save Details",
+               COL_PRIMARY_ACCENT, COL_PRIMARY_ACCENT_HV, COL_TEXT_ON_ACCENT, 8.0f, [this]() {
+                   identity_.updateRecentSessionMetadata(editingDeskId_, editAliasInput_, editTagInput_, editNotesInput_);
+                   showAddressBookEditModal_ = false;
+                   showToast("Saved desk details");
+               }, fmtSmall_);
+
+    renderTarget_->SetTransform(D2D1::Matrix3x2F::Identity());
+}
+
+// ---------------- Whiteboard & Screen Annotation Overlay (v2.1.0) ----------------
+
+void AeroDeskWindow::drawWhiteboardOverlay(const UiRect& canvasRect) {
+    if (canvasRect.width() <= 1.0f || canvasRect.height() <= 1.0f) return;
+
+    auto strokes = network_.whiteboardManager().snapshotStrokes();
+    for (const auto& s : strokes) {
+        if (s.points.size() < 2 && s.tool != WhiteboardTool::LaserPointer) continue;
+
+        float alpha = ((s.argbColor >> 24) & 0xFF) / 255.0f;
+        if (s.tool == WhiteboardTool::Highlighter) {
+            alpha = 0.35f;
+        }
+        D2D1_COLOR_F col = rgba(
+            (s.argbColor >> 16) & 0xFF,
+            (s.argbColor >> 8) & 0xFF,
+            s.argbColor & 0xFF,
+            alpha
+        );
+        solidBrush_->SetColor(col);
+
+        float strokeThick = (s.tool == WhiteboardTool::Highlighter) ? (s.thickness * 2.5f) : s.thickness;
+
+        if (s.tool == WhiteboardTool::Arrow && s.points.size() >= 2) {
+            const auto& p0 = s.points.front();
+            const auto& p1 = s.points.back();
+            float x0 = canvasRect.left + p0.x * canvasRect.width();
+            float y0 = canvasRect.top + p0.y * canvasRect.height();
+            float x1 = canvasRect.left + p1.x * canvasRect.width();
+            float y1 = canvasRect.top + p1.y * canvasRect.height();
+
+            renderTarget_->DrawLine(D2D1::Point2F(x0, y0), D2D1::Point2F(x1, y1), solidBrush_, strokeThick);
+
+            float dx = x1 - x0;
+            float dy = y1 - y0;
+            float len = std::sqrt(dx * dx + dy * dy);
+            if (len > 4.0f) {
+                float angle = std::atan2(dy, dx);
+                constexpr float headAngle = 0.45f;
+                float headLen = std::min(18.0f, len * 0.35f);
+                float a1x = x1 - headLen * std::cos(angle - headAngle);
+                float a1y = y1 - headLen * std::sin(angle - headAngle);
+                float a2x = x1 - headLen * std::cos(angle + headAngle);
+                float a2y = y1 - headLen * std::sin(angle + headAngle);
+                renderTarget_->DrawLine(D2D1::Point2F(x1, y1), D2D1::Point2F(a1x, a1y), solidBrush_, strokeThick);
+                renderTarget_->DrawLine(D2D1::Point2F(x1, y1), D2D1::Point2F(a2x, a2y), solidBrush_, strokeThick);
+            }
+        } else if (s.points.size() >= 2) {
+            for (size_t i = 1; i < s.points.size(); ++i) {
+                const auto& pt0 = s.points[i - 1];
+                const auto& pt1 = s.points[i];
+                float x0 = canvasRect.left + pt0.x * canvasRect.width();
+                float y0 = canvasRect.top + pt0.y * canvasRect.height();
+                float x1 = canvasRect.left + pt1.x * canvasRect.width();
+                float y1 = canvasRect.top + pt1.y * canvasRect.height();
+                renderTarget_->DrawLine(D2D1::Point2F(x0, y0), D2D1::Point2F(x1, y1), solidBrush_, strokeThick);
+            }
+        }
+    }
+
+    // Laser pointer glowing dot
+    float lx = -1.0f, ly = -1.0f, lalpha = 0.0f;
+    if (network_.whiteboardManager().getLaserPointer(lx, ly, lalpha)) {
+        float lpx = canvasRect.left + lx * canvasRect.width();
+        float lpy = canvasRect.top + ly * canvasRect.height();
+        solidBrush_->SetColor(rgba(255, 59, 48, 0.28f * lalpha));
+        renderTarget_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(lpx, lpy), 14.0f, 14.0f), solidBrush_);
+        solidBrush_->SetColor(rgba(255, 59, 48, 0.95f * lalpha));
+        renderTarget_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(lpx, lpy), 5.5f, 5.5f), solidBrush_);
+        solidBrush_->SetColor(rgba(255, 255, 255, 0.98f * lalpha));
+        renderTarget_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(lpx, lpy), 2.2f, 2.2f), solidBrush_);
+    }
+
+    if (!whiteboardActive_) return;
+
+    // Floating Whiteboard Toolbar Palette at bottom of canvas
+    float palW = 460.0f;
+    float palH = 42.0f;
+    float palLeft = canvasRect.centerX() - palW * 0.5f;
+    float palTop = canvasRect.bottom - palH - 16.0f;
+    float palRight = palLeft + palW;
+    float palBottom = palTop + palH;
+    UiRect palRect = { palLeft, palTop, palRight, palBottom };
+
+    drawCardShadow(palRect, 21.0f, 0.95f);
+    fillRoundRect(palRect, 21.0f, withAlpha(COL_BG_CARD, 0.96f));
+    strokeRoundRect(palRect, 21.0f, withAlpha(COL_BORDER_FOCUS, 0.40f), 1.2f);
+
+    float curX = palLeft + 12.0f;
+
+    auto addToolBtn = [&](const std::string& id, const std::string& label, WhiteboardTool tool) {
+        bool isSel = (whiteboardTool_ == tool);
+        UiRect tr = { curX, palTop + 6.0f, curX + 52.0f, palBottom - 6.0f };
+        drawButton(id, tr, label,
+                   isSel ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
+                   isSel ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
+                   isSel ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
+                   8.0f, [this, tool]() {
+                       whiteboardTool_ = tool;
+                       network_.whiteboardManager().setActiveTool(tool);
+                   }, fmtSmall_, !isSel, COL_BORDER);
+        curX = tr.right + 5.0f;
+    };
+
+    addToolBtn("wb_tool_pen", "Pen", WhiteboardTool::Pen);
+    addToolBtn("wb_tool_high", "High", WhiteboardTool::Highlighter);
+    addToolBtn("wb_tool_arrow", "Arrow", WhiteboardTool::Arrow);
+    addToolBtn("wb_tool_laser", "Laser", WhiteboardTool::LaserPointer);
+
+    // Clear All button
+    UiRect clearBtn = { curX, palTop + 6.0f, curX + 48.0f, palBottom - 6.0f };
+    drawButton("wb_clear_btn", clearBtn, "Clear",
+               COL_SEC_BTN_BG, COL_DANGER, COL_TEXT_PRIMARY,
+               8.0f, [this]() {
+                   network_.whiteboardManager().clearAllStrokes();
+                   network_.sendWhiteboardClear();
+                   showToast("Whiteboard cleared");
+               }, fmtSmall_, true, COL_BORDER, COL_TEXT_ON_ACCENT);
+    curX = clearBtn.right + 10.0f;
+
+    // Vertical separator
+    fillRoundRect({ curX, palTop + 10.0f, curX + 1.0f, palBottom - 10.0f }, 0.5f, COL_BORDER);
+    curX += 8.0f;
+
+    // Color Swatches: Red, Green, Blue, Yellow, White
+    struct ColorSwatch { uint32_t argb; const char* id; };
+    ColorSwatch swatches[] = {
+        { 0xFFFF3B30, "wb_col_red" },
+        { 0xFF34C759, "wb_col_green" },
+        { 0xFF007AFF, "wb_col_blue" },
+        { 0xFFFFCC00, "wb_col_yellow" },
+        { 0xFFFFFFFF, "wb_col_white" }
+    };
+
+    for (const auto& sw : swatches) {
+        bool isSel = (whiteboardColor_ == sw.argb);
+        UiRect cr = { curX, palTop + 11.0f, curX + 20.0f, palBottom - 11.0f };
+        D2D1_COLOR_F c = rgba(
+            (sw.argb >> 16) & 0xFF,
+            (sw.argb >> 8) & 0xFF,
+            sw.argb & 0xFF
+        );
+        fillRoundRect(cr, 10.0f, c);
+        if (isSel) {
+            strokeRoundRect(cr.inflate(2.0f, 2.0f), 12.0f, COL_PRIMARY_ACCENT, 2.0f);
+        } else {
+            strokeRoundRect(cr, 10.0f, rgba(0, 0, 0, 0.25f), 1.0f);
+        }
+        clickRegions_.push_back({ cr, sw.id, [this, argb = sw.argb]() {
+            whiteboardColor_ = argb;
+            network_.whiteboardManager().setActiveColor(argb);
+        }, false });
+        curX = cr.right + 6.0f;
+    }
+
+    curX += 4.0f;
+
+    // Close whiteboard palette
+    UiRect closePalBtn = { curX, palTop + 6.0f, palRight - 8.0f, palBottom - 6.0f };
+    drawButton("wb_close_palette", closePalBtn, "×",
+               COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_SECONDARY,
+               8.0f, [this]() {
+                   whiteboardActive_ = false;
+                   showToast("Whiteboard closed");
+               }, fmtBodyBold_, true, COL_BORDER);
+}
+
 // ---------------- macOS Dynamic Capsule Toast Banner ----------------
 
 void AeroDeskWindow::drawToastBanner(float width, float height, float toastProgress) {
@@ -2914,7 +3631,7 @@ bool AeroDeskWindow::mapCanvasPointToNormalized(float x, float y, float& outNorm
         return false;
     }
 
-    if (modalAnimT_ > 0.004f || shortcutsModalAnimT_ > 0.004f) {
+    if (modalAnimT_ > 0.004f || shortcutsModalAnimT_ > 0.004f || portForwardModalAnimT_ > 0.004f || addressBookModalAnimT_ > 0.004f) {
         return false;
     }
     if (isFullscreen_ && floatingToolbarY_ > -50.0f && y <= (floatingToolbarY_ + 50.0f)) {
@@ -2945,6 +3662,14 @@ std::string* AeroDeskWindow::activeFocusedTextBuffer() {
     if (focusedField_ == FocusedField::LocalPassword) return &localPasswordEdit_;
     if (focusedField_ == FocusedField::RelayServer) return &relayServerEdit_;
     if (focusedField_ == FocusedField::ChatInput) return &chatInput_;
+    if (focusedField_ == FocusedField::TerminalInput) return &terminalInputText_;
+    if (focusedField_ == FocusedField::ForwardLocal) return &forwardLocalPortEdit_;
+    if (focusedField_ == FocusedField::ForwardTarget) return &forwardTargetPortEdit_;
+    if (focusedField_ == FocusedField::ForwardDesc) return &forwardDescEdit_;
+    if (focusedField_ == FocusedField::DashboardSearch) return &dashboardSearchQuery_;
+    if (focusedField_ == FocusedField::EditAlias) return &editAliasInput_;
+    if (focusedField_ == FocusedField::EditTag) return &editTagInput_;
+    if (focusedField_ == FocusedField::EditNotes) return &editNotesInput_;
     return nullptr;
 }
 
@@ -2977,14 +3702,24 @@ void AeroDeskWindow::onMouseMove(float x, float y) {
     hoveredWidgetId_ = newHover;
     hoveredIsTextInput_ = newIsText;
 
-    if (activeTab_ == ActiveTab::RemoteSession && remoteInputEnabled_ && !showFileDrawer_ &&
+    if (activeTab_ == ActiveTab::RemoteSession && !showFileDrawer_ &&
         !network_.pendingIncomingRequest().active) {
         float nx = 0.0f, ny = 0.0f;
         if (mapCanvasPointToNormalized(x, y, nx, ny)) {
-            uint64_t now = GetTickCount64();
-            if (now - lastMouseSendTick_ >= 10) {
-                lastMouseSendTick_ = now;
-                network_.sendMouseMove(nx, ny);
+            if (whiteboardActive_) {
+                if (mouseLeftDown_) {
+                    network_.whiteboardManager().addStrokePoint(nx, ny);
+                    if (whiteboardTool_ == WhiteboardTool::LaserPointer) {
+                        network_.sendWhiteboardLaser(nx, ny);
+                    }
+                    InvalidateRect(hwnd_, nullptr, FALSE);
+                }
+            } else if (remoteInputEnabled_) {
+                uint64_t now = GetTickCount64();
+                if (now - lastMouseSendTick_ >= 10) {
+                    lastMouseSendTick_ = now;
+                    network_.sendMouseMove(nx, ny);
+                }
             }
         }
     }
@@ -3054,6 +3789,26 @@ void AeroDeskWindow::onMouseButton(MouseButtonId btn, bool isDown, float x, floa
             if (focusedField_ != FocusedField::ChatInput || !insideDrawer) {
                 focusedField_ = FocusedField::RemoteCanvas;
             }
+            if (whiteboardActive_) {
+                if (btn == MouseButtonId::Left) {
+                    if (isDown) {
+                        network_.whiteboardManager().setActiveTool(whiteboardTool_);
+                        network_.whiteboardManager().setActiveColor(whiteboardColor_);
+                        network_.whiteboardManager().setActiveThickness(whiteboardThickness_);
+                        network_.whiteboardManager().startStroke(nx, ny);
+                        if (whiteboardTool_ == WhiteboardTool::LaserPointer) {
+                            network_.sendWhiteboardLaser(nx, ny);
+                        }
+                    } else {
+                        auto finished = network_.whiteboardManager().finishStroke();
+                        if (!finished.points.empty()) {
+                            network_.sendWhiteboardStroke(finished);
+                        }
+                    }
+                    InvalidateRect(hwnd_, nullptr, FALSE);
+                }
+                return;
+            }
             if (remoteInputEnabled_) {
                 network_.sendMouseButton(btn, isDown, nx, ny);
             }
@@ -3116,6 +3871,8 @@ void AeroDeskWindow::onCharInput(wchar_t ch) {
             showToast("Relay server saved");
         } else if (focusedField_ == FocusedField::ChatInput) {
             sendChatFromInput();
+        } else if (focusedField_ == FocusedField::TerminalInput) {
+            sendTerminalFromInput();
         }
     } else if (ch == L'\t') {
         if (focusedField_ == FocusedField::RemoteId) focusedField_ = FocusedField::RemotePassword;
@@ -3147,6 +3904,11 @@ void AeroDeskWindow::onKeyEvent(uint16_t vk, uint16_t scan, bool isDown, bool is
             return;
         }
         if (vk == VK_ESCAPE) {
+            if (showPortForwardModal_) {
+                showPortForwardModal_ = false;
+                InvalidateRect(hwnd_, nullptr, FALSE);
+                return;
+            }
             if (showShortcutsModal_) {
                 showShortcutsModal_ = false;
                 InvalidateRect(hwnd_, nullptr, FALSE);
@@ -3321,6 +4083,14 @@ void AeroDeskWindow::sendChatFromInput() {
     } else {
         showToast("Connect to a remote desk first", true);
     }
+}
+
+void AeroDeskWindow::sendTerminalFromInput() {
+    if (terminalInputText_.empty()) return;
+    network_.sendTerminalCommand(terminalInputText_);
+    terminalInputText_.clear();
+    terminalHistoryIndex_ = -1;
+    InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
 void AeroDeskWindow::toggleFullscreen() {

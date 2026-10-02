@@ -18,6 +18,7 @@ $CoreSources = @(
     "src/capture/screen_capture.cpp",
     "src/control/input_injector.cpp",
     "src/control/clipboard_file_manager.cpp",
+    "src/control/whiteboard_manager.cpp",
     "src/net/network_engine.cpp",
     "src/ui/notification_manager.cpp"
 )
@@ -59,7 +60,8 @@ $Libs = @(
     "-lcomdlg32",
     "-lgdi32",
     "-luser32",
-    "-lshell32"
+    "-lshell32",
+    "-lwinmm"
 )
 
 $Windres = "C:\msys64\ucrt64\bin\windres.exe"

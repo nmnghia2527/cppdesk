@@ -5,6 +5,12 @@
 #include "../capture/screen_capture.hpp"
 #include "../control/input_injector.hpp"
 #include "../control/clipboard_file_manager.hpp"
+#include "../control/whiteboard_manager.hpp"
+
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#include <windows.h>
+#include <mmsystem.h>
 
 #include <cstdint>
 #include <string>
@@ -52,6 +58,16 @@ struct ChatMessageEntry {
     uint64_t    timestampMs = 0;
 };
 
+struct PortForwardRule {
+    uint32_t    ruleId = 0;
+    uint16_t    localPort = 0;
+    uint16_t    targetPort = 0;
+    std::string description;
+    bool        active = false;
+    uint64_t    bytesTransferredIn = 0;
+    uint64_t    bytesTransferredOut = 0;
+};
+
 enum class ViewerConnectionState : uint8_t {
     Disconnected    = 0,
     ResolvingId     = 1,
@@ -87,6 +103,9 @@ struct ViewerSessionStats {
     float                 kbps = 0.0f;
     CursorState           remoteCursor;
     uint32_t              reconnectAttempt = 0;
+    bool                  privacyModeEngaged = false;
+    bool                  audioMuted = false;
+    int                   audioVolume = 100;
 };
 
 class RelayServer {
@@ -203,6 +222,39 @@ public:
     FileTransferManager& fileTransferManager() { return fileManager_; }
     const FileTransferManager& fileTransferManager() const { return fileManager_; }
 
+    // Audio streaming controls (v2.1.0)
+    void setAudioVolume(int percent);
+    int audioVolume() const;
+    void setAudioMuted(bool muted);
+    bool isAudioMuted() const;
+
+    // Privacy screen controls (v2.1.0)
+    void requestTogglePrivacyMode();
+    bool isPrivacyModeEngaged() const;
+    bool isHostPrivacyModeActive() const;
+    void setHostPrivacyMode(bool enable);
+
+    // TCP Port Forwarding & Tunneling Manager (v2.1.0)
+    uint32_t addPortForwardRule(uint16_t localPort, uint16_t targetPort, const std::string& desc, bool startActive = true);
+    void removePortForwardRule(uint32_t ruleId);
+    void setPortForwardRuleActive(uint32_t ruleId, bool active);
+    std::vector<PortForwardRule> portForwardRules() const;
+    void startPortForwarding();
+    void stopPortForwarding();
+
+    // Interactive Remote Terminal Console (v2.1.0)
+    void sendTerminalCommand(const std::string& cmd);
+    void resetRemoteTerminal(bool usePowerShell = false);
+    std::vector<std::string> getTerminalScrollback() const;
+    void clearTerminalScrollback();
+
+    // Whiteboard & Screen Annotation (v2.1.0)
+    WhiteboardManager& whiteboardManager() { return whiteboardMgr_; }
+    const WhiteboardManager& whiteboardManager() const { return whiteboardMgr_; }
+    void sendWhiteboardStroke(const AnnotationStroke& stroke);
+    void sendWhiteboardClear();
+    void sendWhiteboardLaser(float normX, float normY);
+
 private:
     // Background worker loops
     void discoveryLoop();
@@ -313,6 +365,91 @@ private:
     mutable std::mutex              chatMutex_;
     std::vector<ChatMessageEntry>   chatHistory_;
     std::atomic<uint32_t>           unreadChatCount_{0};
+
+    // Host Audio Capture (WASAPI Loopback)
+    void startHostAudioCapture();
+    void stopHostAudioCapture();
+    void hostAudioCaptureLoop();
+
+    // Viewer Audio Playback (Win32 waveOut)
+    void initViewerAudioPlayback();
+    void shutdownViewerAudioPlayback();
+    void enqueueViewerAudioChunk(const uint8_t* payload, size_t len);
+
+    // Host Privacy Curtain Window
+    void createPrivacyCurtainWindow();
+    void destroyPrivacyCurtainWindow();
+
+    // Audio Capture & Playback state
+    std::thread             hostAudioThread_;
+    std::atomic<bool>       hostAudioActive_{false};
+    HWAVEOUT                hWaveOut_ = nullptr;
+    WAVEHDR                 waveHeaders_[3]{};
+    std::vector<uint8_t>    waveBuffers_[3];
+    size_t                  currentWaveIdx_ = 0;
+    mutable std::mutex      audioPlaybackMutex_;
+    std::atomic<int>        audioVolumePercent_{100};
+    std::atomic<bool>       audioMuted_{false};
+
+    // Privacy Mode state
+    std::atomic<bool>       hostPrivacyModeActive_{false};
+    HWND                    hwndPrivacyCurtain_ = nullptr;
+    std::atomic<bool>       viewerPrivacyModeActive_{false};
+
+    // Host Terminal Process & Anonymous Pipes
+    void startHostTerminal(bool usePowerShell = false);
+    void stopHostTerminal();
+    void hostTerminalReaderLoop();
+    void injectHostTerminalStdin(const std::string& input);
+
+    HANDLE              hChildStdinWrite_ = nullptr;
+    HANDLE              hChildStdoutRead_ = nullptr;
+    HANDLE              hChildProcess_ = nullptr;
+    HANDLE              hChildThread_ = nullptr;
+    std::thread         hostTerminalThread_;
+    std::atomic<bool>   hostTerminalActive_{false};
+
+    // Viewer Terminal State
+    mutable std::mutex       terminalMutex_;
+    std::vector<std::string> terminalLines_;
+    std::vector<std::string> terminalHistory_;
+
+    // TCP Tunneling State
+    struct ActiveTunnel {
+        uint32_t tunnelId = 0;
+        uint32_t ruleId = 0;
+        SOCKET   sock = INVALID_SOCKET;
+        uint16_t targetPort = 0;
+    };
+
+    struct ListenerState {
+        uint32_t ruleId = 0;
+        uint16_t localPort = 0;
+        uint16_t targetPort = 0;
+        SOCKET   listenSock = INVALID_SOCKET;
+    };
+
+    void viewerTunnelMultiplexerLoop();
+    void hostTunnelProxyLoop();
+    void startViewerTunnelMultiplexer();
+    void stopViewerTunnelMultiplexer();
+    void startHostTunnelProxy();
+    void stopHostTunnelProxy();
+
+    mutable std::mutex                         tunnelMutex_;
+    std::vector<PortForwardRule>               tunnelRules_;
+    uint32_t                                   nextRuleId_ = 1;
+    uint32_t                                   nextTunnelId_ = 1;
+    std::vector<ListenerState>                 tunnelListeners_;
+    std::unordered_map<uint32_t, ActiveTunnel> viewerTunnels_;
+    std::unordered_map<uint32_t, ActiveTunnel> hostTunnels_;
+    std::thread                                viewerTunnelThread_;
+    std::atomic<bool>                          viewerTunnelActive_{false};
+    std::thread                                hostTunnelThread_;
+    std::atomic<bool>                          hostTunnelActive_{false};
+
+    // Whiteboard Manager (v2.1.0)
+    WhiteboardManager                          whiteboardMgr_;
 };
 
 } // namespace aerodesk

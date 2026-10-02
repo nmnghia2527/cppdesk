@@ -40,12 +40,21 @@ enum class FocusedField : uint8_t {
     LocalPassword   = 3,
     RelayServer     = 4,
     RemoteCanvas    = 5,
-    ChatInput       = 6
+    ChatInput       = 6,
+    TerminalInput   = 7,
+    ForwardLocal    = 8,
+    ForwardTarget   = 9,
+    ForwardDesc     = 10,
+    DashboardSearch = 11,
+    EditAlias       = 12,
+    EditTag         = 13,
+    EditNotes       = 14
 };
 
 enum class DrawerTab : uint8_t {
-    FilesAndClip = 0,
-    LiveChat     = 1
+    FilesAndClip   = 0,
+    LiveChat       = 1,
+    RemoteTerminal = 2
 };
 
 struct UiRect {
@@ -126,6 +135,9 @@ private:
     void drawIncomingApprovalModal(float width, float height, float modalProgress);
     void drawDynamicIslandToolbar(float width, float height);
     void drawShortcutsModal(float width, float height, float modalProgress);
+    void drawPortForwardModal(float width, float height, float modalProgress);
+    void drawAddressBookModal(float width, float height, float modalProgress);
+    void drawWhiteboardOverlay(const UiRect& canvasRect);
     void drawToastBanner(float width, float height, float toastProgress);
 
     // Primitive drawing & vector icon helpers
@@ -164,6 +176,7 @@ private:
     void openSendFileDialog();
     void saveRemoteScreenshot();
     void sendChatFromInput();
+    void sendTerminalFromInput();
     void toggleFullscreen();
     void toggleShortcutsModal();
     void showToast(const std::string& message, bool isError = false);
@@ -299,6 +312,36 @@ private:
     bool                    showShortcutsModal_ = false;
     float                   shortcutsModalAnimT_ = 0.0f;
     float                   shortcutsModalAnimVel_ = 0.0f;
+
+    // Remote Terminal UI state (v2.1.0)
+    std::string             terminalInputText_;
+    int                     terminalHistoryIndex_ = -1;
+    float                   terminalScrollOffset_ = 0.0f;
+
+    // TCP Port Forwarding modal state (v2.1.0)
+    bool                    showPortForwardModal_ = false;
+    float                   portForwardModalAnimT_ = 0.0f;
+    float                   portForwardModalAnimVel_ = 0.0f;
+    std::string             forwardLocalPortEdit_ = "33890";
+    std::string             forwardTargetPortEdit_ = "3389";
+    std::string             forwardDescEdit_ = "RDP Remote Desktop";
+
+    // Dashboard Address Book search & tag filtering (v2.1.0)
+    std::string             dashboardSearchQuery_;
+    std::string             dashboardFilterTag_ = "All";
+    bool                    showAddressBookEditModal_ = false;
+    float                   addressBookModalAnimT_ = 0.0f;
+    float                   addressBookModalAnimVel_ = 0.0f;
+    uint64_t                editingDeskId_ = 0;
+    std::string             editAliasInput_;
+    std::string             editTagInput_;
+    std::string             editNotesInput_;
+
+    // Whiteboard & Screen Annotation UI state (v2.1.0)
+    bool                    whiteboardActive_ = false;
+    WhiteboardTool          whiteboardTool_ = WhiteboardTool::Pen;
+    uint32_t                whiteboardColor_ = 0xFFFF3B30; // Red
+    float                   whiteboardThickness_ = 3.5f;
 
     ViewerConnectionState   prevViewerState_ = ViewerConnectionState::Disconnected;
     bool                    prevHostActive_ = false;

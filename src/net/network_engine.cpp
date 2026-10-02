@@ -7,6 +7,9 @@
 #include <ws2tcpip.h>
 #include <windows.h>
 #include <shellapi.h>
+#include <mmsystem.h>
+#include <mmdeviceapi.h>
+#include <audioclient.h>
 
 #include <cstring>
 #include <chrono>
@@ -16,6 +19,22 @@
 namespace aerodesk {
 
 namespace {
+
+#ifndef AUDCLNT_STREAMFLAGS_LOOPBACK
+#define AUDCLNT_STREAMFLAGS_LOOPBACK 0x00020000
+#endif
+#ifndef AUDCLNT_BUFFERFLAGS_SILENT
+#define AUDCLNT_BUFFERFLAGS_SILENT 0x2
+#endif
+#ifndef WDA_EXCLUDEFROMCAPTURE
+#define WDA_EXCLUDEFROMCAPTURE 0x00000011
+#endif
+
+static const CLSID CLSID_MMDeviceEnumerator_val = { 0xbcde0395, 0xe52f, 0x467c, { 0x8e, 0x3d, 0xc4, 0x57, 0x92, 0x91, 0x69, 0x2e } };
+static const IID IID_IMMDeviceEnumerator_val = { 0xa95664d2, 0x9614, 0x4f35, { 0xa7, 0x46, 0xde, 0x8d, 0xb6, 0x36, 0x17, 0xe6 } };
+static const IID IID_IAudioClient_val = { 0x1cb9ad4c, 0xdbfa, 0x4c32, { 0xb1, 0x78, 0xc2, 0xf5, 0x68, 0xa7, 0x03, 0xb2 } };
+static const IID IID_IAudioCaptureClient_val = { 0xc8adbd64, 0xe71e, 0x48a0, { 0xa4, 0xde, 0x18, 0x5c, 0x39, 0x5c, 0xd3, 0x17 } };
+static const GUID KSDATAFORMAT_SUBTYPE_IEEE_FLOAT_val = { 0x00000003, 0x0000, 0x0010, { 0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71 } };
 
 std::once_flag g_wsaInitFlag;
 
@@ -67,6 +86,63 @@ bool sendAllBytes(SOCKET s, const void* buf, size_t len) {
         sentTotal += static_cast<size_t>(n);
     }
     return true;
+}
+
+static LRESULT CALLBACK PrivacyCurtainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    switch (msg) {
+        case WM_ERASEBKGND:
+            return 1;
+        case WM_PAINT: {
+            PAINTSTRUCT ps;
+            HDC hdc = BeginPaint(hwnd, &ps);
+            RECT rc;
+            GetClientRect(hwnd, &rc);
+            HBRUSH bgBrush = CreateSolidBrush(RGB(11, 14, 20));
+            FillRect(hdc, &rc, bgBrush);
+            DeleteObject(bgBrush);
+
+            SetBkMode(hdc, TRANSPARENT);
+            SetTextColor(hdc, RGB(229, 9, 20));
+            HFONT hFontTitle = CreateFontW(32, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
+                                          DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                                          CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+            HFONT hOldFont = (HFONT)SelectObject(hdc, hFontTitle);
+
+            RECT titleRc = rc;
+            titleRc.bottom = rc.top + (rc.bottom - rc.top) / 2;
+            DrawTextW(hdc, L"AeroDesk Privacy Mode Active", -1, &titleRc, DT_CENTER | DT_BOTTOM | DT_SINGLELINE);
+
+            HFONT hFontSub = CreateFontW(18, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                                         DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                                         CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+            SelectObject(hdc, hFontSub);
+            SetTextColor(hdc, RGB(200, 210, 225));
+
+            RECT subRc = rc;
+            subRc.top = titleRc.bottom + 16;
+            subRc.bottom = subRc.top + 30;
+            DrawTextW(hdc, L"Screen output hidden and local physical inputs secured for authorized remote administration.", -1, &subRc, DT_CENTER | DT_TOP | DT_SINGLELINE);
+
+            RECT hintRc = rc;
+            hintRc.top = subRc.bottom + 12;
+            hintRc.bottom = hintRc.top + 30;
+            SetTextColor(hdc, RGB(130, 145, 165));
+            DrawTextW(hdc, L"Host emergency failsafe: Press Ctrl+Alt+Del on host to release control.", -1, &hintRc, DT_CENTER | DT_TOP | DT_SINGLELINE);
+
+            SelectObject(hdc, hOldFont);
+            DeleteObject(hFontTitle);
+            DeleteObject(hFontSub);
+            EndPaint(hwnd, &ps);
+            return 0;
+        }
+        case WM_SETCURSOR:
+            SetCursor(nullptr);
+            return TRUE;
+        case WM_CLOSE:
+            return 0;
+        default:
+            return DefWindowProcW(hwnd, msg, wParam, lParam);
+    }
 }
 
 bool recvAllBytes(SOCKET s, void* buf, size_t len) {
@@ -765,6 +841,10 @@ bool NetworkEngine::start() {
 void NetworkEngine::stop() {
     if (!running_.exchange(false)) return;
 
+    stopHostAudioCapture();
+    destroyPrivacyCurtainWindow();
+    shutdownViewerAudioPlayback();
+
     disconnectViewer();
     disconnectHostClient();
     respondToIncomingRequest(false, 0);
@@ -1111,6 +1191,12 @@ void NetworkEngine::runHostSession(uintptr_t clientSock, std::string clientIp) {
     hostEncrypted_.store(false);
 
     auto cleanup = [&]() {
+        stopHostAudioCapture();
+        destroyPrivacyCurtainWindow();
+        stopHostTerminal();
+        stopHostTunnelProxy();
+        whiteboardMgr_.hideHostOverlay();
+        whiteboardMgr_.clearAllStrokes();
         InputInjector::releaseAllModifiers();
         fileManager_.abortActiveTransfers();
         hostEncrypted_.store(false);
@@ -1341,6 +1427,10 @@ void NetworkEngine::runHostSession(uintptr_t clientSock, std::string clientIp) {
             cleanup();
             return;
         }
+
+        startHostAudioCapture();
+        startHostTerminal(false);
+        startHostTunnelProxy();
 
         std::atomic<bool> sessionAlive{true};
         std::atomic<uint8_t> requestedQuality{static_cast<uint8_t>(identity_.settings().defaultQuality)};
@@ -1593,6 +1683,112 @@ void NetworkEngine::runHostSession(uintptr_t clientSock, std::string clientIp) {
                             }
                             break;
                         }
+                        case PacketType::PRIVACY_MODE_TOGGLE: {
+                            if (r.hasRemaining(sizeof(PrivacyModePayload))) {
+                                PrivacyModePayload p{};
+                                r.readBytes(&p, sizeof(p));
+                                setHostPrivacyMode(p.enable != 0);
+
+                                PrivacyModePayload ack{};
+                                ack.enable = isHostPrivacyModeActive() ? 1 : 0;
+                                ack.acknowledge = 1;
+                                ByteWriter w;
+                                w.writeBytes(&ack, sizeof(ack));
+                                sendHostEncryptedPacket(PacketType::PRIVACY_MODE_TOGGLE, 0, w.buffer().data(), w.buffer().size());
+                            }
+                            break;
+                        }
+                        case PacketType::TUNNEL_OPEN: {
+                            if (r.hasRemaining(sizeof(TunnelOpenHeader))) {
+                                TunnelOpenHeader toh{};
+                                r.readBytes(&toh, sizeof(toh));
+
+                                SOCKET ts = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+                                bool ok = false;
+                                if (ts != INVALID_SOCKET) {
+                                    sockaddr_in targetAddr{};
+                                    targetAddr.sin_family = AF_INET;
+                                    targetAddr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+                                    targetAddr.sin_port = htons(toh.targetPort);
+                                    if (connect(ts, reinterpret_cast<sockaddr*>(&targetAddr), sizeof(targetAddr)) == 0) {
+                                        u_long nonblock = 1;
+                                        ioctlsocket(ts, FIONBIO, &nonblock);
+                                        ok = true;
+                                        std::lock_guard<std::mutex> lk(tunnelMutex_);
+                                        hostTunnels_[toh.tunnelId] = { toh.tunnelId, 0, ts, toh.targetPort };
+                                    } else {
+                                        closesocket(ts);
+                                    }
+                                }
+                                if (!ok) {
+                                    TunnelCloseHeader tch{};
+                                    tch.tunnelId = toh.tunnelId;
+                                    tch.reasonCode = 1; // Refused
+                                    ByteWriter w;
+                                    w.writeBytes(&tch, sizeof(tch));
+                                    sendHostEncryptedPacket(PacketType::TUNNEL_CLOSE, 0, w.buffer().data(), w.buffer().size());
+                                }
+                            }
+                            break;
+                        }
+                        case PacketType::TUNNEL_DATA: {
+                            if (r.hasRemaining(sizeof(TunnelDataHeader))) {
+                                TunnelDataHeader tdh{};
+                                r.readBytes(&tdh, sizeof(tdh));
+                                if (r.hasRemaining(tdh.dataLen)) {
+                                    SOCKET ts = INVALID_SOCKET;
+                                    {
+                                        std::lock_guard<std::mutex> lk(tunnelMutex_);
+                                        auto it = hostTunnels_.find(tdh.tunnelId);
+                                        if (it != hostTunnels_.end()) {
+                                            ts = it->second.sock;
+                                        }
+                                    }
+                                    if (ts != INVALID_SOCKET) {
+                                        sendAllBytes(ts, r.currentPtr(), tdh.dataLen);
+                                    }
+                                }
+                            }
+                            break;
+                        }
+                        case PacketType::TUNNEL_CLOSE: {
+                            if (r.hasRemaining(sizeof(TunnelCloseHeader))) {
+                                TunnelCloseHeader tch{};
+                                r.readBytes(&tch, sizeof(tch));
+                                std::lock_guard<std::mutex> lk(tunnelMutex_);
+                                auto it = hostTunnels_.find(tch.tunnelId);
+                                if (it != hostTunnels_.end()) {
+                                    closesocket(it->second.sock);
+                                    hostTunnels_.erase(it);
+                                }
+                            }
+                            break;
+                        }
+                        case PacketType::TERMINAL_DATA: {
+                            if (r.hasRemaining(sizeof(TerminalDataHeader))) {
+                                TerminalDataHeader tdh{};
+                                r.readBytes(&tdh, sizeof(tdh));
+                                if (tdh.streamKind == static_cast<uint8_t>(TerminalStreamKind::StdinInput)) {
+                                    if (r.hasRemaining(tdh.textLen)) {
+                                        std::string input(reinterpret_cast<const char*>(r.currentPtr()), tdh.textLen);
+                                        injectHostTerminalStdin(input);
+                                    }
+                                } else if (tdh.streamKind == static_cast<uint8_t>(TerminalStreamKind::ResetShell)) {
+                                    startHostTerminal(false);
+                                } else if (tdh.streamKind == static_cast<uint8_t>(TerminalStreamKind::SwitchShell)) {
+                                    startHostTerminal(true);
+                                }
+                            }
+                            break;
+                        }
+                        case PacketType::WHITEBOARD_PACKET: {
+                            AnnotationStroke stroke{};
+                            if (WhiteboardManager::deserializeStroke(r.currentPtr(), r.remaining(), stroke)) {
+                                whiteboardMgr_.showHostOverlay();
+                                whiteboardMgr_.applyRemoteStroke(stroke);
+                            }
+                            break;
+                        }
                         case PacketType::DISCONNECT:
                             sessionAlive.store(false);
                             break;
@@ -1747,6 +1943,10 @@ bool NetworkEngine::connectToRemote(const std::string& targetIdOrAddr, const std
 
 void NetworkEngine::disconnectViewer() {
     viewerActive_.store(false);
+    shutdownViewerAudioPlayback();
+    stopViewerTunnelMultiplexer();
+    viewerPrivacyModeActive_.store(false);
+    whiteboardMgr_.clearAllStrokes();
     uintptr_t s = viewerSock_.exchange(~uintptr_t(0));
     if (s != ~uintptr_t(0)) {
         bool enc = viewerEncrypted_.exchange(false);
@@ -1771,7 +1971,11 @@ void NetworkEngine::disconnectViewer() {
 
 ViewerSessionStats NetworkEngine::viewerStats() const {
     std::lock_guard<std::mutex> lock(viewerStatsMutex_);
-    return viewerStats_;
+    ViewerSessionStats s = viewerStats_;
+    s.privacyModeEngaged = viewerPrivacyModeActive_.load();
+    s.audioMuted = audioMuted_.load();
+    s.audioVolume = audioVolumePercent_.load();
+    return s;
 }
 
 bool NetworkEngine::copyLatestViewerFrame(
@@ -2114,6 +2318,8 @@ void NetworkEngine::runViewerSession(std::string targetInput, std::string passwo
                         viewerStats_.grantedPermissions = perms;
                     }
                     identity_.addOrUpdateRecentSession(remoteId, remoteHost, targetInput);
+                    initViewerAudioPlayback();
+                    startViewerTunnelMultiplexer();
 
                     requestVideoSettings(
                         identity_.settings().defaultQuality,
@@ -2433,6 +2639,102 @@ void NetworkEngine::runViewerSession(std::string targetInput, std::string passwo
                             }
                             break;
                         }
+                        case PacketType::AUDIO_STREAM_CHUNK: {
+                            enqueueViewerAudioChunk(payload.data(), payload.size());
+                            break;
+                        }
+                        case PacketType::PRIVACY_MODE_TOGGLE: {
+                            if (payload.size() >= sizeof(PrivacyModePayload)) {
+                                PrivacyModePayload ack{};
+                                std::memcpy(&ack, payload.data(), sizeof(ack));
+                                viewerPrivacyModeActive_.store(ack.enable != 0);
+                                {
+                                    std::lock_guard<std::mutex> lock(viewerStatsMutex_);
+                                    viewerStats_.privacyModeEngaged = (ack.enable != 0);
+                                }
+                            }
+                            break;
+                        }
+                        case PacketType::TUNNEL_DATA: {
+                            if (payload.size() >= sizeof(TunnelDataHeader)) {
+                                TunnelDataHeader tdh{};
+                                std::memcpy(&tdh, payload.data(), sizeof(tdh));
+                                const uint8_t* tdata = payload.data() + sizeof(tdh);
+                                size_t tlen = payload.size() - sizeof(tdh);
+                                if (tlen > 0) {
+                                    SOCKET cs = INVALID_SOCKET;
+                                    uint32_t rId = 0;
+                                    {
+                                        std::lock_guard<std::mutex> lk(tunnelMutex_);
+                                        auto it = viewerTunnels_.find(tdh.tunnelId);
+                                        if (it != viewerTunnels_.end()) {
+                                            cs = it->second.sock;
+                                            rId = it->second.ruleId;
+                                        }
+                                    }
+                                    if (cs != INVALID_SOCKET) {
+                                        sendAllBytes(cs, tdata, tlen);
+                                        std::lock_guard<std::mutex> lk(tunnelMutex_);
+                                        for (auto& r : tunnelRules_) {
+                                            if (r.ruleId == rId) {
+                                                r.bytesTransferredIn += tlen;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            break;
+                        }
+                        case PacketType::TUNNEL_CLOSE: {
+                            if (payload.size() >= sizeof(TunnelCloseHeader)) {
+                                TunnelCloseHeader tch{};
+                                std::memcpy(&tch, payload.data(), sizeof(tch));
+                                std::lock_guard<std::mutex> lk(tunnelMutex_);
+                                auto it = viewerTunnels_.find(tch.tunnelId);
+                                if (it != viewerTunnels_.end()) {
+                                    closesocket(it->second.sock);
+                                    viewerTunnels_.erase(it);
+                                }
+                            }
+                            break;
+                        }
+                        case PacketType::TERMINAL_DATA: {
+                            if (payload.size() >= sizeof(TerminalDataHeader)) {
+                                TerminalDataHeader tdh{};
+                                std::memcpy(&tdh, payload.data(), sizeof(tdh));
+                                const char* ttext = reinterpret_cast<const char*>(payload.data() + sizeof(tdh));
+                                size_t tlen = payload.size() - sizeof(tdh);
+                                if (tlen > 0) {
+                                    std::lock_guard<std::mutex> lk(terminalMutex_);
+                                    if (terminalLines_.empty()) {
+                                        terminalLines_.push_back("");
+                                    }
+                                    for (size_t i = 0; i < tlen; ++i) {
+                                        char ch = ttext[i];
+                                        if (ch == '\r') {
+                                            continue;
+                                        }
+                                        if (ch == '\n') {
+                                            terminalLines_.push_back("");
+                                            if (terminalLines_.size() > 500) {
+                                                terminalLines_.erase(terminalLines_.begin());
+                                            }
+                                        } else {
+                                            terminalLines_.back() += ch;
+                                        }
+                                    }
+                                }
+                            }
+                            break;
+                        }
+                        case PacketType::WHITEBOARD_PACKET: {
+                            AnnotationStroke stroke{};
+                            if (WhiteboardManager::deserializeStroke(payload.data(), payload.size(), stroke)) {
+                                whiteboardMgr_.applyRemoteStroke(stroke);
+                            }
+                            break;
+                        }
                         case PacketType::DISCONNECT:
                             viewerActive_.store(false);
                             break;
@@ -2461,6 +2763,10 @@ void NetworkEngine::runViewerSession(std::string targetInput, std::string passwo
 
     uintptr_t s = viewerSock_.exchange(~uintptr_t(0));
     closeWinSock(s);
+    shutdownViewerAudioPlayback();
+    stopViewerTunnelMultiplexer();
+    viewerPrivacyModeActive_.store(false);
+    whiteboardMgr_.clearAllStrokes();
     viewerEncrypted_.store(false);
     {
         std::lock_guard<std::mutex> lock(viewerCipherMutex_);
@@ -2674,6 +2980,873 @@ bool NetworkEngine::sendChatMessage(const std::string& text) {
 std::vector<ChatMessageEntry> NetworkEngine::chatMessages() const {
     std::lock_guard<std::mutex> lock(chatMutex_);
     return chatHistory_;
+}
+
+// ---------------- Audio Streaming & Privacy Screen Controls (v2.1.0) ----------------
+
+void NetworkEngine::setAudioVolume(int percent) {
+    audioVolumePercent_.store(std::clamp(percent, 0, 100));
+}
+
+int NetworkEngine::audioVolume() const {
+    return audioVolumePercent_.load();
+}
+
+void NetworkEngine::setAudioMuted(bool muted) {
+    audioMuted_.store(muted);
+}
+
+bool NetworkEngine::isAudioMuted() const {
+    return audioMuted_.load();
+}
+
+void NetworkEngine::requestTogglePrivacyMode() {
+    bool current = viewerPrivacyModeActive_.load();
+    PrivacyModePayload p{};
+    p.enable = current ? 0 : 1;
+    p.acknowledge = 0;
+    ByteWriter w;
+    w.writeBytes(&p, sizeof(p));
+    sendViewerEncryptedPacket(PacketType::PRIVACY_MODE_TOGGLE, 0, w.buffer().data(), w.buffer().size());
+}
+
+bool NetworkEngine::isPrivacyModeEngaged() const {
+    return viewerPrivacyModeActive_.load();
+}
+
+bool NetworkEngine::isHostPrivacyModeActive() const {
+    return hostPrivacyModeActive_.load();
+}
+
+void NetworkEngine::setHostPrivacyMode(bool enable) {
+    if (enable) {
+        createPrivacyCurtainWindow();
+    } else {
+        destroyPrivacyCurtainWindow();
+    }
+}
+
+void NetworkEngine::createPrivacyCurtainWindow() {
+    if (hwndPrivacyCurtain_) return;
+
+    WNDCLASSEXW wc{};
+    wc.cbSize = sizeof(wc);
+    wc.lpfnWndProc = PrivacyCurtainWndProc;
+    wc.hInstance = GetModuleHandleW(nullptr);
+    wc.lpszClassName = L"AeroDeskPrivacyCurtainClass";
+    wc.hCursor = nullptr;
+    RegisterClassExW(&wc);
+
+    int vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
+    int vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
+    int vw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+    int vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+
+    hwndPrivacyCurtain_ = CreateWindowExW(
+        WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
+        L"AeroDeskPrivacyCurtainClass",
+        L"AeroDesk Privacy Curtain",
+        WS_POPUP,
+        vx, vy, vw, vh,
+        nullptr, nullptr,
+        GetModuleHandleW(nullptr),
+        nullptr
+    );
+
+    if (hwndPrivacyCurtain_) {
+        SetWindowDisplayAffinity(hwndPrivacyCurtain_, WDA_EXCLUDEFROMCAPTURE);
+        ShowWindow(hwndPrivacyCurtain_, SW_SHOWMAXIMIZED);
+        SetWindowPos(hwndPrivacyCurtain_, HWND_TOPMOST, vx, vy, vw, vh, SWP_SHOWWINDOW | SWP_NOACTIVATE);
+        UpdateWindow(hwndPrivacyCurtain_);
+    }
+
+    BlockInput(TRUE);
+    hostPrivacyModeActive_.store(true);
+}
+
+void NetworkEngine::destroyPrivacyCurtainWindow() {
+    BlockInput(FALSE);
+    if (hwndPrivacyCurtain_) {
+        DestroyWindow(hwndPrivacyCurtain_);
+        hwndPrivacyCurtain_ = nullptr;
+    }
+    hostPrivacyModeActive_.store(false);
+}
+
+void NetworkEngine::startHostAudioCapture() {
+    stopHostAudioCapture();
+    hostAudioActive_.store(true);
+    hostAudioThread_ = std::thread(&NetworkEngine::hostAudioCaptureLoop, this);
+}
+
+void NetworkEngine::stopHostAudioCapture() {
+    hostAudioActive_.store(false);
+    if (hostAudioThread_.joinable()) {
+        hostAudioThread_.join();
+    }
+}
+
+void NetworkEngine::hostAudioCaptureLoop() {
+    HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    bool coInited = SUCCEEDED(hr);
+
+    IMMDeviceEnumerator* pEnumerator = nullptr;
+    IMMDevice* pDevice = nullptr;
+    IAudioClient* pAudioClient = nullptr;
+    IAudioCaptureClient* pCaptureClient = nullptr;
+    WAVEFORMATEX* pwfx = nullptr;
+
+    auto cleanupCom = [&]() {
+        if (pwfx) { CoTaskMemFree(pwfx); pwfx = nullptr; }
+        if (pCaptureClient) { pCaptureClient->Release(); pCaptureClient = nullptr; }
+        if (pAudioClient) { pAudioClient->Stop(); pAudioClient->Release(); pAudioClient = nullptr; }
+        if (pDevice) { pDevice->Release(); pDevice = nullptr; }
+        if (pEnumerator) { pEnumerator->Release(); pEnumerator = nullptr; }
+        if (coInited) { CoUninitialize(); }
+    };
+
+    hr = CoCreateInstance(CLSID_MMDeviceEnumerator_val, nullptr, CLSCTX_ALL, IID_IMMDeviceEnumerator_val, (void**)&pEnumerator);
+    if (FAILED(hr)) { cleanupCom(); return; }
+
+    hr = pEnumerator->GetDefaultAudioEndpoint(eRender, eMultimedia, &pDevice);
+    if (FAILED(hr)) { cleanupCom(); return; }
+
+    hr = pDevice->Activate(IID_IAudioClient_val, CLSCTX_ALL, nullptr, (void**)&pAudioClient);
+    if (FAILED(hr)) { cleanupCom(); return; }
+
+    hr = pAudioClient->GetMixFormat(&pwfx);
+    if (FAILED(hr) || !pwfx) { cleanupCom(); return; }
+
+    REFERENCE_TIME hnsBufferDuration = 1000000; // 100ms
+    hr = pAudioClient->Initialize(
+        AUDCLNT_SHAREMODE_SHARED,
+        AUDCLNT_STREAMFLAGS_LOOPBACK,
+        hnsBufferDuration,
+        0,
+        pwfx,
+        nullptr
+    );
+    if (FAILED(hr)) { cleanupCom(); return; }
+
+    hr = pAudioClient->GetService(IID_IAudioCaptureClient_val, (void**)&pCaptureClient);
+    if (FAILED(hr)) { cleanupCom(); return; }
+
+    hr = pAudioClient->Start();
+    if (FAILED(hr)) { cleanupCom(); return; }
+
+    bool isFloat = false;
+    if (pwfx->wFormatTag == WAVE_FORMAT_IEEE_FLOAT) {
+        isFloat = true;
+    } else if (pwfx->wFormatTag == WAVE_FORMAT_EXTENSIBLE) {
+        const WAVEFORMATEXTENSIBLE* pExt = reinterpret_cast<const WAVEFORMATEXTENSIBLE*>(pwfx);
+        if (std::memcmp(&pExt->SubFormat, &KSDATAFORMAT_SUBTYPE_IEEE_FLOAT_val, sizeof(GUID)) == 0) {
+            isFloat = true;
+        }
+    }
+
+    uint32_t srcSampleRate = pwfx->nSamplesPerSec;
+    WORD srcChannels = pwfx->nChannels;
+
+    std::vector<int16_t> convertedPcm;
+    std::vector<int16_t> resampledPcm;
+
+    while (hostAudioActive_.load() && running_.load() && activeHostClientSock_.load() != ~uintptr_t(0)) {
+        UINT32 packetLength = 0;
+        hr = pCaptureClient->GetNextPacketSize(&packetLength);
+        if (FAILED(hr)) break;
+
+        if (packetLength == 0) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(15));
+            continue;
+        }
+
+        BYTE* pData = nullptr;
+        UINT32 numFramesRead = 0;
+        DWORD flags = 0;
+
+        hr = pCaptureClient->GetBuffer(&pData, &numFramesRead, &flags, nullptr, nullptr);
+        if (FAILED(hr)) break;
+
+        if (numFramesRead > 0) {
+            if (flags & AUDCLNT_BUFFERFLAGS_SILENT) {
+                AudioChunkHeader hdr{};
+                hdr.sampleRate = 48000;
+                hdr.channels = 2;
+                hdr.bitsPerSample = 16;
+                hdr.isSilent = 1;
+                hdr.sampleFrames = numFramesRead;
+
+                ByteWriter w;
+                w.writeBytes(&hdr, sizeof(hdr));
+                sendHostEncryptedPacket(PacketType::AUDIO_STREAM_CHUNK, 0, w.buffer().data(), w.buffer().size());
+            } else if (pData) {
+                convertedPcm.resize(numFramesRead * 2);
+                if (isFloat) {
+                    const float* fData = reinterpret_cast<const float*>(pData);
+                    for (UINT32 f = 0; f < numFramesRead; ++f) {
+                        float left = fData[f * srcChannels];
+                        float right = (srcChannels > 1) ? fData[f * srcChannels + 1] : left;
+                        convertedPcm[f * 2 + 0] = static_cast<int16_t>(std::clamp(left, -1.0f, 1.0f) * 32767.0f);
+                        convertedPcm[f * 2 + 1] = static_cast<int16_t>(std::clamp(right, -1.0f, 1.0f) * 32767.0f);
+                    }
+                } else if (pwfx->wBitsPerSample == 16) {
+                    const int16_t* sData = reinterpret_cast<const int16_t*>(pData);
+                    for (UINT32 f = 0; f < numFramesRead; ++f) {
+                        int16_t left = sData[f * srcChannels];
+                        int16_t right = (srcChannels > 1) ? sData[f * srcChannels + 1] : left;
+                        convertedPcm[f * 2 + 0] = left;
+                        convertedPcm[f * 2 + 1] = right;
+                    }
+                }
+
+                const int16_t* pcmToSend = convertedPcm.data();
+                uint32_t finalFrames = numFramesRead;
+
+                if (srcSampleRate != 48000 && srcSampleRate > 0) {
+                    finalFrames = static_cast<uint32_t>((static_cast<uint64_t>(numFramesRead) * 48000) / srcSampleRate);
+                    if (finalFrames > 0) {
+                        resampledPcm.resize(finalFrames * 2);
+                        for (uint32_t i = 0; i < finalFrames; ++i) {
+                            double srcPos = static_cast<double>(i) * srcSampleRate / 48000.0;
+                            size_t idx0 = static_cast<size_t>(srcPos);
+                            size_t idx1 = std::min(idx0 + 1, static_cast<size_t>(numFramesRead - 1));
+                            float frac = static_cast<float>(srcPos - idx0);
+
+                            float l0 = convertedPcm[idx0 * 2 + 0];
+                            float l1 = convertedPcm[idx1 * 2 + 0];
+                            float r0 = convertedPcm[idx0 * 2 + 1];
+                            float r1 = convertedPcm[idx1 * 2 + 1];
+
+                            resampledPcm[i * 2 + 0] = static_cast<int16_t>((1.0f - frac) * l0 + frac * l1);
+                            resampledPcm[i * 2 + 1] = static_cast<int16_t>((1.0f - frac) * r0 + frac * r1);
+                        }
+                        pcmToSend = resampledPcm.data();
+                    }
+                }
+
+                if (finalFrames > 0) {
+                    AudioChunkHeader hdr{};
+                    hdr.sampleRate = 48000;
+                    hdr.channels = 2;
+                    hdr.bitsPerSample = 16;
+                    hdr.isSilent = 0;
+                    hdr.sampleFrames = finalFrames;
+
+                    ByteWriter w;
+                    w.writeBytes(&hdr, sizeof(hdr));
+                    w.writeBytes(pcmToSend, finalFrames * 2 * sizeof(int16_t));
+                    sendHostEncryptedPacket(PacketType::AUDIO_STREAM_CHUNK, 0, w.buffer().data(), w.buffer().size());
+                }
+            }
+        }
+
+        pCaptureClient->ReleaseBuffer(numFramesRead);
+    }
+
+    cleanupCom();
+}
+
+void NetworkEngine::initViewerAudioPlayback() {
+    std::lock_guard<std::mutex> lk(audioPlaybackMutex_);
+    if (hWaveOut_) return;
+
+    WAVEFORMATEX wfx{};
+    wfx.wFormatTag = WAVE_FORMAT_PCM;
+    wfx.nChannels = 2;
+    wfx.nSamplesPerSec = 48000;
+    wfx.nAvgBytesPerSec = 48000 * 2 * sizeof(int16_t);
+    wfx.nBlockAlign = 2 * sizeof(int16_t);
+    wfx.wBitsPerSample = 16;
+    wfx.cbSize = 0;
+
+    MMRESULT res = waveOutOpen(&hWaveOut_, WAVE_MAPPER, &wfx, 0, 0, CALLBACK_NULL);
+    if (res != MMSYSERR_NOERROR) {
+        hWaveOut_ = nullptr;
+        return;
+    }
+
+    for (size_t i = 0; i < 3; ++i) {
+        waveBuffers_[i].assign(8192, 0);
+        std::memset(&waveHeaders_[i], 0, sizeof(WAVEHDR));
+        waveHeaders_[i].lpData = reinterpret_cast<LPSTR>(waveBuffers_[i].data());
+        waveHeaders_[i].dwBufferLength = static_cast<DWORD>(waveBuffers_[i].size());
+    }
+    currentWaveIdx_ = 0;
+}
+
+void NetworkEngine::shutdownViewerAudioPlayback() {
+    std::lock_guard<std::mutex> lk(audioPlaybackMutex_);
+    if (!hWaveOut_) return;
+
+    waveOutReset(hWaveOut_);
+    for (size_t i = 0; i < 3; ++i) {
+        if (waveHeaders_[i].dwFlags & WHDR_PREPARED) {
+            waveOutUnprepareHeader(hWaveOut_, &waveHeaders_[i], sizeof(WAVEHDR));
+        }
+        waveHeaders_[i].dwFlags = 0;
+    }
+    waveOutClose(hWaveOut_);
+    hWaveOut_ = nullptr;
+}
+
+void NetworkEngine::enqueueViewerAudioChunk(const uint8_t* payload, size_t len) {
+    if (!hWaveOut_ || len < sizeof(AudioChunkHeader)) return;
+
+    AudioChunkHeader hdr{};
+    std::memcpy(&hdr, payload, sizeof(hdr));
+    if (hdr.isSilent || hdr.sampleFrames == 0) return;
+
+    size_t pcmBytes = len - sizeof(AudioChunkHeader);
+    if (pcmBytes == 0) return;
+
+    const int16_t* inSamples = reinterpret_cast<const int16_t*>(payload + sizeof(AudioChunkHeader));
+    size_t sampleCount = pcmBytes / sizeof(int16_t);
+
+    std::lock_guard<std::mutex> lk(audioPlaybackMutex_);
+    if (!hWaveOut_) return;
+
+    bool isMuted = audioMuted_.load();
+    int volPercent = audioVolumePercent_.load();
+    float volScale = isMuted ? 0.0f : (volPercent / 100.0f);
+
+    WAVEHDR& curHdr = waveHeaders_[currentWaveIdx_];
+    if (curHdr.dwFlags & WHDR_PREPARED) {
+        if (!(curHdr.dwFlags & WHDR_DONE)) {
+            return;
+        }
+        waveOutUnprepareHeader(hWaveOut_, &curHdr, sizeof(WAVEHDR));
+        curHdr.dwFlags = 0;
+    }
+
+    if (waveBuffers_[currentWaveIdx_].size() < pcmBytes) {
+        waveBuffers_[currentWaveIdx_].resize(pcmBytes);
+    }
+
+    int16_t* outSamples = reinterpret_cast<int16_t*>(waveBuffers_[currentWaveIdx_].data());
+    for (size_t i = 0; i < sampleCount; ++i) {
+        float s = static_cast<float>(inSamples[i]) * volScale;
+        outSamples[i] = static_cast<int16_t>(std::clamp(s, -32768.0f, 32767.0f));
+    }
+
+    curHdr.lpData = reinterpret_cast<LPSTR>(outSamples);
+    curHdr.dwBufferLength = static_cast<DWORD>(pcmBytes);
+    curHdr.dwFlags = 0;
+
+    if (waveOutPrepareHeader(hWaveOut_, &curHdr, sizeof(WAVEHDR)) == MMSYSERR_NOERROR) {
+        waveOutWrite(hWaveOut_, &curHdr, sizeof(WAVEHDR));
+        currentWaveIdx_ = (currentWaveIdx_ + 1) % 3;
+    }
+}
+
+// ---------------- Remote Terminal & TCP Port Forwarding (v2.1.0) ----------------
+
+void NetworkEngine::sendTerminalCommand(const std::string& cmd) {
+    if (cmd.empty()) return;
+    {
+        std::lock_guard<std::mutex> lk(terminalMutex_);
+        terminalHistory_.push_back(cmd);
+        if (terminalHistory_.size() > 50) terminalHistory_.erase(terminalHistory_.begin());
+        terminalLines_.push_back("> " + cmd);
+        if (terminalLines_.size() > 500) terminalLines_.erase(terminalLines_.begin());
+    }
+
+    ByteWriter w;
+    w.writeU8(static_cast<uint8_t>(TerminalStreamKind::StdinInput));
+    w.writeU32(static_cast<uint32_t>(cmd.size()));
+    w.writeBytes(cmd.data(), cmd.size());
+    sendViewerEncryptedPacket(PacketType::TERMINAL_DATA, 0, w.buffer().data(), w.buffer().size());
+}
+
+void NetworkEngine::resetRemoteTerminal(bool usePowerShell) {
+    ByteWriter w;
+    w.writeU8(static_cast<uint8_t>(usePowerShell ? TerminalStreamKind::SwitchShell : TerminalStreamKind::ResetShell));
+    w.writeU32(0);
+    sendViewerEncryptedPacket(PacketType::TERMINAL_DATA, 0, w.buffer().data(), w.buffer().size());
+}
+
+std::vector<std::string> NetworkEngine::getTerminalScrollback() const {
+    std::lock_guard<std::mutex> lk(terminalMutex_);
+    return terminalLines_;
+}
+
+void NetworkEngine::clearTerminalScrollback() {
+    std::lock_guard<std::mutex> lk(terminalMutex_);
+    terminalLines_.clear();
+}
+
+void NetworkEngine::sendWhiteboardStroke(const AnnotationStroke& stroke) {
+    auto payload = WhiteboardManager::serializeStroke(stroke);
+    if (viewerSock_.load() != ~uintptr_t(0)) {
+        sendViewerEncryptedPacket(PacketType::WHITEBOARD_PACKET, 0, payload.data(), payload.size());
+    } else if (activeHostClientSock_.load() != ~uintptr_t(0)) {
+        sendHostEncryptedPacket(PacketType::WHITEBOARD_PACKET, 0, payload.data(), payload.size());
+    }
+}
+
+void NetworkEngine::sendWhiteboardClear() {
+    auto payload = WhiteboardManager::serializeClearPacket();
+    if (viewerSock_.load() != ~uintptr_t(0)) {
+        sendViewerEncryptedPacket(PacketType::WHITEBOARD_PACKET, 0, payload.data(), payload.size());
+    } else if (activeHostClientSock_.load() != ~uintptr_t(0)) {
+        sendHostEncryptedPacket(PacketType::WHITEBOARD_PACKET, 0, payload.data(), payload.size());
+    }
+}
+
+void NetworkEngine::sendWhiteboardLaser(float normX, float normY) {
+    AnnotationStroke stroke{};
+    stroke.tool = WhiteboardTool::LaserPointer;
+    stroke.points.push_back({ normX, normY });
+    auto payload = WhiteboardManager::serializeStroke(stroke);
+    if (viewerSock_.load() != ~uintptr_t(0)) {
+        sendViewerEncryptedPacket(PacketType::WHITEBOARD_PACKET, 0, payload.data(), payload.size());
+    } else if (activeHostClientSock_.load() != ~uintptr_t(0)) {
+        sendHostEncryptedPacket(PacketType::WHITEBOARD_PACKET, 0, payload.data(), payload.size());
+    }
+}
+
+void NetworkEngine::startHostTerminal(bool usePowerShell) {
+    stopHostTerminal();
+
+    SECURITY_ATTRIBUTES sa{};
+    sa.nLength = sizeof(sa);
+    sa.bInheritHandle = TRUE;
+    sa.lpSecurityDescriptor = nullptr;
+
+    HANDLE hStdinRead = nullptr, hStdinWrite = nullptr;
+    HANDLE hStdoutRead = nullptr, hStdoutWrite = nullptr;
+
+    if (!CreatePipe(&hStdinRead, &hStdinWrite, &sa, 0)) return;
+    if (!SetHandleInformation(hStdinWrite, HANDLE_FLAG_INHERIT, 0)) {
+        CloseHandle(hStdinRead); CloseHandle(hStdinWrite);
+        return;
+    }
+
+    if (!CreatePipe(&hStdoutRead, &hStdoutWrite, &sa, 0)) {
+        CloseHandle(hStdinRead); CloseHandle(hStdinWrite);
+        return;
+    }
+    if (!SetHandleInformation(hStdoutRead, HANDLE_FLAG_INHERIT, 0)) {
+        CloseHandle(hStdinRead); CloseHandle(hStdinWrite);
+        CloseHandle(hStdoutRead); CloseHandle(hStdoutWrite);
+        return;
+    }
+
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
+    si.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
+    si.wShowWindow = SW_HIDE;
+    si.hStdInput = hStdinRead;
+    si.hStdOutput = hStdoutWrite;
+    si.hStdError = hStdoutWrite;
+
+    PROCESS_INFORMATION pi{};
+    wchar_t cmdLine[256];
+    if (usePowerShell) {
+        wcscpy_s(cmdLine, L"powershell.exe -NoLogo -NoExit");
+    } else {
+        wcscpy_s(cmdLine, L"cmd.exe /Q /K");
+    }
+
+    BOOL created = CreateProcessW(
+        nullptr, cmdLine, nullptr, nullptr, TRUE,
+        CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi
+    );
+
+    CloseHandle(hStdinRead);
+    CloseHandle(hStdoutWrite);
+
+    if (!created) {
+        CloseHandle(hStdinWrite);
+        CloseHandle(hStdoutRead);
+        return;
+    }
+
+    hChildStdinWrite_ = hStdinWrite;
+    hChildStdoutRead_ = hStdoutRead;
+    hChildProcess_ = pi.hProcess;
+    hChildThread_ = pi.hThread;
+
+    hostTerminalActive_.store(true);
+    hostTerminalThread_ = std::thread(&NetworkEngine::hostTerminalReaderLoop, this);
+}
+
+void NetworkEngine::stopHostTerminal() {
+    hostTerminalActive_.store(false);
+    if (hostTerminalThread_.joinable()) {
+        hostTerminalThread_.join();
+    }
+    if (hChildProcess_) {
+        TerminateProcess(hChildProcess_, 0);
+        CloseHandle(hChildProcess_);
+        hChildProcess_ = nullptr;
+    }
+    if (hChildThread_) {
+        CloseHandle(hChildThread_);
+        hChildThread_ = nullptr;
+    }
+    if (hChildStdinWrite_) {
+        CloseHandle(hChildStdinWrite_);
+        hChildStdinWrite_ = nullptr;
+    }
+    if (hChildStdoutRead_) {
+        CloseHandle(hChildStdoutRead_);
+        hChildStdoutRead_ = nullptr;
+    }
+}
+
+void NetworkEngine::injectHostTerminalStdin(const std::string& input) {
+    if (!hChildStdinWrite_) return;
+    std::string toWrite = input + "\r\n";
+    DWORD written = 0;
+    WriteFile(hChildStdinWrite_, toWrite.data(), static_cast<DWORD>(toWrite.size()), &written, nullptr);
+}
+
+void NetworkEngine::hostTerminalReaderLoop() {
+    char buf[4096];
+    while (hostTerminalActive_.load() && running_.load() && activeHostClientSock_.load() != ~uintptr_t(0)) {
+        if (!hChildStdoutRead_) break;
+        DWORD avail = 0;
+        if (PeekNamedPipe(hChildStdoutRead_, nullptr, 0, nullptr, &avail, nullptr) && avail > 0) {
+            DWORD toRead = std::min<DWORD>(avail, sizeof(buf));
+            DWORD numRead = 0;
+            if (ReadFile(hChildStdoutRead_, buf, toRead, &numRead, nullptr) && numRead > 0) {
+                ByteWriter w;
+                w.writeU8(static_cast<uint8_t>(TerminalStreamKind::StdoutChunk));
+                w.writeU32(numRead);
+                w.writeBytes(buf, numRead);
+                sendHostEncryptedPacket(PacketType::TERMINAL_DATA, 0, w.buffer().data(), w.buffer().size());
+                continue;
+            }
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+}
+
+uint32_t NetworkEngine::addPortForwardRule(uint16_t localPort, uint16_t targetPort, const std::string& desc, bool startActive) {
+    std::lock_guard<std::mutex> lk(tunnelMutex_);
+    PortForwardRule r;
+    r.ruleId = nextRuleId_++;
+    r.localPort = localPort;
+    r.targetPort = targetPort;
+    r.description = desc;
+    r.active = startActive;
+    tunnelRules_.push_back(r);
+
+    if (startActive && viewerActive_.load()) {
+        SOCKET ls = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+        if (ls != INVALID_SOCKET) {
+            u_long nonblock = 1;
+            ioctlsocket(ls, FIONBIO, &nonblock);
+            sockaddr_in addr{};
+            addr.sin_family = AF_INET;
+            addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+            addr.sin_port = htons(localPort);
+            if (bind(ls, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0 &&
+                listen(ls, 5) == 0) {
+                tunnelListeners_.push_back({ r.ruleId, localPort, targetPort, ls });
+            } else {
+                closesocket(ls);
+            }
+        }
+    }
+    return r.ruleId;
+}
+
+void NetworkEngine::removePortForwardRule(uint32_t ruleId) {
+    std::lock_guard<std::mutex> lk(tunnelMutex_);
+    for (auto it = tunnelListeners_.begin(); it != tunnelListeners_.end(); ++it) {
+        if (it->ruleId == ruleId) {
+            closesocket(it->listenSock);
+            tunnelListeners_.erase(it);
+            break;
+        }
+    }
+    for (auto it = tunnelRules_.begin(); it != tunnelRules_.end(); ++it) {
+        if (it->ruleId == ruleId) {
+            tunnelRules_.erase(it);
+            break;
+        }
+    }
+}
+
+void NetworkEngine::setPortForwardRuleActive(uint32_t ruleId, bool active) {
+    std::lock_guard<std::mutex> lk(tunnelMutex_);
+    for (auto& r : tunnelRules_) {
+        if (r.ruleId == ruleId) {
+            r.active = active;
+            if (!active) {
+                for (auto it = tunnelListeners_.begin(); it != tunnelListeners_.end(); ++it) {
+                    if (it->ruleId == ruleId) {
+                        closesocket(it->listenSock);
+                        tunnelListeners_.erase(it);
+                        break;
+                    }
+                }
+            } else if (viewerActive_.load()) {
+                SOCKET ls = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+                if (ls != INVALID_SOCKET) {
+                    u_long nonblock = 1;
+                    ioctlsocket(ls, FIONBIO, &nonblock);
+                    sockaddr_in addr{};
+                    addr.sin_family = AF_INET;
+                    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+                    addr.sin_port = htons(r.localPort);
+                    if (bind(ls, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0 &&
+                        listen(ls, 5) == 0) {
+                        tunnelListeners_.push_back({ r.ruleId, r.localPort, r.targetPort, ls });
+                    } else {
+                        closesocket(ls);
+                    }
+                }
+            }
+            break;
+        }
+    }
+}
+
+std::vector<PortForwardRule> NetworkEngine::portForwardRules() const {
+    std::lock_guard<std::mutex> lk(tunnelMutex_);
+    return tunnelRules_;
+}
+
+void NetworkEngine::startPortForwarding() {
+    startViewerTunnelMultiplexer();
+}
+
+void NetworkEngine::stopPortForwarding() {
+    stopViewerTunnelMultiplexer();
+    stopHostTunnelProxy();
+}
+
+void NetworkEngine::startViewerTunnelMultiplexer() {
+    stopViewerTunnelMultiplexer();
+    viewerTunnelActive_.store(true);
+    viewerTunnelThread_ = std::thread(&NetworkEngine::viewerTunnelMultiplexerLoop, this);
+}
+
+void NetworkEngine::stopViewerTunnelMultiplexer() {
+    viewerTunnelActive_.store(false);
+    if (viewerTunnelThread_.joinable()) {
+        viewerTunnelThread_.join();
+    }
+    std::lock_guard<std::mutex> lk(tunnelMutex_);
+    for (auto& l : tunnelListeners_) {
+        closesocket(l.listenSock);
+    }
+    tunnelListeners_.clear();
+    for (auto& kv : viewerTunnels_) {
+        closesocket(kv.second.sock);
+    }
+    viewerTunnels_.clear();
+}
+
+void NetworkEngine::viewerTunnelMultiplexerLoop() {
+    {
+        std::lock_guard<std::mutex> lk(tunnelMutex_);
+        for (const auto& r : tunnelRules_) {
+            if (r.active) {
+                SOCKET ls = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+                if (ls != INVALID_SOCKET) {
+                    u_long nonblock = 1;
+                    ioctlsocket(ls, FIONBIO, &nonblock);
+                    sockaddr_in addr{};
+                    addr.sin_family = AF_INET;
+                    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+                    addr.sin_port = htons(r.localPort);
+                    if (bind(ls, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0 &&
+                        listen(ls, 5) == 0) {
+                        tunnelListeners_.push_back({ r.ruleId, r.localPort, r.targetPort, ls });
+                    } else {
+                        closesocket(ls);
+                    }
+                }
+            }
+        }
+    }
+
+    std::vector<uint8_t> readBuf(16384);
+
+    while (viewerTunnelActive_.load() && running_.load() && viewerActive_.load()) {
+        fd_set readSet;
+        FD_ZERO(&readSet);
+        SOCKET maxSock = 0;
+
+        std::vector<ListenerState> currentListeners;
+        std::vector<ActiveTunnel> currentTunnels;
+        {
+            std::lock_guard<std::mutex> lk(tunnelMutex_);
+            currentListeners = tunnelListeners_;
+            for (const auto& kv : viewerTunnels_) {
+                currentTunnels.push_back(kv.second);
+            }
+        }
+
+        for (const auto& l : currentListeners) {
+            FD_SET(l.listenSock, &readSet);
+            if (l.listenSock > maxSock) maxSock = l.listenSock;
+        }
+        for (const auto& t : currentTunnels) {
+            FD_SET(t.sock, &readSet);
+            if (t.sock > maxSock) maxSock = t.sock;
+        }
+
+        timeval tv{ 0, 20000 };
+        int res = select(static_cast<int>(maxSock + 1), &readSet, nullptr, nullptr, &tv);
+        if (res <= 0) continue;
+
+        for (const auto& l : currentListeners) {
+            if (FD_ISSET(l.listenSock, &readSet)) {
+                sockaddr_in clientAddr{};
+                int addrLen = sizeof(clientAddr);
+                SOCKET cs = accept(l.listenSock, reinterpret_cast<sockaddr*>(&clientAddr), &addrLen);
+                if (cs != INVALID_SOCKET) {
+                    u_long nonblock = 1;
+                    ioctlsocket(cs, FIONBIO, &nonblock);
+
+                    uint32_t tid = 0;
+                    {
+                        std::lock_guard<std::mutex> lk(tunnelMutex_);
+                        tid = nextTunnelId_++;
+                        viewerTunnels_[tid] = { tid, l.ruleId, cs, l.targetPort };
+                    }
+
+                    TunnelOpenHeader toh{};
+                    toh.tunnelId = tid;
+                    toh.targetPort = l.targetPort;
+                    toh.flags = 0;
+                    ByteWriter w;
+                    w.writeBytes(&toh, sizeof(toh));
+                    sendViewerEncryptedPacket(PacketType::TUNNEL_OPEN, 0, w.buffer().data(), w.buffer().size());
+                }
+            }
+        }
+
+        std::vector<uint32_t> closedTunnels;
+        for (const auto& t : currentTunnels) {
+            if (FD_ISSET(t.sock, &readSet)) {
+                int n = recv(t.sock, reinterpret_cast<char*>(readBuf.data()), static_cast<int>(readBuf.size()), 0);
+                if (n > 0) {
+                    TunnelDataHeader tdh{};
+                    tdh.tunnelId = t.tunnelId;
+                    tdh.dataLen = static_cast<uint32_t>(n);
+                    ByteWriter w;
+                    w.writeBytes(&tdh, sizeof(tdh));
+                    w.writeBytes(readBuf.data(), n);
+                    sendViewerEncryptedPacket(PacketType::TUNNEL_DATA, 0, w.buffer().data(), w.buffer().size());
+
+                    std::lock_guard<std::mutex> lk(tunnelMutex_);
+                    for (auto& r : tunnelRules_) {
+                        if (r.ruleId == t.ruleId) {
+                            r.bytesTransferredOut += n;
+                            break;
+                        }
+                    }
+                } else {
+                    closedTunnels.push_back(t.tunnelId);
+                }
+            }
+        }
+
+        for (uint32_t tid : closedTunnels) {
+            TunnelCloseHeader tch{};
+            tch.tunnelId = tid;
+            tch.reasonCode = 0;
+            ByteWriter w;
+            w.writeBytes(&tch, sizeof(tch));
+            sendViewerEncryptedPacket(PacketType::TUNNEL_CLOSE, 0, w.buffer().data(), w.buffer().size());
+
+            std::lock_guard<std::mutex> lk(tunnelMutex_);
+            auto it = viewerTunnels_.find(tid);
+            if (it != viewerTunnels_.end()) {
+                closesocket(it->second.sock);
+                viewerTunnels_.erase(it);
+            }
+        }
+    }
+}
+
+void NetworkEngine::startHostTunnelProxy() {
+    stopHostTunnelProxy();
+    hostTunnelActive_.store(true);
+    hostTunnelThread_ = std::thread(&NetworkEngine::hostTunnelProxyLoop, this);
+}
+
+void NetworkEngine::stopHostTunnelProxy() {
+    hostTunnelActive_.store(false);
+    if (hostTunnelThread_.joinable()) {
+        hostTunnelThread_.join();
+    }
+    std::lock_guard<std::mutex> lk(tunnelMutex_);
+    for (auto& kv : hostTunnels_) {
+        closesocket(kv.second.sock);
+    }
+    hostTunnels_.clear();
+}
+
+void NetworkEngine::hostTunnelProxyLoop() {
+    std::vector<uint8_t> readBuf(16384);
+
+    while (hostTunnelActive_.load() && running_.load() && activeHostClientSock_.load() != ~uintptr_t(0)) {
+        fd_set readSet;
+        FD_ZERO(&readSet);
+        SOCKET maxSock = 0;
+
+        std::vector<ActiveTunnel> currentTunnels;
+        {
+            std::lock_guard<std::mutex> lk(tunnelMutex_);
+            for (const auto& kv : hostTunnels_) {
+                currentTunnels.push_back(kv.second);
+            }
+        }
+
+        if (currentTunnels.empty()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            continue;
+        }
+
+        for (const auto& t : currentTunnels) {
+            FD_SET(t.sock, &readSet);
+            if (t.sock > maxSock) maxSock = t.sock;
+        }
+
+        timeval tv{ 0, 20000 };
+        int res = select(static_cast<int>(maxSock + 1), &readSet, nullptr, nullptr, &tv);
+        if (res <= 0) continue;
+
+        std::vector<uint32_t> closedTunnels;
+        for (const auto& t : currentTunnels) {
+            if (FD_ISSET(t.sock, &readSet)) {
+                int n = recv(t.sock, reinterpret_cast<char*>(readBuf.data()), static_cast<int>(readBuf.size()), 0);
+                if (n > 0) {
+                    TunnelDataHeader tdh{};
+                    tdh.tunnelId = t.tunnelId;
+                    tdh.dataLen = static_cast<uint32_t>(n);
+                    ByteWriter w;
+                    w.writeBytes(&tdh, sizeof(tdh));
+                    w.writeBytes(readBuf.data(), n);
+                    sendHostEncryptedPacket(PacketType::TUNNEL_DATA, 0, w.buffer().data(), w.buffer().size());
+                } else {
+                    closedTunnels.push_back(t.tunnelId);
+                }
+            }
+        }
+
+        for (uint32_t tid : closedTunnels) {
+            TunnelCloseHeader tch{};
+            tch.tunnelId = tid;
+            tch.reasonCode = 0;
+            ByteWriter w;
+            w.writeBytes(&tch, sizeof(tch));
+            sendHostEncryptedPacket(PacketType::TUNNEL_CLOSE, 0, w.buffer().data(), w.buffer().size());
+
+            std::lock_guard<std::mutex> lk(tunnelMutex_);
+            auto it = hostTunnels_.find(tid);
+            if (it != hostTunnels_.end()) {
+                closesocket(it->second.sock);
+                hostTunnels_.erase(it);
+            }
+        }
+    }
 }
 
 } // namespace aerodesk

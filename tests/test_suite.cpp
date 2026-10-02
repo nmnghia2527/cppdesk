@@ -20,6 +20,7 @@
 #include <thread>
 #include <cassert>
 #include <cstring>
+#include <cmath>
 
 using namespace aerodesk;
 
@@ -867,31 +868,233 @@ void testNotificationSystemAndTray() {
     notifMgr.shutdown();
 }
 
+void testV210PowerFeaturesInheritance() {
+    std::cout << "Running testV210PowerFeaturesInheritance()...\n";
+
+    // 1. Verify Protocol Opcodes (0x17 - 0x1D)
+    TEST_ASSERT(static_cast<uint8_t>(PacketType::AUDIO_STREAM_CHUNK) == 0x17);
+    TEST_ASSERT(static_cast<uint8_t>(PacketType::PRIVACY_MODE_TOGGLE) == 0x18);
+    TEST_ASSERT(static_cast<uint8_t>(PacketType::TUNNEL_OPEN) == 0x19);
+    TEST_ASSERT(static_cast<uint8_t>(PacketType::TUNNEL_DATA) == 0x1A);
+    TEST_ASSERT(static_cast<uint8_t>(PacketType::TUNNEL_CLOSE) == 0x1B);
+    TEST_ASSERT(static_cast<uint8_t>(PacketType::TERMINAL_DATA) == 0x1C);
+    TEST_ASSERT(static_cast<uint8_t>(PacketType::WHITEBOARD_PACKET) == 0x1D);
+
+    // 2. Audio Stream Framing & Protocol Structures
+    {
+        AudioChunkHeader ach{};
+        ach.sampleRate = 48000;
+        ach.channels = 2;
+        ach.bitsPerSample = 16;
+        ach.isSilent = 0;
+        ach.sampleFrames = 960; // 20ms of audio
+        TEST_ASSERT(ach.sampleRate == 48000);
+        TEST_ASSERT(ach.channels == 2);
+        TEST_ASSERT(ach.bitsPerSample == 16);
+        TEST_ASSERT(ach.sampleFrames == 960);
+    }
+
+    // 3. Privacy Mode Payload Structure
+    {
+        PrivacyModePayload pmp{};
+        pmp.enable = 1;
+        pmp.acknowledge = 0;
+        ByteWriter pw;
+        pw.writeBytes(&pmp, sizeof(pmp));
+        TEST_ASSERT(pw.buffer().size() == sizeof(PrivacyModePayload));
+
+        ByteReader pr(pw.buffer());
+        PrivacyModePayload decoded{};
+        pr.readBytes(&decoded, sizeof(decoded));
+        TEST_ASSERT(decoded.enable == 1);
+        TEST_ASSERT(decoded.acknowledge == 0);
+    }
+
+    // 4. TCP Tunneling Protocol Headers
+    {
+        TunnelOpenHeader toh{};
+        toh.tunnelId = 42;
+        toh.targetPort = 3389;
+        toh.flags = 0;
+
+        ByteWriter ow;
+        ow.writeBytes(&toh, sizeof(toh));
+        TEST_ASSERT(ow.buffer().size() == sizeof(TunnelOpenHeader));
+
+        ByteReader orr(ow.buffer());
+        TunnelOpenHeader decOpen{};
+        orr.readBytes(&decOpen, sizeof(decOpen));
+        TEST_ASSERT(decOpen.tunnelId == 42);
+        TEST_ASSERT(decOpen.targetPort == 3389);
+
+        TunnelDataHeader tdh{};
+        tdh.tunnelId = 42;
+        tdh.dataLen = 128;
+        ByteWriter dw;
+        dw.writeBytes(&tdh, sizeof(tdh));
+        TEST_ASSERT(dw.buffer().size() == sizeof(TunnelDataHeader));
+
+        TunnelCloseHeader tch{};
+        tch.tunnelId = 42;
+        tch.reasonCode = 0;
+        ByteWriter cw;
+        cw.writeBytes(&tch, sizeof(tch));
+        TEST_ASSERT(cw.buffer().size() == sizeof(TunnelCloseHeader));
+    }
+
+    // 5. Remote Terminal Protocol Headers & Enums
+    {
+        TerminalDataHeader tdh{};
+        tdh.streamKind = static_cast<uint8_t>(TerminalStreamKind::StdinInput);
+        std::string testCmd = "echo Hello World";
+        tdh.textLen = static_cast<uint32_t>(testCmd.size());
+
+        ByteWriter tw;
+        tw.writeBytes(&tdh, sizeof(tdh));
+        tw.writeBytes(testCmd.data(), testCmd.size());
+        TEST_ASSERT(tw.buffer().size() == sizeof(TerminalDataHeader) + testCmd.size());
+
+        ByteReader tr(tw.buffer());
+        TerminalDataHeader decTh{};
+        tr.readBytes(&decTh, sizeof(decTh));
+        TEST_ASSERT(decTh.streamKind == static_cast<uint8_t>(TerminalStreamKind::StdinInput));
+        TEST_ASSERT(decTh.textLen == testCmd.size());
+        std::string decCmd(reinterpret_cast<const char*>(tr.currentPtr()), decTh.textLen);
+        TEST_ASSERT(decCmd == testCmd);
+    }
+
+    // 6. Address Book 7-field INI Persistence & Backward Compatibility
+    {
+        IdentityManager customMgr(77);
+        customMgr.loadOrCreate();
+        customMgr.addOrUpdateRecentSession(400500600, "TestHost", "10.0.0.1", "Dev Machine", "Servers", "SSH key required");
+        auto sessions = customMgr.recentSessions();
+        TEST_ASSERT(!sessions.empty());
+        bool found = false;
+        for (const auto& s : sessions) {
+            if (s.deskId == 400500600) {
+                found = true;
+                TEST_ASSERT(s.alias == "Dev Machine");
+                TEST_ASSERT(s.tag == "Servers");
+                TEST_ASSERT(s.notes == "SSH key required");
+                break;
+            }
+        }
+        TEST_ASSERT(found);
+
+        // Update metadata
+        customMgr.updateRecentSessionMetadata(400500600, "Updated Machine", "Personal", "Updated remarks");
+        sessions = customMgr.recentSessions();
+        for (const auto& s : sessions) {
+            if (s.deskId == 400500600) {
+                TEST_ASSERT(s.alias == "Updated Machine");
+                TEST_ASSERT(s.tag == "Personal");
+                TEST_ASSERT(s.notes == "Updated remarks");
+                break;
+            }
+        }
+
+        // Clean up
+        customMgr.removeRecentSession(400500600);
+        std::error_code ec;
+        std::filesystem::remove(customMgr.configFilePath(), ec);
+    }
+
+    // 7. Whiteboard Manager Serialization, Geometry & Laser Decay
+    {
+        WhiteboardManager wbMgr;
+        wbMgr.setActiveTool(WhiteboardTool::Pen);
+        wbMgr.setActiveColor(0xFF007AFF); // Blue
+        wbMgr.setActiveThickness(4.0f);
+        TEST_ASSERT(wbMgr.activeTool() == WhiteboardTool::Pen);
+        TEST_ASSERT(wbMgr.activeColor() == 0xFF007AFF);
+        TEST_ASSERT(wbMgr.activeThickness() == 4.0f);
+
+        // Draw a stroke
+        wbMgr.startStroke(0.1f, 0.2f);
+        wbMgr.addStrokePoint(0.15f, 0.25f);
+        wbMgr.addStrokePoint(0.2f, 0.3f);
+        AnnotationStroke s1 = wbMgr.finishStroke();
+        TEST_ASSERT(s1.points.size() == 3);
+        TEST_ASSERT(s1.tool == WhiteboardTool::Pen);
+        TEST_ASSERT(s1.argbColor == 0xFF007AFF);
+        TEST_ASSERT(s1.thickness == 4.0f);
+
+        // Serialize and Deserialize Stroke
+        auto strokeBytes = WhiteboardManager::serializeStroke(s1);
+        TEST_ASSERT(!strokeBytes.empty());
+
+        AnnotationStroke sDec{};
+        TEST_ASSERT(WhiteboardManager::deserializeStroke(strokeBytes.data(), strokeBytes.size(), sDec));
+        TEST_ASSERT(sDec.strokeId == s1.strokeId);
+        TEST_ASSERT(sDec.tool == WhiteboardTool::Pen);
+        TEST_ASSERT(sDec.argbColor == 0xFF007AFF);
+        TEST_ASSERT(sDec.points.size() == 3);
+        TEST_ASSERT(std::fabs(sDec.points[0].x - 0.1f) < 0.001f);
+        TEST_ASSERT(std::fabs(sDec.points[0].y - 0.2f) < 0.001f);
+        TEST_ASSERT(std::fabs(sDec.points[2].x - 0.2f) < 0.001f);
+        TEST_ASSERT(std::fabs(sDec.points[2].y - 0.3f) < 0.001f);
+
+        // Apply remote stroke to peer manager
+        WhiteboardManager peerWb;
+        peerWb.applyRemoteStroke(sDec);
+        auto peerStrokes = peerWb.snapshotStrokes();
+        TEST_ASSERT(peerStrokes.size() == 1);
+        TEST_ASSERT(peerStrokes[0].strokeId == s1.strokeId);
+
+        // Clear packet serialization & remote application
+        auto clearBytes = WhiteboardManager::serializeClearPacket();
+        TEST_ASSERT(!clearBytes.empty());
+        AnnotationStroke clearStroke{};
+        TEST_ASSERT(WhiteboardManager::deserializeStroke(clearBytes.data(), clearBytes.size(), clearStroke));
+        TEST_ASSERT(clearStroke.tool == WhiteboardTool::ClearAll);
+        peerWb.applyRemoteStroke(clearStroke);
+        TEST_ASSERT(peerWb.snapshotStrokes().empty());
+
+        // Laser pointer coordinate & decay
+        wbMgr.setLaserPointer(0.45f, 0.55f);
+        float lx = 0.0f, ly = 0.0f, lalpha = 0.0f;
+        TEST_ASSERT(wbMgr.getLaserPointer(lx, ly, lalpha));
+        TEST_ASSERT(std::fabs(lx - 0.45f) < 0.001f);
+        TEST_ASSERT(std::fabs(ly - 0.55f) < 0.001f);
+        TEST_ASSERT(lalpha > 0.8f && lalpha <= 1.0f);
+    }
+}
+
 } // namespace
 
 int main() {
-    CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    try {
+        CoInitializeEx(nullptr, COINIT_MULTITHREADED);
 
-    std::cout << "=========================================================\n";
-    std::cout << "   AeroDesk Automated Verification & Integration Suite   \n";
-    std::cout << "=========================================================\n";
+        std::cout << "=========================================================\n" << std::flush;
+        std::cout << "   AeroDesk Automated Verification & Integration Suite   \n" << std::flush;
+        std::cout << "=========================================================\n" << std::flush;
 
-    testDeskIdAndCrypto();
-    testTileCodecRoundTrip();
-    testScreenCapturer();
-    testEndToEndSessionAndFileTransfer();
-    testFileTransferEdgeCasesAndFavorites();
-    testAppSettingsAndAdaptiveFps();
-    testAvx2SimdAssemblyKernels();
-    testEcdhAndAesGcmEngine();
-    testV201FeaturesAndResilience();
-    testNotificationSystemAndTray();
+        testDeskIdAndCrypto(); std::cout << "Test 1 done\n" << std::flush;
+        testTileCodecRoundTrip(); std::cout << "Test 2 done\n" << std::flush;
+        testScreenCapturer(); std::cout << "Test 3 done\n" << std::flush;
+        testEndToEndSessionAndFileTransfer(); std::cout << "Test 4 done\n" << std::flush;
+        testFileTransferEdgeCasesAndFavorites(); std::cout << "Test 5 done\n" << std::flush;
+        testAppSettingsAndAdaptiveFps(); std::cout << "Test 6 done\n" << std::flush;
+        testAvx2SimdAssemblyKernels(); std::cout << "Test 7 done\n" << std::flush;
+        testEcdhAndAesGcmEngine(); std::cout << "Test 8 done\n" << std::flush;
+        testV201FeaturesAndResilience(); std::cout << "Test 9 done\n" << std::flush;
+        testNotificationSystemAndTray(); std::cout << "Test 10 done\n" << std::flush;
+        testV210PowerFeaturesInheritance(); std::cout << "Test 11 done\n" << std::flush;
 
-    std::cout << "---------------------------------------------------------\n";
-    std::cout << "Assertions Passed: " << g_passed << " | Failed: " << g_failed << "\n";
-    std::cout << "=========================================================\n";
+        std::cout << "---------------------------------------------------------\n";
+        std::cout << "Assertions Passed: " << g_passed << " | Failed: " << g_failed << "\n";
+        std::cout << "=========================================================\n";
 
-    CoUninitialize();
-    return (g_failed == 0) ? 0 : 1;
+        CoUninitialize();
+        return (g_failed == 0) ? 0 : 1;
+    } catch (const std::exception& ex) {
+        std::cerr << "CAUGHT EXCEPTION IN MAIN: " << ex.what() << std::endl;
+        return 2;
+    } catch (...) {
+        std::cerr << "CAUGHT UNKNOWN EXCEPTION IN MAIN" << std::endl;
+        return 3;
+    }
 }
 

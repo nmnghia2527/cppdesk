@@ -416,21 +416,33 @@ bool IdentityManager::loadOrCreate() {
             } else if (key == "minimize_to_tray") {
                 settings_.minimizeToTray = (val == "1" || val == "true");
             } else if (key == "recent") {
-                // Format: deskId|hostname|address or deskId|hostname|address|fav
-                auto p1 = val.find('|');
-                auto p2 = (p1 != std::string::npos) ? val.find('|', p1 + 1) : std::string::npos;
-                if (p1 != std::string::npos && p2 != std::string::npos) {
-                    auto p3 = val.find('|', p2 + 1);
-                    RecentSessionEntry entry;
-                    try { entry.deskId = std::stoull(val.substr(0, p1)); } catch (...) {}
-                    entry.hostname = val.substr(p1 + 1, p2 - p1 - 1);
-                    if (p3 != std::string::npos) {
-                        entry.address = val.substr(p2 + 1, p3 - p2 - 1);
-                        std::string favStr = val.substr(p3 + 1);
-                        entry.isFavorite = (favStr == "1" || favStr == "true");
-                    } else {
-                        entry.address = val.substr(p2 + 1);
+                // Backward-compatible pipe format:
+                // 3 fields: deskId|hostname|address
+                // 4 fields: deskId|hostname|address|fav
+                // 7 fields: deskId|hostname|address|fav|alias|tag|notes
+                std::vector<std::string> parts;
+                size_t start = 0;
+                while (start < val.size()) {
+                    auto bar = val.find('|', start);
+                    if (bar == std::string::npos) {
+                        parts.push_back(val.substr(start));
+                        break;
                     }
+                    parts.push_back(val.substr(start, bar - start));
+                    start = bar + 1;
+                }
+                if (parts.size() >= 3) {
+                    RecentSessionEntry entry;
+                    try { entry.deskId = std::stoull(parts[0]); } catch (...) {}
+                    entry.hostname = parts[1];
+                    entry.address = parts[2];
+                    if (parts.size() >= 4) {
+                        entry.isFavorite = (parts[3] == "1" || parts[3] == "true");
+                    }
+                    if (parts.size() >= 5) entry.alias = parts[4];
+                    if (parts.size() >= 6) entry.tag = parts[5];
+                    if (parts.size() >= 7) entry.notes = parts[6];
+
                     if (entry.deskId > 0 || !entry.address.empty()) {
                         recentSessions_.push_back(entry);
                     }
@@ -494,7 +506,8 @@ bool IdentityManager::save() const {
     out << "notification_sound=" << (settings_.enableNotificationSounds ? "1" : "0") << "\n";
     out << "minimize_to_tray=" << (settings_.minimizeToTray ? "1" : "0") << "\n";
     for (const auto& r : recentSessions_) {
-        out << "recent=" << r.deskId << "|" << r.hostname << "|" << r.address << "|" << (r.isFavorite ? "1" : "0") << "\n";
+        out << "recent=" << r.deskId << "|" << r.hostname << "|" << r.address << "|" << (r.isFavorite ? "1" : "0")
+            << "|" << r.alias << "|" << r.tag << "|" << r.notes << "\n";
     }
     return true;
 }
@@ -557,13 +570,27 @@ void IdentityManager::setRelayServerAddress(const std::string& addr) {
     save();
 }
 
-void IdentityManager::addOrUpdateRecentSession(uint64_t id, const std::string& host, const std::string& addr) {
+void IdentityManager::addOrUpdateRecentSession(uint64_t id, const std::string& host, const std::string& addr,
+                                             const std::string& alias, const std::string& tag, const std::string& notes) {
     bool wasFav = false;
+    std::string existingAlias = alias;
+    std::string existingTag = tag;
+    std::string existingNotes = notes;
+
+    for (const auto& e : recentSessions_) {
+        bool match = (id > 0 && e.deskId == id) || (!addr.empty() && e.address == addr);
+        if (match) {
+            if (e.isFavorite) wasFav = true;
+            if (existingAlias.empty()) existingAlias = e.alias;
+            if (existingTag.empty()) existingTag = e.tag;
+            if (existingNotes.empty()) existingNotes = e.notes;
+            break;
+        }
+    }
+
     recentSessions_.erase(
         std::remove_if(recentSessions_.begin(), recentSessions_.end(), [&](const RecentSessionEntry& e) {
-            bool match = (id > 0 && e.deskId == id) || (!addr.empty() && e.address == addr);
-            if (match && e.isFavorite) wasFav = true;
-            return match;
+            return (id > 0 && e.deskId == id) || (!addr.empty() && e.address == addr);
         }),
         recentSessions_.end()
     );
@@ -572,16 +599,31 @@ void IdentityManager::addOrUpdateRecentSession(uint64_t id, const std::string& h
     entry.hostname = host.empty() ? CryptoUtils::formatDeskId(id) : host;
     entry.address = addr;
     entry.isFavorite = wasFav;
+    entry.alias = existingAlias;
+    entry.tag = existingTag;
+    entry.notes = existingNotes;
     recentSessions_.insert(recentSessions_.begin(), entry);
 
     std::stable_sort(recentSessions_.begin(), recentSessions_.end(), [](const RecentSessionEntry& a, const RecentSessionEntry& b) {
         return a.isFavorite && !b.isFavorite;
     });
 
-    if (recentSessions_.size() > 10) {
-        recentSessions_.resize(10);
+    if (recentSessions_.size() > 20) {
+        recentSessions_.resize(20);
     }
     save();
+}
+
+void IdentityManager::updateRecentSessionMetadata(uint64_t id, const std::string& alias, const std::string& tag, const std::string& notes) {
+    for (auto& e : recentSessions_) {
+        if (e.deskId == id) {
+            e.alias = alias;
+            e.tag = tag;
+            e.notes = notes;
+            save();
+            break;
+        }
+    }
 }
 
 void IdentityManager::toggleFavoriteSession(uint64_t id) {
