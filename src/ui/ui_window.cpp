@@ -2244,7 +2244,7 @@ void AeroDeskWindow::drawSettingsView(const UiRect& bounds, float alpha) {
     ly = qualBox.bottom + 14.0f;
 
     // 4. Session Display
-    UiRect ovBox = { lx, ly, lrx, leftCard.bottom - 20.0f };
+    UiRect ovBox = { lx, ly, lrx, ly + 96.0f };
     fillRoundRect(ovBox, 12.0f, COL_BG_SUBTLE);
     strokeRoundRect(ovBox, 12.0f, COL_BORDER);
 
@@ -2264,6 +2264,23 @@ void AeroDeskWindow::drawSettingsView(const UiRect& bounds, float alpha) {
                          ns.showSessionHud = !ns.showSessionHud;
                          identity_.updateSettings(ns);
                      });
+
+    ly = ovBox.bottom + 12.0f;
+
+    // 5. About & Credits
+    if (leftCard.bottom - 20.0f > ly + 36.0f) {
+        UiRect aboutBox = { lx, ly, lrx, leftCard.bottom - 20.0f };
+        fillRoundRect(aboutBox, 12.0f, COL_BG_SUBTLE);
+        strokeRoundRect(aboutBox, 12.0f, COL_BORDER);
+
+        drawText("ABOUT & CREDITS",
+                 { aboutBox.left + 16.0f, aboutBox.top + 8.0f, aboutBox.right - 16.0f, aboutBox.top + 24.0f },
+                 fmtSmall_, COL_TEXT_ACCENT);
+
+        drawText("AeroDesk v2.1.0 • C++20 & x86-64 AVX2 Assembly\nInspired by RustDesk (Open Source Remote Desktop)",
+                 { aboutBox.left + 16.0f, aboutBox.top + 28.0f, aboutBox.right - 16.0f, aboutBox.bottom - 6.0f },
+                 fmtSmall_, COL_TEXT_SECONDARY);
+    }
 
     // ==================== RIGHT COLUMN: ACCESS & NETWORK ====================
     drawCardSurface(rightCard, 16.0f, alpha);

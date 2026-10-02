@@ -143,6 +143,17 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1 -Test -Benchmark
 
 ---
 
+## Acknowledgments & Credits
+
+AeroDesk proudly draws architectural and feature inspiration from [**RustDesk**](https://github.com/rustdesk/rustdesk), an outstanding open-source remote desktop software. We express our sincere appreciation to the RustDesk project, its maintainers, and community for pioneering open-source remote desktop capabilities.
+
+### Copyright & Licensing Notice
+- **Independent Clean-Room Implementation**: AeroDesk is an independent software project developed in native C++20 and x86-64 AVX2 SIMD Assembly, using standard Windows operating system APIs (Win32, Direct2D, DirectWrite, DXGI Desktop Duplication, WASAPI Audio, and Windows CNG Cryptography).
+- **No Shared Code or Binaries**: AeroDesk does **not** copy, bundle, link against, or distribute any source code, libraries, or binaries from the RustDesk codebase (which is licensed under the GNU AGPL-3.0). Consequently, AeroDesk does not trigger AGPL copyleft obligations and is distributed independently under its own permissive [MIT License](LICENSE).
+- **Trademark Disclaimer**: "RustDesk" is a trademark of its respective owners. AeroDesk is an independent project and is not affiliated with, sponsored by, or endorsed by Pursuit Technology Ltd. or the RustDesk project.
+
+---
+
 ## License
 
 Licensed under the [MIT License](LICENSE). Copyright (c) 2026 oocs07.
