@@ -2077,12 +2077,64 @@ void CppDeskWindow::drawSettingsView(const UiRect& bounds, float alpha) {
     float staggerL = (1.0f - sL) * 12.0f;
     float staggerR = (1.0f - sR) * 14.0f;
 
-    float pad = 24.0f;
+    float pad = 20.0f;
+
+    // ---------------- TOP HERO BANNER: SOFTWARE UPDATE & VERSION (v3.0.0) ----------------
+    UiRect updateBanner = UiRect{ bounds.left + pad, bounds.top + pad, bounds.right - pad, bounds.top + pad + 66.0f }.offset(0.0f, staggerL);
+    drawCardShadow(updateBanner, 14.0f, alpha);
+    drawCardSurface(updateBanner, 14.0f, alpha);
+
+    float bPad = 16.0f;
+    // App Emblem "CD"
+    UiRect iconBadge = { updateBanner.left + bPad, updateBanner.top + 13.0f, updateBanner.left + bPad + 40.0f, updateBanner.top + 53.0f };
+    fillRoundRect(iconBadge, 10.0f, COL_PRIMARY_ACCENT);
+    drawText("CD", iconBadge, fmtSubheading_, COL_TEXT_ON_ACCENT, DWRITE_TEXT_ALIGNMENT_CENTER);
+
+    // App Name & Architecture
+    float infoX = iconBadge.right + 14.0f;
+    UiRect titleRect = { infoX, updateBanner.top + 12.0f, updateBanner.right - 340.0f, updateBanner.top + 34.0f };
+    drawText("CppDesk v" + std::string(CPP_DESK_VERSION) + "  •  C++20 & AVX2 Native Architecture",
+             titleRect, fmtSubheading_, COL_TEXT_PRIMARY, DWRITE_TEXT_ALIGNMENT_LEADING);
+
+    // Status Indicator Dot & Live Text
+    float dotX = infoX + 5.0f;
+    float dotY = updateBanner.top + 45.0f;
+    D2D1_COLOR_F statusDotCol = latestUpdateInfo_.updateRequired ? COL_DANGER : (isCheckingUpdates_ ? COL_WARNING : COL_SUCCESS);
+    drawPulseDot(dotX, dotY, 3.8f, statusDotCol);
+
+    UiRect statusTextRect = { dotX + 11.0f, updateBanner.top + 35.0f, updateBanner.right - 340.0f, updateBanner.top + 55.0f };
+    D2D1_COLOR_F statusTxtCol = latestUpdateInfo_.updateRequired ? COL_DANGER : COL_TEXT_SECONDARY;
+    drawText(updateStatusText_, statusTextRect, fmtSmall_, statusTxtCol, DWRITE_TEXT_ALIGNMENT_LEADING);
+
+    // Buttons on Right Side of Top Banner
+    float btnH = 34.0f;
+    float btnY = updateBanner.top + (updateBanner.height() - btnH) * 0.5f;
+
+    // "Check for update" Button (exact text requested by user)
+    float chkW = 150.0f;
+    UiRect chkBtn = { updateBanner.right - bPad - chkW, btnY, updateBanner.right - bPad, btnY + btnH };
+    drawButton("sett_check_updates_top", chkBtn, isCheckingUpdates_ ? "Checking..." : "Check for update",
+               COL_PRIMARY_ACCENT, COL_PRIMARY_ACCENT_HV, COL_TEXT_ON_ACCENT,
+               8.0f, [this]() {
+                   triggerUpdateCheck(true);
+               }, fmtSmall_);
+
+    // "Release Notes" Link Button
+    float relW = 120.0f;
+    UiRect relBtn = { chkBtn.left - 10.0f - relW, btnY, chkBtn.left - 10.0f, btnY + btnH };
+    drawButton("sett_view_release_top", relBtn, "Release Notes",
+               COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY,
+               8.0f, [this]() {
+                   ShellExecuteA(nullptr, "open", "https://github.com/oocs07/Remote-Desktop/releases/latest", nullptr, nullptr, SW_SHOWNORMAL);
+               }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
+
+    // ---------------- TWO-COLUMN SETTINGS BODY ----------------
     float totalW = bounds.width() - pad * 2.0f;
     float colW = (totalW - pad) * 0.5f;
+    float cardTop = updateBanner.bottom + 12.0f;
 
-    UiRect leftCard  = UiRect{ bounds.left + pad, bounds.top + pad, bounds.left + pad + colW, bounds.bottom - pad }.offset(0.0f, staggerL);
-    UiRect rightCard = UiRect{ leftCard.right + pad, bounds.top + pad, bounds.right - pad, bounds.bottom - pad }.offset(0.0f, staggerR);
+    UiRect leftCard  = UiRect{ bounds.left + pad, cardTop, bounds.left + pad + colW, bounds.bottom - pad }.offset(0.0f, staggerL);
+    UiRect rightCard = UiRect{ leftCard.right + pad, cardTop, bounds.right - pad, bounds.bottom - pad }.offset(0.0f, staggerR);
 
     const AppSettings s = identity_.settings();
 
@@ -2091,25 +2143,25 @@ void CppDeskWindow::drawSettingsView(const UiRect& bounds, float alpha) {
 
     float lx = leftCard.left + 24.0f;
     float lrx = leftCard.right - 24.0f;
-    float ly = leftCard.top + 20.0f;
+    float ly = leftCard.top + 16.0f;
     float innerW = lrx - lx;
 
-    drawText("Appearance & Display", { lx, ly, lrx, ly + 26.0f }, fmtHeading_, COL_TEXT_PRIMARY);
+    drawText("Appearance & Display", { lx, ly, lrx, ly + 24.0f }, fmtHeading_, COL_TEXT_PRIMARY);
     ly += 25.0f;
-    drawText("Theme, frame rate, and display preferences.",
-             { lx, ly, lrx, ly + 18.0f }, fmtSmall_, COL_TEXT_SECONDARY);
-    ly += 26.0f;
+    drawText("Customize theme, frame rate, and display preferences.",
+             { lx, ly, lrx, ly + 16.0f }, fmtSmall_, COL_TEXT_SECONDARY);
+    ly += 22.0f;
 
     // 1. Theme Segmented Box
-    UiRect themeBox = { lx, ly, lrx, ly + 82.0f };
+    UiRect themeBox = { lx, ly, lrx, ly + 64.0f };
     fillRoundRect(themeBox, 12.0f, COL_BG_SUBTLE);
     strokeRoundRect(themeBox, 12.0f, COL_BORDER);
 
-    drawText("THEME", { themeBox.left + 16.0f, themeBox.top + 8.0f, themeBox.right - 16.0f, themeBox.top + 24.0f },
+    drawText("THEME", { themeBox.left + 16.0f, themeBox.top + 8.0f, themeBox.right - 16.0f, themeBox.top + 22.0f },
              fmtSmall_, COL_TEXT_ACCENT);
     float halfBtnW = (innerW - 32.0f - 10.0f) * 0.5f;
-    UiRect lightBtn = { themeBox.left + 16.0f, themeBox.top + 32.0f, themeBox.left + 16.0f + halfBtnW, themeBox.bottom - 10.0f };
-    UiRect darkBtn  = { lightBtn.right + 10.0f, themeBox.top + 32.0f, themeBox.right - 16.0f, themeBox.bottom - 10.0f };
+    UiRect lightBtn = { themeBox.left + 16.0f, themeBox.top + 26.0f, themeBox.left + 16.0f + halfBtnW, themeBox.top + 56.0f };
+    UiRect darkBtn  = { lightBtn.right + 10.0f, themeBox.top + 26.0f, themeBox.right - 16.0f, themeBox.top + 56.0f };
 
     drawButton("sett_theme_light", lightBtn, "Light",
                !s.darkTheme ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
@@ -2133,22 +2185,22 @@ void CppDeskWindow::drawSettingsView(const UiRect& bounds, float alpha) {
                    applyWindowThemeAttribute();
                }, fmtSmall_, !s.darkTheme, COL_BORDER, s.darkTheme ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
 
-    ly = themeBox.bottom + 14.0f;
+    ly = themeBox.bottom + 10.0f;
 
     // 2. Frame Rate
-    UiRect fpsBox = { lx, ly, lrx, ly + 118.0f };
+    UiRect fpsBox = { lx, ly, lrx, ly + 106.0f };
     fillRoundRect(fpsBox, 12.0f, COL_BG_SUBTLE);
     strokeRoundRect(fpsBox, 12.0f, COL_BORDER);
 
     drawText("FRAME RATE",
-             { fpsBox.left + 16.0f, fpsBox.top + 8.0f, fpsBox.right - 16.0f, fpsBox.top + 24.0f },
+             { fpsBox.left + 16.0f, fpsBox.top + 8.0f, fpsBox.right - 16.0f, fpsBox.top + 22.0f },
              fmtSmall_, COL_TEXT_ACCENT);
 
     float thirdW = (innerW - 32.0f - 16.0f) / 3.0f;
     uint8_t curFps = clampTargetFps(s.targetFps);
-    UiRect fps15Btn = { fpsBox.left + 16.0f, fpsBox.top + 30.0f, fpsBox.left + 16.0f + thirdW, fpsBox.top + 66.0f };
-    UiRect fps30Btn = { fps15Btn.right + 8.0f, fpsBox.top + 30.0f, fps15Btn.right + 8.0f + thirdW, fpsBox.top + 66.0f };
-    UiRect fps60Btn = { fps30Btn.right + 8.0f, fpsBox.top + 30.0f, fpsBox.right - 16.0f, fpsBox.top + 66.0f };
+    UiRect fps15Btn = { fpsBox.left + 16.0f, fpsBox.top + 26.0f, fpsBox.left + 16.0f + thirdW, fpsBox.top + 58.0f };
+    UiRect fps30Btn = { fps15Btn.right + 8.0f, fpsBox.top + 26.0f, fps15Btn.right + 8.0f + thirdW, fpsBox.top + 58.0f };
+    UiRect fps60Btn = { fps30Btn.right + 8.0f, fpsBox.top + 26.0f, fpsBox.right - 16.0f, fpsBox.top + 58.0f };
 
     auto setFpsAction = [this](uint8_t fpsVal) {
         AppSettings ns = identity_.settings();
@@ -2178,7 +2230,7 @@ void CppDeskWindow::drawSettingsView(const UiRect& bounds, float alpha) {
                8.0f, [setFpsAction]() { setFpsAction(60); }, fmtSmall_, curFps != 60, COL_BORDER,
                (curFps == 60) ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
 
-    drawToggleSwitch("sett_adaptive_fps", { fpsBox.left + 16.0f, fpsBox.top + 78.0f, fpsBox.right - 16.0f, fpsBox.top + 106.0f },
+    drawToggleSwitch("sett_adaptive_fps", { fpsBox.left + 16.0f, fpsBox.top + 68.0f, fpsBox.right - 16.0f, fpsBox.top + 98.0f },
                      s.adaptiveFps, "Adjust automatically on slow connections", [this]() {
                          AppSettings ns = identity_.settings();
                          ns.adaptiveFps = !ns.adaptiveFps;
@@ -2186,20 +2238,20 @@ void CppDeskWindow::drawSettingsView(const UiRect& bounds, float alpha) {
                          network_.setSessionFpsConfig(ns.targetFps, ns.adaptiveFps);
                      });
 
-    ly = fpsBox.bottom + 14.0f;
+    ly = fpsBox.bottom + 10.0f;
 
     // 3. Quality & Scaling
-    UiRect qualBox = { lx, ly, lrx, ly + 124.0f };
+    UiRect qualBox = { lx, ly, lrx, ly + 114.0f };
     fillRoundRect(qualBox, 12.0f, COL_BG_SUBTLE);
     strokeRoundRect(qualBox, 12.0f, COL_BORDER);
 
-    drawText("QUALITY & SCALING", { qualBox.left + 16.0f, qualBox.top + 8.0f, qualBox.right - 16.0f, qualBox.top + 24.0f },
+    drawText("QUALITY & SCALING", { qualBox.left + 16.0f, qualBox.top + 8.0f, qualBox.right - 16.0f, qualBox.top + 22.0f },
              fmtSmall_, COL_TEXT_ACCENT);
 
     QualityPreset defQ = s.defaultQuality;
-    UiRect qUltraBtn = { qualBox.left + 16.0f, qualBox.top + 28.0f, qualBox.left + 16.0f + thirdW, qualBox.top + 62.0f };
-    UiRect qBalBtn   = { qUltraBtn.right + 8.0f, qualBox.top + 28.0f, qUltraBtn.right + 8.0f + thirdW, qualBox.top + 62.0f };
-    UiRect qFastBtn  = { qBalBtn.right + 8.0f, qualBox.top + 28.0f, qualBox.right - 16.0f, qualBox.top + 62.0f };
+    UiRect qUltraBtn = { qualBox.left + 16.0f, qualBox.top + 26.0f, qualBox.left + 16.0f + thirdW, qualBox.top + 58.0f };
+    UiRect qBalBtn   = { qUltraBtn.right + 8.0f, qualBox.top + 26.0f, qUltraBtn.right + 8.0f + thirdW, qualBox.top + 58.0f };
+    UiRect qFastBtn  = { qBalBtn.right + 8.0f, qualBox.top + 26.0f, qualBox.right - 16.0f, qualBox.top + 58.0f };
 
     auto setQualAction = [this](QualityPreset qp) {
         AppSettings ns = identity_.settings();
@@ -2233,9 +2285,9 @@ void CppDeskWindow::drawSettingsView(const UiRect& bounds, float alpha) {
                (defQ == QualityPreset::LowBandwidth) ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
 
     uint8_t defScale = s.defaultScaleMode;
-    UiRect scFitBtn  = { qualBox.left + 16.0f, qualBox.top + 72.0f, qualBox.left + 16.0f + thirdW, qualBox.top + 106.0f };
-    UiRect scStrBtn  = { scFitBtn.right + 8.0f, qualBox.top + 72.0f, scFitBtn.right + 8.0f + thirdW, qualBox.top + 106.0f };
-    UiRect scOrigBtn = { scStrBtn.right + 8.0f, qualBox.top + 72.0f, qualBox.right - 16.0f, qualBox.top + 106.0f };
+    UiRect scFitBtn  = { qualBox.left + 16.0f, qualBox.top + 68.0f, qualBox.left + 16.0f + thirdW, qualBox.top + 100.0f };
+    UiRect scStrBtn  = { scFitBtn.right + 8.0f, qualBox.top + 68.0f, scFitBtn.right + 8.0f + thirdW, qualBox.top + 100.0f };
+    UiRect scOrigBtn = { scStrBtn.right + 8.0f, qualBox.top + 68.0f, qualBox.right - 16.0f, qualBox.top + 100.0f };
 
     auto setScaleAction = [this](uint8_t scMode) {
         AppSettings ns = identity_.settings();
@@ -2265,59 +2317,45 @@ void CppDeskWindow::drawSettingsView(const UiRect& bounds, float alpha) {
                8.0f, [setScaleAction]() { setScaleAction(2); }, fmtSmall_, defScale != 2, COL_BORDER,
                (defScale == 2) ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
 
-    ly = qualBox.bottom + 14.0f;
+    ly = qualBox.bottom + 10.0f;
 
     // 4. Session Display
-    UiRect ovBox = { lx, ly, lrx, ly + 96.0f };
+    UiRect ovBox = { lx, ly, lrx, ly + 86.0f };
     fillRoundRect(ovBox, 12.0f, COL_BG_SUBTLE);
     strokeRoundRect(ovBox, 12.0f, COL_BORDER);
 
-    drawText("SESSION DISPLAY", { ovBox.left + 16.0f, ovBox.top + 8.0f, ovBox.right - 16.0f, ovBox.top + 24.0f },
+    drawText("SESSION DISPLAY", { ovBox.left + 16.0f, ovBox.top + 8.0f, ovBox.right - 16.0f, ovBox.top + 22.0f },
              fmtSmall_, COL_TEXT_ACCENT);
 
-    drawToggleSwitch("sett_show_cursor", { ovBox.left + 16.0f, ovBox.top + 30.0f, ovBox.right - 16.0f, ovBox.top + 56.0f },
+    drawToggleSwitch("sett_show_cursor", { ovBox.left + 16.0f, ovBox.top + 26.0f, ovBox.right - 16.0f, ovBox.top + 52.0f },
                      s.showRemoteCursor, "Show remote cursor", [this]() {
                          AppSettings ns = identity_.settings();
                          ns.showRemoteCursor = !ns.showRemoteCursor;
                          identity_.updateSettings(ns);
                      });
 
-    drawToggleSwitch("sett_show_hud", { ovBox.left + 16.0f, ovBox.top + 62.0f, ovBox.right - 16.0f, ovBox.top + 88.0f },
+    drawToggleSwitch("sett_show_hud", { ovBox.left + 16.0f, ovBox.top + 54.0f, ovBox.right - 16.0f, ovBox.top + 80.0f },
                      s.showSessionHud, "Show frame rate in session bar", [this]() {
                          AppSettings ns = identity_.settings();
                          ns.showSessionHud = !ns.showSessionHud;
                          identity_.updateSettings(ns);
                      });
 
-    ly = ovBox.bottom + 12.0f;
+    ly = ovBox.bottom + 10.0f;
 
-    // 5. About, Credits & Updates
-    if (leftCard.bottom - 20.0f > ly + 36.0f) {
-        UiRect aboutBox = { lx, ly, lrx, leftCard.bottom - 20.0f };
+    // 5. About & Credits (draw if at least 36px remaining)
+    if (leftCard.bottom - 10.0f > ly + 36.0f) {
+        UiRect aboutBox = { lx, ly, lrx, leftCard.bottom - 16.0f };
         fillRoundRect(aboutBox, 12.0f, COL_BG_SUBTLE);
         strokeRoundRect(aboutBox, 12.0f, COL_BORDER);
 
-        drawText("ABOUT & UPDATES",
-                 { aboutBox.left + 16.0f, aboutBox.top + 8.0f, aboutBox.right - 16.0f, aboutBox.top + 24.0f },
+        drawText("ABOUT & CREDITS",
+                 { aboutBox.left + 16.0f, aboutBox.top + 8.0f, aboutBox.right - 16.0f, aboutBox.top + 22.0f },
                  fmtSmall_, COL_TEXT_ACCENT);
 
-        drawText("CppDesk v3.0.0 • C++20 & x86-64 AVX2 Assembly\nInspired by RustDesk (Open Source Remote Desktop)",
-                 { aboutBox.left + 16.0f, aboutBox.top + 26.0f, aboutBox.right - 16.0f, aboutBox.top + 58.0f },
+        drawText("CppDesk v" + std::string(CPP_DESK_VERSION) + " • Inspired by RustDesk (Open Source)\nClean-room native C++20 & x86-64 AVX2 Assembly implementation.",
+                 { aboutBox.left + 16.0f, aboutBox.top + 24.0f, aboutBox.right - 16.0f, aboutBox.bottom - 6.0f },
                  fmtSmall_, COL_TEXT_SECONDARY);
-
-        float updTop = aboutBox.top + 60.0f;
-        if (aboutBox.bottom - 6.0f > updTop + 26.0f) {
-            float btnW = 136.0f;
-            UiRect chkBtn = { aboutBox.left + 16.0f, updTop, aboutBox.left + 16.0f + btnW, updTop + 26.0f };
-            drawButton("sett_check_updates", chkBtn, isCheckingUpdates_ ? "Checking..." : "Check for Updates",
-                       COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 6.0f, [this]() {
-                           triggerUpdateCheck(true);
-                       }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
-
-            UiRect statusRect = { chkBtn.right + 10.0f, updTop, aboutBox.right - 16.0f, updTop + 26.0f };
-            D2D1_COLOR_F statusCol = latestUpdateInfo_.updateRequired ? COL_DANGER : COL_TEXT_MUTED;
-            drawText(updateStatusText_, statusRect, fmtSmall_, statusCol);
-        }
     }
 
     // ==================== RIGHT COLUMN: ACCESS & NETWORK ====================
@@ -2325,126 +2363,126 @@ void CppDeskWindow::drawSettingsView(const UiRect& bounds, float alpha) {
 
     float rx = rightCard.left + 24.0f;
     float rrx = rightCard.right - 24.0f;
-    float ry = rightCard.top + 20.0f;
+    float ry = rightCard.top + 16.0f;
 
-    drawText("Access & Network", { rx, ry, rrx, ry + 26.0f }, fmtHeading_, COL_TEXT_PRIMARY);
+    drawText("Access & Network", { rx, ry, rrx, ry + 24.0f }, fmtHeading_, COL_TEXT_PRIMARY);
     ry += 25.0f;
     drawText("Permissions, privacy, and connection settings.",
-             { rx, ry, rrx, ry + 18.0f }, fmtSmall_, COL_TEXT_SECONDARY);
-    ry += 26.0f;
+             { rx, ry, rrx, ry + 16.0f }, fmtSmall_, COL_TEXT_SECONDARY);
+    ry += 22.0f;
 
     // 1. Permissions
-    UiRect permBox = { rx, ry, rrx, ry + 198.0f };
+    UiRect permBox = { rx, ry, rrx, ry + 172.0f };
     fillRoundRect(permBox, 12.0f, COL_BG_SUBTLE);
     strokeRoundRect(permBox, 12.0f, COL_BORDER);
 
     drawText("PERMISSIONS",
-             { permBox.left + 16.0f, permBox.top + 8.0f, permBox.right - 16.0f, permBox.top + 24.0f },
+             { permBox.left + 16.0f, permBox.top + 8.0f, permBox.right - 16.0f, permBox.top + 22.0f },
              fmtSmall_, COL_TEXT_ACCENT);
 
-    float py = permBox.top + 30.0f;
-    drawToggleSwitch("sett_auto_accept", { permBox.left + 16.0f, py, permBox.right - 16.0f, py + 26.0f },
+    float py = permBox.top + 26.0f;
+    drawToggleSwitch("sett_auto_accept", { permBox.left + 16.0f, py, permBox.right - 16.0f, py + 24.0f },
                      s.autoAcceptIncoming, "Automatically accept incoming connections", [this]() {
                          AppSettings ns = identity_.settings();
                          ns.autoAcceptIncoming = !ns.autoAcceptIncoming;
                          identity_.updateSettings(ns);
                          network_.setAutoAcceptIncoming(ns.autoAcceptIncoming, ns.defaultPermissions);
                      });
-    py += 32.0f;
+    py += 28.0f;
 
-    drawToggleSwitch("sett_def_perm_input", { permBox.left + 16.0f, py, permBox.right - 16.0f, py + 26.0f },
+    drawToggleSwitch("sett_def_perm_input", { permBox.left + 16.0f, py, permBox.right - 16.0f, py + 24.0f },
                      (s.defaultPermissions & PERM_INPUT) != 0, "Allow mouse and keyboard control", [this]() {
                          AppSettings ns = identity_.settings();
                          ns.defaultPermissions ^= PERM_INPUT;
                          identity_.updateSettings(ns);
                          network_.setAutoAcceptIncoming(ns.autoAcceptIncoming, ns.defaultPermissions);
                      });
-    py += 32.0f;
+    py += 28.0f;
 
-    drawToggleSwitch("sett_def_perm_clip", { permBox.left + 16.0f, py, permBox.right - 16.0f, py + 26.0f },
+    drawToggleSwitch("sett_def_perm_clip", { permBox.left + 16.0f, py, permBox.right - 16.0f, py + 24.0f },
                      (s.defaultPermissions & PERM_CLIPBOARD) != 0, "Allow clipboard sharing", [this]() {
                          AppSettings ns = identity_.settings();
                          ns.defaultPermissions ^= PERM_CLIPBOARD;
                          identity_.updateSettings(ns);
                          network_.setAutoAcceptIncoming(ns.autoAcceptIncoming, ns.defaultPermissions);
                      });
-    py += 32.0f;
+    py += 28.0f;
 
-    drawToggleSwitch("sett_def_perm_file", { permBox.left + 16.0f, py, permBox.right - 16.0f, py + 26.0f },
+    drawToggleSwitch("sett_def_perm_file", { permBox.left + 16.0f, py, permBox.right - 16.0f, py + 24.0f },
                      (s.defaultPermissions & PERM_FILE_TRANSFER) != 0, "Allow file transfers", [this]() {
                          AppSettings ns = identity_.settings();
                          ns.defaultPermissions ^= PERM_FILE_TRANSFER;
                          identity_.updateSettings(ns);
                          network_.setAutoAcceptIncoming(ns.autoAcceptIncoming, ns.defaultPermissions);
                      });
-    py += 32.0f;
+    py += 28.0f;
 
-    drawToggleSwitch("sett_lock_disc", { permBox.left + 16.0f, py, permBox.right - 16.0f, py + 26.0f },
+    drawToggleSwitch("sett_lock_disc", { permBox.left + 16.0f, py, permBox.right - 16.0f, py + 24.0f },
                      s.lockWorkstationOnDisconnect, "Lock computer when session ends", [this]() {
                          AppSettings ns = identity_.settings();
                          ns.lockWorkstationOnDisconnect = !ns.lockWorkstationOnDisconnect;
                          identity_.updateSettings(ns);
                      });
 
-    ry = permBox.bottom + 12.0f;
+    ry = permBox.bottom + 10.0f;
 
     // 2. Notifications & System Tray
-    UiRect notifBox = { rx, ry, rrx, ry + 148.0f };
+    UiRect notifBox = { rx, ry, rrx, ry + 132.0f };
     fillRoundRect(notifBox, 12.0f, COL_BG_SUBTLE);
     strokeRoundRect(notifBox, 12.0f, COL_BORDER);
 
     drawText("NOTIFICATIONS & TRAY",
-             { notifBox.left + 16.0f, notifBox.top + 8.0f, notifBox.right - 16.0f, notifBox.top + 24.0f },
+             { notifBox.left + 16.0f, notifBox.top + 8.0f, notifBox.right - 16.0f, notifBox.top + 22.0f },
              fmtSmall_, COL_TEXT_ACCENT);
 
-    float ny = notifBox.top + 28.0f;
-    drawToggleSwitch("sett_push_notif", { notifBox.left + 16.0f, ny, notifBox.right - 16.0f, ny + 26.0f },
+    float ny = notifBox.top + 26.0f;
+    drawToggleSwitch("sett_push_notif", { notifBox.left + 16.0f, ny, notifBox.right - 16.0f, ny + 24.0f },
                      s.enablePushNotifications, "Windows Action Center push toasts", [this]() {
                          AppSettings ns = identity_.settings();
                          ns.enablePushNotifications = !ns.enablePushNotifications;
                          identity_.updateSettings(ns);
                      });
-    ny += 28.0f;
+    ny += 25.0f;
 
-    drawToggleSwitch("sett_taskbar_flash", { notifBox.left + 16.0f, ny, notifBox.right - 16.0f, ny + 26.0f },
+    drawToggleSwitch("sett_taskbar_flash", { notifBox.left + 16.0f, ny, notifBox.right - 16.0f, ny + 24.0f },
                      s.enableTaskbarFlash, "Flash taskbar orange when unfocused", [this]() {
                          AppSettings ns = identity_.settings();
                          ns.enableTaskbarFlash = !ns.enableTaskbarFlash;
                          identity_.updateSettings(ns);
                      });
-    ny += 28.0f;
+    ny += 25.0f;
 
-    drawToggleSwitch("sett_notif_sound", { notifBox.left + 16.0f, ny, notifBox.right - 16.0f, ny + 26.0f },
+    drawToggleSwitch("sett_notif_sound", { notifBox.left + 16.0f, ny, notifBox.right - 16.0f, ny + 24.0f },
                      s.enableNotificationSounds, "Play sound on incoming alerts", [this]() {
                          AppSettings ns = identity_.settings();
                          ns.enableNotificationSounds = !ns.enableNotificationSounds;
                          identity_.updateSettings(ns);
                      });
-    ny += 28.0f;
+    ny += 25.0f;
 
-    drawToggleSwitch("sett_min_to_tray", { notifBox.left + 16.0f, ny, notifBox.right - 16.0f, ny + 26.0f },
+    drawToggleSwitch("sett_min_to_tray", { notifBox.left + 16.0f, ny, notifBox.right - 16.0f, ny + 24.0f },
                      s.minimizeToTray, "Minimize window to system tray", [this]() {
                          AppSettings ns = identity_.settings();
                          ns.minimizeToTray = !ns.minimizeToTray;
                          identity_.updateSettings(ns);
                      });
 
-    ry = notifBox.bottom + 12.0f;
+    ry = notifBox.bottom + 10.0f;
 
     // 3. Network & Relay
-    UiRect netBox = { rx, ry, rrx, ry + 82.0f };
+    UiRect netBox = { rx, ry, rrx, ry + 76.0f };
     fillRoundRect(netBox, 12.0f, COL_BG_SUBTLE);
     strokeRoundRect(netBox, 12.0f, COL_BORDER);
 
     drawText("NETWORK",
-             { netBox.left + 16.0f, netBox.top + 8.0f, netBox.right - 16.0f, netBox.top + 24.0f },
+             { netBox.left + 16.0f, netBox.top + 8.0f, netBox.right - 16.0f, netBox.top + 22.0f },
              fmtSmall_, COL_TEXT_ACCENT);
 
-    UiRect settRelayField = { netBox.left + 16.0f, netBox.top + 30.0f, netBox.right - 196.0f, netBox.top + 68.0f };
+    UiRect settRelayField = { netBox.left + 16.0f, netBox.top + 28.0f, netBox.right - 196.0f, netBox.top + 64.0f };
     drawTextField("field_relay_srv_sett", FocusedField::RelayServer, settRelayField,
                   relayServerEdit_, "Relay server address", false);
 
-    UiRect applyRelayBtn = { settRelayField.right + 8.0f, netBox.top + 30.0f, settRelayField.right + 82.0f, netBox.top + 68.0f };
+    UiRect applyRelayBtn = { settRelayField.right + 8.0f, netBox.top + 28.0f, settRelayField.right + 82.0f, netBox.top + 64.0f };
     drawButton("sett_apply_relay", applyRelayBtn, "Save",
                COL_PRIMARY_ACCENT, COL_PRIMARY_ACCENT_HV, COL_TEXT_ON_ACCENT, 8.0f, [this]() {
                    identity_.setRelayServerAddress(relayServerEdit_);
@@ -2452,7 +2490,7 @@ void CppDeskWindow::drawSettingsView(const UiRect& bounds, float alpha) {
                }, fmtSmall_);
 
     bool relayRunning = network_.isLocalRelayRunning();
-    UiRect localRelayBtn = { applyRelayBtn.right + 8.0f, netBox.top + 30.0f, netBox.right - 16.0f, netBox.top + 68.0f };
+    UiRect localRelayBtn = { applyRelayBtn.right + 8.0f, netBox.top + 28.0f, netBox.right - 16.0f, netBox.top + 64.0f };
     drawButton("sett_toggle_relay", localRelayBtn, relayRunning ? "Relay: ON" : "Relay: OFF",
                relayRunning ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
                relayRunning ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
@@ -2468,45 +2506,47 @@ void CppDeskWindow::drawSettingsView(const UiRect& bounds, float alpha) {
                    }
                }, fmtSmall_, !relayRunning, COL_BORDER, relayRunning ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
 
-    ry = netBox.bottom + 12.0f;
+    ry = netBox.bottom + 10.0f;
 
     // 4. Data & Reset Actions
-    UiRect maintBox = { rx, ry, rrx, rightCard.bottom - 20.0f };
-    fillRoundRect(maintBox, 12.0f, COL_BG_SUBTLE);
-    strokeRoundRect(maintBox, 12.0f, COL_BORDER);
+    if (rightCard.bottom - 10.0f > ry + 36.0f) {
+        UiRect maintBox = { rx, ry, rrx, rightCard.bottom - 16.0f };
+        fillRoundRect(maintBox, 12.0f, COL_BG_SUBTLE);
+        strokeRoundRect(maintBox, 12.0f, COL_BORDER);
 
-    drawText("DATA",
-             { maintBox.left + 16.0f, maintBox.top + 8.0f, maintBox.right - 16.0f, maintBox.top + 24.0f },
-             fmtSmall_, COL_TEXT_ACCENT);
+        drawText("DATA & MAINTENANCE",
+                 { maintBox.left + 16.0f, maintBox.top + 8.0f, maintBox.right - 16.0f, maintBox.top + 22.0f },
+                 fmtSmall_, COL_TEXT_ACCENT);
 
-    float mThirdW = (rrx - rx - 32.0f - 16.0f) / 3.0f;
-    float btnTop = maintBox.top + 34.0f;
-    float btnBot = std::min(btnTop + 38.0f, maintBox.bottom - 10.0f);
+        float mThirdW = (rrx - rx - 32.0f - 16.0f) / 3.0f;
+        float btnTop = maintBox.top + 28.0f;
+        float btnBot = std::min(btnTop + 34.0f, maintBox.bottom - 8.0f);
 
-    UiRect openRecvBtn = { maintBox.left + 16.0f, btnTop, maintBox.left + 16.0f + mThirdW, btnBot };
-    UiRect clearRecBtn = { openRecvBtn.right + 8.0f, btnTop, openRecvBtn.right + 8.0f + mThirdW, btnBot };
-    UiRect resetBtn    = { clearRecBtn.right + 8.0f, btnTop, maintBox.right - 16.0f, btnBot };
+        UiRect openRecvBtn = { maintBox.left + 16.0f, btnTop, maintBox.left + 16.0f + mThirdW, btnBot };
+        UiRect clearRecBtn = { openRecvBtn.right + 8.0f, btnTop, openRecvBtn.right + 8.0f + mThirdW, btnBot };
+        UiRect resetBtn    = { clearRecBtn.right + 8.0f, btnTop, maintBox.right - 16.0f, btnBot };
 
-    drawButton("sett_open_recv", openRecvBtn, "Received Files",
-               COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 8.0f, [this]() {
-                   network_.fileTransferManager().openReceiveDirectoryInExplorer();
-               }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
+        drawButton("sett_open_recv", openRecvBtn, "Received Files",
+                   COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 8.0f, [this]() {
+                       network_.fileTransferManager().openReceiveDirectoryInExplorer();
+                   }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
 
-    drawButton("sett_clear_recents", clearRecBtn, "Clear History",
-               COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 8.0f, [this]() {
-                   identity_.clearRecentSessions();
-                   showToast("History cleared");
-               }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
+        drawButton("sett_clear_recents", clearRecBtn, "Clear History",
+                   COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 8.0f, [this]() {
+                       identity_.clearRecentSessions();
+                       showToast("History cleared");
+                   }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
 
-    drawButton("sett_reset_defaults", resetBtn, "Reset Settings",
-               COL_SEC_BTN_BG, COL_DANGER, COL_TEXT_PRIMARY, 8.0f, [this]() {
-                   identity_.resetSettingsToDefault();
-                   applyWindowThemeAttribute();
-                   scaleMode_ = ScaleMode::FitAspect;
-                   network_.setAutoAcceptIncoming(false, PERM_ALL);
-                   network_.setSessionFpsConfig(30, true);
-                   showToast("Settings restored to defaults");
-               }, fmtSmall_, true, COL_BORDER, COL_TEXT_ON_ACCENT);
+        drawButton("sett_reset_defaults", resetBtn, "Reset Settings",
+                   COL_SEC_BTN_BG, COL_DANGER, COL_TEXT_PRIMARY, 8.0f, [this]() {
+                       identity_.resetSettingsToDefault();
+                       applyWindowThemeAttribute();
+                       scaleMode_ = ScaleMode::FitAspect;
+                       network_.setAutoAcceptIncoming(false, PERM_ALL);
+                       network_.setSessionFpsConfig(30, true);
+                       showToast("Settings restored to defaults");
+                   }, fmtSmall_, true, COL_BORDER, COL_TEXT_ON_ACCENT);
+    }
 }
 
 // ---------------- Floating macOS Side Sheet Drawer ----------------
