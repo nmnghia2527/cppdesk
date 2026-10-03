@@ -369,7 +369,7 @@ public:
 
 private:
     void require(size_t n) const {
-        if (pos_ + n > size_) {
+        if (n > size_ || pos_ > size_ - n) {
             throw std::runtime_error("Packet buffer underflow");
         }
     }

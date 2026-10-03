@@ -685,10 +685,27 @@ void IdentityManager::resetSettingsToDefault() {
 
 // ---------------- AntiReplayWindow (Option 4A) ----------------
 
-bool AntiReplayWindow::checkAndMark(uint64_t seq) {
+bool AntiReplayWindow::check(uint64_t seq) const {
+    if (seq == 0 && maxSeq_ == 0 && bitmap_ == 0) {
+        return true;
+    }
+    if (seq > maxSeq_) {
+        return true;
+    }
+    uint64_t diff = maxSeq_ - seq;
+    if (diff >= 64) {
+        return false;
+    }
+    if (bitmap_ & (1ULL << diff)) {
+        return false;
+    }
+    return true;
+}
+
+void AntiReplayWindow::mark(uint64_t seq) {
     if (seq == 0 && maxSeq_ == 0 && bitmap_ == 0) {
         bitmap_ = 1ULL;
-        return true;
+        return;
     }
     if (seq > maxSeq_) {
         uint64_t diff = seq - maxSeq_;
@@ -699,16 +716,17 @@ bool AntiReplayWindow::checkAndMark(uint64_t seq) {
             bitmap_ = 1ULL;
         }
         maxSeq_ = seq;
-        return true;
+        return;
     }
     uint64_t diff = maxSeq_ - seq;
-    if (diff >= 64) {
-        return false;
+    if (diff < 64) {
+        bitmap_ |= (1ULL << diff);
     }
-    if (bitmap_ & (1ULL << diff)) {
-        return false;
-    }
-    bitmap_ |= (1ULL << diff);
+}
+
+bool AntiReplayWindow::checkAndMark(uint64_t seq) {
+    if (!check(seq)) return false;
+    mark(seq);
     return true;
 }
 
@@ -979,7 +997,7 @@ bool AesGcmSessionCipher::decrypt(
     uint64_t seq = 0;
     std::memcpy(&seq, nonce + 4, 8);
 
-    if (!replayWindow_.checkAndMark(seq)) {
+    if (!replayWindow_.check(seq)) {
         return false; // Replay / duplicate rejected
     }
 
@@ -1012,6 +1030,9 @@ bool AesGcmSessionCipher::decrypt(
         outPlaintext.clear();
         return false; // Auth tag mismatch or decryption failure
     }
+
+    // Sequence mutation occurs strictly AFTER successful cryptographic authentication
+    replayWindow_.mark(seq);
 
     outPlaintext.resize(ptLen);
     if (outSeq) *outSeq = seq;

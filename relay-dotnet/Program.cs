@@ -158,7 +158,10 @@ internal static class Program
                     }
                     finally
                     {
-                        Hosts.TryRemove(deskId, out _);
+                        if (Hosts.TryRemove(deskId, out var removedHost))
+                        {
+                            removedHost.WriteLock.Dispose();
+                        }
                         client.Dispose();
                         Log($"Unregistered Host {FormatDeskId(deskId)} | Active Hosts: {Hosts.Count}");
                     }

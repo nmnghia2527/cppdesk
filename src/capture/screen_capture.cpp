@@ -670,15 +670,25 @@ bool ScreenCapturer::captureViaGdi() {
         prevTileHashes_.clear();
     }
 
+    bool createdDC = false;
     HDC hScreenDC = GetDC(nullptr);
     if (!hScreenDC) {
         hScreenDC = CreateDCA("DISPLAY", nullptr, nullptr, nullptr);
         if (!hScreenDC) return false;
+        createdDC = true;
     }
+
+    auto releaseScreenDC = [&]() {
+        if (createdDC) {
+            DeleteDC(hScreenDC);
+        } else {
+            ReleaseDC(nullptr, hScreenDC);
+        }
+    };
 
     HDC hMemDC = CreateCompatibleDC(hScreenDC);
     if (!hMemDC) {
-        ReleaseDC(nullptr, hScreenDC);
+        releaseScreenDC();
         return false;
     }
 
@@ -695,7 +705,7 @@ bool ScreenCapturer::captureViaGdi() {
     if (!hSection || !dibBits) {
         if (hSection) DeleteObject(hSection);
         DeleteDC(hMemDC);
-        ReleaseDC(nullptr, hScreenDC);
+        releaseScreenDC();
         return false;
     }
 
@@ -723,7 +733,7 @@ bool ScreenCapturer::captureViaGdi() {
     SelectObject(hMemDC, hOld);
     DeleteObject(hSection);
     DeleteDC(hMemDC);
-    ReleaseDC(nullptr, hScreenDC);
+    releaseScreenDC();
     return hasValidFrame_;
 }
 

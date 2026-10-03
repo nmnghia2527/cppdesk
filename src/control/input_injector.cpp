@@ -184,16 +184,35 @@ bool InputInjector::syncToInputDesktop() {
     if (!hInputDesk) {
         hInputDesk = OpenInputDesktop(0, FALSE, DESKTOP_SWITCHDESKTOP);
     }
-    if (hInputDesk) {
-        HDESK hCurDesk = GetThreadDesktop(GetCurrentThreadId());
-        if (hCurDesk != hInputDesk) {
-            SetThreadDesktop(hInputDesk);
-        }
-        if (GetThreadDesktop(GetCurrentThreadId()) != hInputDesk) {
-            CloseDesktop(hInputDesk);
-        }
+    if (!hInputDesk) return false;
+
+    char inputName[256] = {};
+    DWORD needed1 = 0;
+    GetUserObjectInformationA(hInputDesk, UOI_NAME, inputName, sizeof(inputName), &needed1);
+
+    HDESK hCurDesk = GetThreadDesktop(GetCurrentThreadId());
+    char curName[256] = {};
+    DWORD needed2 = 0;
+    if (hCurDesk) {
+        GetUserObjectInformationA(hCurDesk, UOI_NAME, curName, sizeof(curName), &needed2);
+    }
+
+    if (hCurDesk && std::strcmp(inputName, curName) == 0) {
+        // Desktop has not changed; close newly opened handle immediately to avoid handle leakage
+        CloseDesktop(hInputDesk);
         return true;
     }
+
+    static HDESK s_prevSwitchedDesk = nullptr;
+    if (SetThreadDesktop(hInputDesk)) {
+        if (s_prevSwitchedDesk) {
+            CloseDesktop(s_prevSwitchedDesk);
+        }
+        s_prevSwitchedDesk = hInputDesk;
+        return true;
+    }
+
+    CloseDesktop(hInputDesk);
     return false;
 }
 

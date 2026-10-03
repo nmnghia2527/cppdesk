@@ -395,6 +395,28 @@ void testFileTransferEdgeCasesAndFavorites() {
     TEST_ASSERT(!std::filesystem::exists(tempDir / "corrupt_check.bin.part"));
     TEST_ASSERT(!std::filesystem::exists(tempDir / "corrupt_check.bin"));
 
+    // 2b. Empty SHA-256 on FileComplete is rejected and deletes .part file
+    ftm.handleFileOffer(703, 1024, "empty_sha_check.bin");
+    ftm.handleFileChunk(703, 0, chunkData.data(), chunkData.size());
+    ftm.handleFileComplete(703, "");
+    TEST_ASSERT(!std::filesystem::exists(tempDir / "empty_sha_check.bin.part"));
+    TEST_ASSERT(!std::filesystem::exists(tempDir / "empty_sha_check.bin"));
+
+    // 2c. Concurrent incoming stream queue cap (max 10)
+    for (uint32_t i = 800; i < 810; ++i) {
+        ftm.handleFileOffer(i, 512, "stream_" + std::to_string(i) + ".bin");
+    }
+    ftm.handleFileOffer(811, 512, "stream_overflow.bin");
+    bool foundQueueFull = false;
+    for (const auto& item : ftm.snapshotTransfers()) {
+        if (item.transferId == 811 && item.statusText == "Rejected (Queue Full)") {
+            foundQueueFull = true;
+            break;
+        }
+    }
+    TEST_ASSERT(foundQueueFull);
+    ftm.abortActiveTransfers();
+
     std::filesystem::remove_all(tempDir, ec);
 
     // 3. Pinned Favorite Desks & Recent Session removal persistence
@@ -617,6 +639,24 @@ void testEcdhAndAesGcmEngine() {
     FrameHeader tamperedHdr = mockHdr;
     tamperedHdr.type = static_cast<uint8_t>(PacketType::INPUT_MOUSE_MOVE);
     TEST_ASSERT(!viewerCipher.decrypt(encryptedPkt.data(), encryptedPkt.size(), &tamperedHdr, sizeof(tamperedHdr), tamperedDec));
+
+    // Cryptographic Anti-Replay: Unauthenticated packet with high seq (99999) must NOT poison window
+    std::vector<uint8_t> forgedPkt(12 + 32 + 16, 0xEE);
+    uint64_t forgedSeq = 99999;
+    std::memcpy(forgedPkt.data() + 4, &forgedSeq, 8);
+    std::vector<uint8_t> forgedDec;
+    TEST_ASSERT(!viewerCipher.decrypt(forgedPkt.data(), forgedPkt.size(), &mockHdr, sizeof(mockHdr), forgedDec));
+
+    // Legitimate subsequent packet with seq = 2 must decrypt successfully
+    std::vector<uint8_t> legitPkt2;
+    std::string legitMsg2 = "Legitimate seq 2 after forged attempt";
+    mockHdr.payloadSize = static_cast<uint32_t>(12 + legitMsg2.size() + 16);
+    TEST_ASSERT(hostCipher.encrypt(legitMsg2.data(), legitMsg2.size(), 2, &mockHdr, sizeof(mockHdr), legitPkt2));
+    std::vector<uint8_t> legitDec2;
+    uint64_t rxSeq2 = 0;
+    TEST_ASSERT(viewerCipher.decrypt(legitPkt2.data(), legitPkt2.size(), &mockHdr, sizeof(mockHdr), legitDec2, &rxSeq2));
+    TEST_ASSERT(rxSeq2 == 2);
+    TEST_ASSERT(std::string(legitDec2.begin(), legitDec2.end()) == legitMsg2);
 
     // Viewer -> Host Input Encryption
     std::string mouseEvent = "MOUSE_MOVE_CLICK";
@@ -1123,6 +1163,17 @@ void testAutoUpdaterAndProtocolV3() {
     std::string jsonWithEscapes = "{\"desc\": \"Feature with \\\"quotes\\\" and text\", \"other\": \"ok\"}";
     TEST_ASSERT(AutoUpdater::extractJsonString(jsonWithEscapes, "desc") == "Feature with \"quotes\" and text");
     TEST_ASSERT(AutoUpdater::extractJsonString(jsonWithEscapes, "nonexistent").empty());
+
+    // 5. ByteReader bounds and integer overflow protection (COR-01)
+    std::vector<uint8_t> dummyBytes = { 0x01, 0x02, 0x03, 0x04 };
+    ByteReader ovfReader(dummyBytes);
+    bool caughtOvf = false;
+    try {
+        ovfReader.skip(SIZE_MAX - 2);
+    } catch (const std::exception&) {
+        caughtOvf = true;
+    }
+    TEST_ASSERT(caughtOvf);
 }
 
 } // namespace

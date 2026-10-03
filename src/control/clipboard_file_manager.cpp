@@ -450,6 +450,18 @@ void FileTransferManager::handleFileOffer(uint32_t transferId, uint64_t totalByt
         return;
     }
 
+    if (incomingStreams_.size() >= 10) {
+        FileTransferItem item;
+        item.transferId = transferId;
+        item.fileName = cleanName;
+        item.totalBytes = totalBytes;
+        item.isOutgoing = false;
+        item.status = TransferStatus::Failed;
+        item.statusText = "Rejected (Queue Full)";
+        items_.insert(items_.begin(), item);
+        return;
+    }
+
     // Avoid overwriting existing files by appending (1), (2), ...
     if (std::filesystem::exists(targetPath, ec)) {
         std::string stem = targetPath.stem().string();
@@ -543,7 +555,7 @@ void FileTransferManager::handleFileComplete(uint32_t transferId, const std::str
         }
     }
 
-    bool hashValid = sha256Hex.empty() || (computedSha == sha256Hex);
+    bool hashValid = !sha256Hex.empty() && (computedSha == sha256Hex);
     std::error_code ec;
     if (foundStream) {
         if (hashValid) {

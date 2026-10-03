@@ -1429,8 +1429,10 @@ void NetworkEngine::runHostSession(uintptr_t clientSock, std::string clientIp) {
         }
 
         startHostAudioCapture();
-        startHostTerminal(false);
-        startHostTunnelProxy();
+        if (grantedPerms & PERM_INPUT) {
+            startHostTerminal(false);
+            startHostTunnelProxy();
+        }
 
         std::atomic<bool> sessionAlive{true};
         std::atomic<uint8_t> requestedQuality{static_cast<uint8_t>(identity_.settings().defaultQuality)};
@@ -1684,17 +1686,19 @@ void NetworkEngine::runHostSession(uintptr_t clientSock, std::string clientIp) {
                             break;
                         }
                         case PacketType::PRIVACY_MODE_TOGGLE: {
-                            if (r.hasRemaining(sizeof(PrivacyModePayload))) {
-                                PrivacyModePayload p{};
-                                r.readBytes(&p, sizeof(p));
-                                setHostPrivacyMode(p.enable != 0);
+                            if (perms & PERM_INPUT) {
+                                if (r.hasRemaining(sizeof(PrivacyModePayload))) {
+                                    PrivacyModePayload p{};
+                                    r.readBytes(&p, sizeof(p));
+                                    setHostPrivacyMode(p.enable != 0);
 
-                                PrivacyModePayload ack{};
-                                ack.enable = isHostPrivacyModeActive() ? 1 : 0;
-                                ack.acknowledge = 1;
-                                ByteWriter w;
-                                w.writeBytes(&ack, sizeof(ack));
-                                sendHostEncryptedPacket(PacketType::PRIVACY_MODE_TOGGLE, 0, w.buffer().data(), w.buffer().size());
+                                    PrivacyModePayload ack{};
+                                    ack.enable = isHostPrivacyModeActive() ? 1 : 0;
+                                    ack.acknowledge = 1;
+                                    ByteWriter w;
+                                    w.writeBytes(&ack, sizeof(ack));
+                                    sendHostEncryptedPacket(PacketType::PRIVACY_MODE_TOGGLE, 0, w.buffer().data(), w.buffer().size());
+                                }
                             }
                             break;
                         }
@@ -1703,27 +1707,31 @@ void NetworkEngine::runHostSession(uintptr_t clientSock, std::string clientIp) {
                                 TunnelOpenHeader toh{};
                                 r.readBytes(&toh, sizeof(toh));
 
-                                SOCKET ts = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+                                bool permitted = (perms & PERM_INPUT) != 0;
+                                SOCKET ts = INVALID_SOCKET;
                                 bool ok = false;
-                                if (ts != INVALID_SOCKET) {
-                                    sockaddr_in targetAddr{};
-                                    targetAddr.sin_family = AF_INET;
-                                    targetAddr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-                                    targetAddr.sin_port = htons(toh.targetPort);
-                                    if (connect(ts, reinterpret_cast<sockaddr*>(&targetAddr), sizeof(targetAddr)) == 0) {
-                                        u_long nonblock = 1;
-                                        ioctlsocket(ts, FIONBIO, &nonblock);
-                                        ok = true;
-                                        std::lock_guard<std::mutex> lk(tunnelMutex_);
-                                        hostTunnels_[toh.tunnelId] = { toh.tunnelId, 0, ts, toh.targetPort };
-                                    } else {
-                                        closesocket(ts);
+                                if (permitted) {
+                                    ts = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+                                    if (ts != INVALID_SOCKET) {
+                                        sockaddr_in targetAddr{};
+                                        targetAddr.sin_family = AF_INET;
+                                        targetAddr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+                                        targetAddr.sin_port = htons(toh.targetPort);
+                                        if (connect(ts, reinterpret_cast<sockaddr*>(&targetAddr), sizeof(targetAddr)) == 0) {
+                                            u_long nonblock = 1;
+                                            ioctlsocket(ts, FIONBIO, &nonblock);
+                                            ok = true;
+                                            std::lock_guard<std::mutex> lk(tunnelMutex_);
+                                            hostTunnels_[toh.tunnelId] = { toh.tunnelId, 0, ts, toh.targetPort };
+                                        } else {
+                                            closesocket(ts);
+                                        }
                                     }
                                 }
                                 if (!ok) {
                                     TunnelCloseHeader tch{};
                                     tch.tunnelId = toh.tunnelId;
-                                    tch.reasonCode = 1; // Refused
+                                    tch.reasonCode = permitted ? 1 : 2; // Refused / Forbidden
                                     ByteWriter w;
                                     w.writeBytes(&tch, sizeof(tch));
                                     sendHostEncryptedPacket(PacketType::TUNNEL_CLOSE, 0, w.buffer().data(), w.buffer().size());
@@ -1732,20 +1740,22 @@ void NetworkEngine::runHostSession(uintptr_t clientSock, std::string clientIp) {
                             break;
                         }
                         case PacketType::TUNNEL_DATA: {
-                            if (r.hasRemaining(sizeof(TunnelDataHeader))) {
-                                TunnelDataHeader tdh{};
-                                r.readBytes(&tdh, sizeof(tdh));
-                                if (r.hasRemaining(tdh.dataLen)) {
-                                    SOCKET ts = INVALID_SOCKET;
-                                    {
-                                        std::lock_guard<std::mutex> lk(tunnelMutex_);
-                                        auto it = hostTunnels_.find(tdh.tunnelId);
-                                        if (it != hostTunnels_.end()) {
-                                            ts = it->second.sock;
+                            if (perms & PERM_INPUT) {
+                                if (r.hasRemaining(sizeof(TunnelDataHeader))) {
+                                    TunnelDataHeader tdh{};
+                                    r.readBytes(&tdh, sizeof(tdh));
+                                    if (r.hasRemaining(tdh.dataLen)) {
+                                        SOCKET ts = INVALID_SOCKET;
+                                        {
+                                            std::lock_guard<std::mutex> lk(tunnelMutex_);
+                                            auto it = hostTunnels_.find(tdh.tunnelId);
+                                            if (it != hostTunnels_.end()) {
+                                                ts = it->second.sock;
+                                            }
                                         }
-                                    }
-                                    if (ts != INVALID_SOCKET) {
-                                        sendAllBytes(ts, r.currentPtr(), tdh.dataLen);
+                                        if (ts != INVALID_SOCKET) {
+                                            sendAllBytes(ts, r.currentPtr(), tdh.dataLen);
+                                        }
                                     }
                                 }
                             }
@@ -1765,18 +1775,20 @@ void NetworkEngine::runHostSession(uintptr_t clientSock, std::string clientIp) {
                             break;
                         }
                         case PacketType::TERMINAL_DATA: {
-                            if (r.hasRemaining(sizeof(TerminalDataHeader))) {
-                                TerminalDataHeader tdh{};
-                                r.readBytes(&tdh, sizeof(tdh));
-                                if (tdh.streamKind == static_cast<uint8_t>(TerminalStreamKind::StdinInput)) {
-                                    if (r.hasRemaining(tdh.textLen)) {
-                                        std::string input(reinterpret_cast<const char*>(r.currentPtr()), tdh.textLen);
-                                        injectHostTerminalStdin(input);
+                            if (perms & PERM_INPUT) {
+                                if (r.hasRemaining(sizeof(TerminalDataHeader))) {
+                                    TerminalDataHeader tdh{};
+                                    r.readBytes(&tdh, sizeof(tdh));
+                                    if (tdh.streamKind == static_cast<uint8_t>(TerminalStreamKind::StdinInput)) {
+                                        if (r.hasRemaining(tdh.textLen)) {
+                                            std::string input(reinterpret_cast<const char*>(r.currentPtr()), tdh.textLen);
+                                            injectHostTerminalStdin(input);
+                                        }
+                                    } else if (tdh.streamKind == static_cast<uint8_t>(TerminalStreamKind::ResetShell)) {
+                                        startHostTerminal(false);
+                                    } else if (tdh.streamKind == static_cast<uint8_t>(TerminalStreamKind::SwitchShell)) {
+                                        startHostTerminal(true);
                                     }
-                                } else if (tdh.streamKind == static_cast<uint8_t>(TerminalStreamKind::ResetShell)) {
-                                    startHostTerminal(false);
-                                } else if (tdh.streamKind == static_cast<uint8_t>(TerminalStreamKind::SwitchShell)) {
-                                    startHostTerminal(true);
                                 }
                             }
                             break;

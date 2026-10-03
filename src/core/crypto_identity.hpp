@@ -105,8 +105,11 @@ class AntiReplayWindow {
 public:
     AntiReplayWindow() = default;
 
-    // Returns true if packet sequence number is valid and un-replayed, and updates window.
-    // Returns false if sequence number is duplicate or too far in the past.
+    // Pure read-only check: returns true if sequence number is valid and un-replayed
+    bool check(uint64_t seq) const;
+    // Mutates window state to record sequence number (call ONLY after authentication succeeds)
+    void mark(uint64_t seq);
+    // Combined helper for test backward compatibility
     bool checkAndMark(uint64_t seq);
     void reset();
 
