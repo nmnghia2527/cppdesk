@@ -22,7 +22,7 @@
 #include <memory>
 #include <condition_variable>
 
-namespace aerodesk {
+namespace cppdesk {
 
 struct DiscoveredPeer {
     uint64_t    deskId = 0;
@@ -452,4 +452,4 @@ private:
     WhiteboardManager                          whiteboardMgr_;
 };
 
-} // namespace aerodesk
+} // namespace cppdesk

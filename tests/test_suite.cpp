@@ -5,6 +5,7 @@
 #include "../src/control/input_injector.hpp"
 #include "../src/control/clipboard_file_manager.hpp"
 #include "../src/net/network_engine.hpp"
+#include "../src/net/updater.hpp"
 #include "../src/ui/notification_manager.hpp"
 
 #ifndef WIN32_LEAN_AND_MEAN
@@ -22,7 +23,7 @@
 #include <cstring>
 #include <cmath>
 
-using namespace aerodesk;
+using namespace cppdesk;
 
 namespace {
 
@@ -502,15 +503,15 @@ void testAvx2SimdAssemblyKernels() {
     std::vector<uint8_t> tileB(W * H * 4, 0x42);
 
     // 1. Identical 64x64 tiles -> diff == 0, hashes match
-    TEST_ASSERT(aerodesk_avx2_tile_diff(tileA.data(), tileB.data(), stride, W * 4, H) == 0);
-    uint64_t h1 = aerodesk_avx2_hash_tile(tileA.data(), stride, W * 4, H);
-    uint64_t h2 = aerodesk_avx2_hash_tile(tileB.data(), stride, W * 4, H);
+    TEST_ASSERT(cppdesk_avx2_tile_diff(tileA.data(), tileB.data(), stride, W * 4, H) == 0);
+    uint64_t h1 = cppdesk_avx2_hash_tile(tileA.data(), stride, W * 4, H);
+    uint64_t h2 = cppdesk_avx2_hash_tile(tileB.data(), stride, W * 4, H);
     TEST_ASSERT(h1 == h2 && h1 != 0);
 
     // 2. Single-pixel difference -> diff == 1, hash changes
     tileB[W * H * 2 + 17] ^= 0x01;
-    TEST_ASSERT(aerodesk_avx2_tile_diff(tileA.data(), tileB.data(), stride, W * 4, H) == 1);
-    uint64_t h3 = aerodesk_avx2_hash_tile(tileB.data(), stride, W * 4, H);
+    TEST_ASSERT(cppdesk_avx2_tile_diff(tileA.data(), tileB.data(), stride, W * 4, H) == 1);
+    uint64_t h3 = cppdesk_avx2_hash_tile(tileB.data(), stride, W * 4, H);
     TEST_ASSERT(h1 != h3);
     tileB[W * H * 2 + 17] ^= 0x01; // Restore
 
@@ -524,7 +525,7 @@ void testAvx2SimdAssemblyKernels() {
     auto t1 = std::chrono::high_resolution_clock::now();
     int accAvx2 = 0;
     for (int i = 0; i < iters; ++i) {
-        accAvx2 += aerodesk_avx2_tile_diff(tileA.data(), tileB.data(), stride, W * 4, H);
+        accAvx2 += cppdesk_avx2_tile_diff(tileA.data(), tileB.data(), stride, W * 4, H);
     }
     auto t2 = std::chrono::high_resolution_clock::now();
     TEST_ASSERT(accScalar == 0 && accAvx2 == 0);
@@ -1061,6 +1062,69 @@ void testV210PowerFeaturesInheritance() {
     }
 }
 
+void testAutoUpdaterAndProtocolV3() {
+    std::cout << "[TEST 12] CppDesk Protocol V3 & Mandatory Auto-Updater Semantics...\n";
+
+    // 1. Magic constants & Protocol definitions
+    TEST_ASSERT(PROTOCOL_MAGIC == 0x43505044); // "CPPD"
+    TEST_ASSERT(RELAY_MAGIC == 0x4344534B);    // "CDSK"
+    TEST_ASSERT(PROTOCOL_VERSION == 3);
+    TEST_ASSERT(std::string(CPP_DESK_VERSION) == "3.0.0");
+    TEST_ASSERT(CPP_DESK_VERSION_NUM == 0x030000);
+
+    // 2. Semantic Version Triad Parsing
+    int maj = 0, min = 0, pat = 0;
+    TEST_ASSERT(AutoUpdater::parseVersionTriad("3.0.0", maj, min, pat) && maj == 3 && min == 0 && pat == 0);
+    TEST_ASSERT(AutoUpdater::parseVersionTriad("v3.1.2", maj, min, pat) && maj == 3 && min == 1 && pat == 2);
+    TEST_ASSERT(AutoUpdater::parseVersionTriad("v10.200.300-preview", maj, min, pat) && maj == 10 && min == 200 && pat == 300);
+    TEST_ASSERT(!AutoUpdater::parseVersionTriad("invalid_tag", maj, min, pat));
+    TEST_ASSERT(!AutoUpdater::parseVersionTriad("", maj, min, pat));
+
+    // 3. Mandatory Update Version Comparison
+    // Higher patch version -> newer
+    TEST_ASSERT(AutoUpdater::isNewerVersion("3.0.1", "3.0.0"));
+    TEST_ASSERT(AutoUpdater::isNewerVersion("v3.0.1", "3.0.0"));
+    TEST_ASSERT(AutoUpdater::isNewerVersion("3.0.1", "v3.0.0"));
+
+    // Higher minor version -> newer
+    TEST_ASSERT(AutoUpdater::isNewerVersion("3.1.0", "3.0.0"));
+    TEST_ASSERT(AutoUpdater::isNewerVersion("v3.2.0", "3.1.5"));
+
+    // Higher major version -> newer
+    TEST_ASSERT(AutoUpdater::isNewerVersion("4.0.0", "3.99.99"));
+
+    // Equal versions -> NOT newer
+    TEST_ASSERT(!AutoUpdater::isNewerVersion("3.0.0", "3.0.0"));
+    TEST_ASSERT(!AutoUpdater::isNewerVersion("v3.0.0", "3.0.0"));
+    TEST_ASSERT(!AutoUpdater::isNewerVersion("3.0.0", "v3.0.0"));
+
+    // Older versions -> NOT newer
+    TEST_ASSERT(!AutoUpdater::isNewerVersion("2.1.0", "3.0.0"));
+    TEST_ASSERT(!AutoUpdater::isNewerVersion("3.0.0", "3.0.1"));
+    TEST_ASSERT(!AutoUpdater::isNewerVersion("3.0.0", "3.1.0"));
+    TEST_ASSERT(!AutoUpdater::isNewerVersion("2.99.99", "3.0.0"));
+
+    // 4. Lightweight JSON Key Extraction
+    std::string sampleJson = "{\n"
+                             "    \"tag_name\": \"v3.0.1\",\n"
+                             "    \"html_url\": \"https://github.com/oocs07/Remote-Desktop/releases/tag/v3.0.1\",\n"
+                             "    \"body\": \"Fixed multi-monitor scaling on 4K displays.\\r\\nAdded performance optimizations.\"\n"
+                             "}";
+
+    std::string tag = AutoUpdater::extractJsonString(sampleJson, "tag_name");
+    std::string url = AutoUpdater::extractJsonString(sampleJson, "html_url");
+    std::string body = AutoUpdater::extractJsonString(sampleJson, "body");
+
+    TEST_ASSERT(tag == "v3.0.1");
+    TEST_ASSERT(url == "https://github.com/oocs07/Remote-Desktop/releases/tag/v3.0.1");
+    TEST_ASSERT(body.find("Fixed multi-monitor scaling") != std::string::npos);
+
+    // Extraction with escaped quotes
+    std::string jsonWithEscapes = "{\"desc\": \"Feature with \\\"quotes\\\" and text\", \"other\": \"ok\"}";
+    TEST_ASSERT(AutoUpdater::extractJsonString(jsonWithEscapes, "desc") == "Feature with \"quotes\" and text");
+    TEST_ASSERT(AutoUpdater::extractJsonString(jsonWithEscapes, "nonexistent").empty());
+}
+
 } // namespace
 
 int main() {
@@ -1068,7 +1132,7 @@ int main() {
         CoInitializeEx(nullptr, COINIT_MULTITHREADED);
 
         std::cout << "=========================================================\n" << std::flush;
-        std::cout << "   AeroDesk Automated Verification & Integration Suite   \n" << std::flush;
+        std::cout << "   CppDesk Automated Verification & Integration Suite    \n" << std::flush;
         std::cout << "=========================================================\n" << std::flush;
 
         testDeskIdAndCrypto(); std::cout << "Test 1 done\n" << std::flush;
@@ -1082,6 +1146,7 @@ int main() {
         testV201FeaturesAndResilience(); std::cout << "Test 9 done\n" << std::flush;
         testNotificationSystemAndTray(); std::cout << "Test 10 done\n" << std::flush;
         testV210PowerFeaturesInheritance(); std::cout << "Test 11 done\n" << std::flush;
+        testAutoUpdaterAndProtocolV3(); std::cout << "Test 12 done\n" << std::flush;
 
         std::cout << "---------------------------------------------------------\n";
         std::cout << "Assertions Passed: " << g_passed << " | Failed: " << g_failed << "\n";

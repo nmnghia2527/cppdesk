@@ -4,7 +4,7 @@
 #include <algorithm>
 #include <cmath>
 
-namespace aerodesk {
+namespace cppdesk {
 
 namespace {
 
@@ -278,7 +278,7 @@ void WhiteboardManager::showHostOverlay() {
     wc.cbSize = sizeof(wc);
     wc.lpfnWndProc = OverlayWndProc;
     wc.hInstance = hInst;
-    wc.lpszClassName = L"AeroDesk_Whiteboard_Overlay";
+    wc.lpszClassName = L"CppDesk_Whiteboard_Overlay";
     RegisterClassExW(&wc);
 
     int vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
@@ -289,7 +289,7 @@ void WhiteboardManager::showHostOverlay() {
     hwndOverlay_ = CreateWindowExW(
         WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
         wc.lpszClassName,
-        L"AeroDesk Whiteboard Overlay",
+        L"CppDesk Whiteboard Overlay",
         WS_POPUP | WS_VISIBLE,
         vx, vy, vw, vh,
         nullptr, nullptr, hInst, nullptr
@@ -317,4 +317,4 @@ void WhiteboardManager::updateHostOverlayCanvas() {
     }
 }
 
-} // namespace aerodesk
+} // namespace cppdesk

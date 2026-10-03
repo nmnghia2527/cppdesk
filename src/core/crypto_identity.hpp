@@ -7,7 +7,7 @@
 #include <vector>
 #include <array>
 
-namespace aerodesk {
+namespace cppdesk {
 
 struct RecentSessionEntry {
     uint64_t    deskId = 0;
@@ -259,4 +259,4 @@ private:
     std::string                     configPath_;
 };
 
-} // namespace aerodesk
+} // namespace cppdesk

@@ -15,7 +15,7 @@
 #include <string>
 #include <chrono>
 
-namespace aerodesk {
+namespace cppdesk {
 
 struct AnnotationStroke {
     uint32_t                strokeId = 0;
@@ -94,4 +94,4 @@ private:
     HWND                    hwndOverlay_ = nullptr;
 };
 
-} // namespace aerodesk
+} // namespace cppdesk

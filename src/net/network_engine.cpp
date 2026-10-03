@@ -16,7 +16,7 @@
 #include <algorithm>
 #include <deque>
 
-namespace aerodesk {
+namespace cppdesk {
 
 namespace {
 
@@ -110,7 +110,7 @@ static LRESULT CALLBACK PrivacyCurtainWndProc(HWND hwnd, UINT msg, WPARAM wParam
 
             RECT titleRc = rc;
             titleRc.bottom = rc.top + (rc.bottom - rc.top) / 2;
-            DrawTextW(hdc, L"AeroDesk Privacy Mode Active", -1, &titleRc, DT_CENTER | DT_BOTTOM | DT_SINGLELINE);
+            DrawTextW(hdc, L"CppDesk Privacy Mode Active", -1, &titleRc, DT_CENTER | DT_BOTTOM | DT_SINGLELINE);
 
             HFONT hFontSub = CreateFontW(18, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
                                          DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
@@ -3033,7 +3033,7 @@ void NetworkEngine::createPrivacyCurtainWindow() {
     wc.cbSize = sizeof(wc);
     wc.lpfnWndProc = PrivacyCurtainWndProc;
     wc.hInstance = GetModuleHandleW(nullptr);
-    wc.lpszClassName = L"AeroDeskPrivacyCurtainClass";
+    wc.lpszClassName = L"CppDeskPrivacyCurtainClass";
     wc.hCursor = nullptr;
     RegisterClassExW(&wc);
 
@@ -3044,8 +3044,8 @@ void NetworkEngine::createPrivacyCurtainWindow() {
 
     hwndPrivacyCurtain_ = CreateWindowExW(
         WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
-        L"AeroDeskPrivacyCurtainClass",
-        L"AeroDesk Privacy Curtain",
+        L"CppDeskPrivacyCurtainClass",
+        L"CppDesk Privacy Curtain",
         WS_POPUP,
         vx, vy, vw, vh,
         nullptr, nullptr,
@@ -3849,4 +3849,4 @@ void NetworkEngine::hostTunnelProxyLoop() {
     }
 }
 
-} // namespace aerodesk
+} // namespace cppdesk

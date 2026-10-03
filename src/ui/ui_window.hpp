@@ -18,8 +18,11 @@
 #include <array>
 #include <unordered_map>
 #include <functional>
+#include "../net/updater.hpp"
 
-namespace aerodesk {
+namespace cppdesk {
+
+static constexpr UINT WM_DESK_UPDATE_CHECK_DONE = WM_USER + 102;
 
 enum class ActiveTab : uint8_t {
     Dashboard     = 0,
@@ -103,10 +106,10 @@ struct WidgetAnimState {
     bool  toggleInitialized = false;
 };
 
-class AeroDeskWindow {
+class CppDeskWindow {
 public:
-    AeroDeskWindow(IdentityManager& identity, NetworkEngine& network);
-    ~AeroDeskWindow();
+    CppDeskWindow(IdentityManager& identity, NetworkEngine& network);
+    ~CppDeskWindow();
 
     bool create(HINSTANCE hInstance, int nCmdShow);
     int messageLoop();
@@ -138,7 +141,9 @@ private:
     void drawPortForwardModal(float width, float height, float modalProgress);
     void drawAddressBookModal(float width, float height, float modalProgress);
     void drawWhiteboardOverlay(const UiRect& canvasRect);
+    void drawUpdateRequiredModal(float width, float height, float modalProgress);
     void drawToastBanner(float width, float height, float toastProgress);
+    void triggerUpdateCheck(bool manual);
 
     // Primitive drawing & vector icon helpers
     void drawCardShadow(const UiRect& r, float radius, float intensity = 1.0f);
@@ -349,6 +354,16 @@ private:
     std::string             prevHostClientName_;
     size_t                  prevCompletedTransfersCount_ = 0;
     bool                    prevHasPendingIncoming_ = false;
+
+    // Mandatory Auto-Updater state (v3.0.0)
+    bool                    showUpdateRequiredModal_ = false;
+    float                   updateModalAnimT_ = 0.0f;
+    float                   updateModalAnimVel_ = 0.0f;
+    bool                    isCheckingUpdates_ = false;
+    std::string             updateStatusText_ = "Version v3.0.0 (Up to date)";
+    UpdateInfo              latestUpdateInfo_{};
+    float                   startupUpdateCheckTimer_ = 2.0f;
+    bool                    startupCheckTriggered_ = false;
 };
 
-} // namespace aerodesk
+} // namespace cppdesk

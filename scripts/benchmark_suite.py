@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-AeroDesk Polyglot Benchmark & Stress Verification Suite (Python 3.14)
+CppDesk Polyglot Benchmark & Stress Verification Suite (Python 3.14)
 Verifies and benchmarks:
-  1. C++20 + x86-64 AVX2 Assembly SIMD Kernels (AeroDeskTests.exe)
-  2. C# .NET 10 Standalone Rendezvous & Relay Server (AeroDeskRelay --self-test & 40-peer stress test)
+  1. C++20 + x86-64 AVX2 Assembly SIMD Kernels (CppDeskTests.exe)
+  2. C# .NET 10 Standalone Rendezvous & Relay Server (CppDeskRelay --self-test & 40-peer stress test)
 """
 
 import socket
@@ -14,7 +14,7 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-PROTOCOL_MAGIC = 0x4144534B
+PROTOCOL_MAGIC = 0x4344534B  # "CDSK" (CppDesk Relay Magic)
 PKT_RELAY_REGISTER = 0x50
 PKT_RELAY_REGISTER_ACK = 0x51
 PKT_RELAY_LOOKUP = 0x52
@@ -50,10 +50,10 @@ def recv_frame(sock: socket.socket) -> tuple[int, bytes]:
 
 def benchmark_dotnet_relay() -> tuple[int, float, float]:
     """Starts the C# .NET 10 Relay Server and benchmarks 40 concurrent peer registrations & lookups."""
-    relay_dll = ROOT / "relay-dotnet" / "bin" / "Release" / "net10.0" / "AeroDeskRelay.dll"
+    relay_dll = ROOT / "relay-dotnet" / "bin" / "Release" / "net10.0" / "CppDeskRelay.dll"
     if not relay_dll.exists():
         subprocess.run(
-            ["dotnet", "build", str(ROOT / "relay-dotnet" / "AeroDeskRelay.csproj"), "-c", "Release", "--nologo", "-v", "q"],
+            ["dotnet", "build", str(ROOT / "relay-dotnet" / "CppDeskRelay.csproj"), "-c", "Release", "--nologo", "-v", "q"],
             check=True,
         )
 
@@ -109,11 +109,11 @@ def benchmark_dotnet_relay() -> tuple[int, float, float]:
 
 def main() -> int:
     print("=================================================================")
-    print("   AeroDesk Polyglot Verification & Performance Benchmark (Py3)  ")
+    print("   CppDesk Polyglot Verification & Performance Benchmark (Py3)   ")
     print("=================================================================")
 
     # 1. C++20 + x86-64 AVX2 Assembly Test Suite
-    test_exe = ROOT / "AeroDeskTests.exe"
+    test_exe = ROOT / "CppDeskTests.exe"
     if test_exe.exists():
         print("[1/2] Running Native C++20 + x86-64 AVX2 Assembly Test Suite...")
         res = subprocess.run([str(test_exe)], capture_output=True, text=True, check=True)

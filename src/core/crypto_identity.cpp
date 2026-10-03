@@ -17,7 +17,7 @@
 #include <filesystem>
 #include <algorithm>
 
-namespace aerodesk {
+namespace cppdesk {
 
 namespace {
 
@@ -102,7 +102,7 @@ std::string CryptoUtils::sha256Hex(const std::string& text) {
 }
 
 std::string CryptoUtils::hashPassword(const std::string& password, const std::string& salt) {
-    std::string combined = "AeroDesk-v1:" + salt + ":" + password;
+    std::string combined = "CppDesk-v1:" + salt + ":" + password;
     return sha256Hex(combined);
 }
 
@@ -212,7 +212,7 @@ std::array<uint8_t, 32> CryptoUtils::deriveSessionKey(
 {
     if (ecdhSecret && ecdhSecretLen > 0) {
         ByteWriter infoW;
-        infoW.writeString("AeroDesk-ECDH-AES256GCM-v2");
+        infoW.writeString("CppDesk-ECDH-AES256GCM-v3");
         infoW.writeU64(hostId);
         infoW.writeU64(clientId);
         std::string infoStr(reinterpret_cast<const char*>(infoW.buffer().data()), infoW.buffer().size());
@@ -220,7 +220,7 @@ std::array<uint8_t, 32> CryptoUtils::deriveSessionKey(
     }
 
     ByteWriter w;
-    w.writeString("AeroDesk-SessionKey-v1");
+    w.writeString("CppDesk-SessionKey-v1");
     w.writeU64(hostId);
     w.writeU64(clientId);
     w.writeBytes(nonce.data(), nonce.size());
@@ -268,7 +268,7 @@ void CryptoUtils::transformPayload(
             for (size_t w = 0; w < words; ++w) {
                 ksBatch[w] = nextWord();
             }
-            aerodesk_avx2_xor_blocks32(data + i, reinterpret_cast<const uint8_t*>(ksBatch), blocks);
+            cppdesk_avx2_xor_blocks32(data + i, reinterpret_cast<const uint8_t*>(ksBatch), blocks);
             i += blocks * 32;
         }
     }
@@ -346,12 +346,29 @@ IdentityManager::IdentityManager(int instanceId)
 
     char appData[MAX_PATH] = {};
     if (SUCCEEDED(SHGetFolderPathA(nullptr, CSIDL_APPDATA, nullptr, 0, appData))) {
-        std::filesystem::path dir = std::filesystem::path(appData) / "AeroDesk";
+        std::filesystem::path dir = std::filesystem::path(appData) / "CppDesk";
+        std::filesystem::path oldDir = std::filesystem::path(appData) / "AeroDesk";
         std::error_code ec;
         std::filesystem::create_directories(dir, ec);
+
+        // One-time automatic migration from AeroDesk
+        if (std::filesystem::exists(oldDir, ec)) {
+            std::filesystem::path oldCfg = oldDir / ("config_" + std::to_string(instanceId_) + ".ini");
+            std::filesystem::path newCfg = dir / ("config_" + std::to_string(instanceId_) + ".ini");
+            if (std::filesystem::exists(oldCfg, ec) && !std::filesystem::exists(newCfg, ec)) {
+                std::filesystem::copy_file(oldCfg, newCfg, std::filesystem::copy_options::overwrite_existing, ec);
+            }
+        }
+
         configPath_ = (dir / ("config_" + std::to_string(instanceId_) + ".ini")).string();
     } else {
-        configPath_ = "aerodesk_" + std::to_string(instanceId_) + ".ini";
+        std::filesystem::path oldLocal = "aerodesk_" + std::to_string(instanceId_) + ".ini";
+        std::filesystem::path newLocal = "cppdesk_" + std::to_string(instanceId_) + ".ini";
+        std::error_code ec;
+        if (std::filesystem::exists(oldLocal, ec) && !std::filesystem::exists(newLocal, ec)) {
+            std::filesystem::copy_file(oldLocal, newLocal, std::filesystem::copy_options::overwrite_existing, ec);
+        }
+        configPath_ = newLocal.string();
     }
 }
 
@@ -485,7 +502,7 @@ bool IdentityManager::save() const {
     std::ofstream out(configPath_, std::ios::trunc);
     if (!out.is_open()) return false;
 
-    out << "# AeroDesk Configuration (Salted SHA-256 Verifier Protected)\n";
+    out << "# CppDesk Configuration (Salted SHA-256 Verifier Protected)\n";
     out << "desk_id=" << deskId_ << "\n";
     out << "listen_port=" << listenPort_ << "\n";
     out << "unattended_enabled=" << (unattendedEnabled_ ? "1" : "0") << "\n";
@@ -1006,9 +1023,9 @@ bool AesGcmSessionCipher::ratchetKey() {
     std::array<uint8_t, 32> nextKey = CryptoUtils::hkdfSha256(
         sessionKey_.data(), sessionKey_.size(),
         sessionKey_.data(), sessionKey_.size(),
-        "AeroDesk-Ratchet-NextKey"
+        "CppDesk-Ratchet-NextKey"
     );
     return initialize(nextKey, isHost_);
 }
 
-} // namespace aerodesk
+} // namespace cppdesk

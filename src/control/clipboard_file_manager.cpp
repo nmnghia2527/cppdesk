@@ -13,7 +13,7 @@
 #include <algorithm>
 #include <cstring>
 
-namespace aerodesk {
+namespace cppdesk {
 
 namespace {
 
@@ -177,12 +177,12 @@ void ClipboardManager::applyRemoteClipboard(const std::string& utf8Text) {
 FileTransferManager::FileTransferManager() {
     char profileDir[MAX_PATH] = {};
     if (SUCCEEDED(SHGetFolderPathA(nullptr, CSIDL_PROFILE, nullptr, 0, profileDir))) {
-        std::filesystem::path dl = std::filesystem::path(profileDir) / "Downloads" / "AeroDesk_Received";
+        std::filesystem::path dl = std::filesystem::path(profileDir) / "Downloads" / "CppDesk_Received";
         std::error_code ec;
         std::filesystem::create_directories(dl, ec);
         receiveDir_ = dl.string();
     } else {
-        receiveDir_ = "AeroDesk_Received";
+        receiveDir_ = "CppDesk_Received";
         std::error_code ec;
         std::filesystem::create_directories(receiveDir_, ec);
     }
@@ -612,4 +612,4 @@ std::vector<FileTransferItem> FileTransferManager::snapshotTransfers() const {
     return items_;
 }
 
-} // namespace aerodesk
+} // namespace cppdesk

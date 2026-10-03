@@ -10,7 +10,7 @@
 #include <memory>
 #include <functional>
 
-namespace aerodesk {
+namespace cppdesk {
 
 enum class TransferStatus : uint8_t {
     InProgress = 0,
@@ -118,4 +118,4 @@ private:
     std::vector<std::unique_ptr<ActiveIncoming>>   incomingStreams_;
 };
 
-} // namespace aerodesk
+} // namespace cppdesk

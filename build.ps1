@@ -20,6 +20,7 @@ $CoreSources = @(
     "src/control/clipboard_file_manager.cpp",
     "src/control/whiteboard_manager.cpp",
     "src/net/network_engine.cpp",
+    "src/net/updater.cpp",
     "src/ui/notification_manager.cpp"
 )
 
@@ -61,7 +62,8 @@ $Libs = @(
     "-lgdi32",
     "-luser32",
     "-lshell32",
-    "-lwinmm"
+    "-lwinmm",
+    "-lwinhttp"
 )
 
 $Windres = "C:\msys64\ucrt64\bin\windres.exe"
@@ -69,40 +71,40 @@ if (-not (Test-Path $Windres)) {
     $Windres = "windres"
 }
 
-Write-Host "[1/3] Compiling AeroDesk.exe (C++20 + x86-64 AVX2 Assembly)..." -ForegroundColor Cyan
-& $Windres "src/aerodesk.rc" -O coff -o "src/aerodesk_res.o"
+Write-Host "[1/3] Compiling CppDesk.exe (C++20 + x86-64 AVX2 Assembly)..." -ForegroundColor Cyan
+& $Windres "src/cppdesk.rc" -O coff -o "src/cppdesk_res.o"
 if ($LASTEXITCODE -ne 0) {
-    throw "Failed to compile Win32 icon resource src/aerodesk.rc"
+    throw "Failed to compile Win32 icon resource src/cppdesk.rc"
 }
-& $Gpp @CommonFlags -mwindows @AppSources "src/aerodesk_res.o" -o "AeroDesk.exe" @Libs
-Remove-Item "src/aerodesk_res.o" -ErrorAction SilentlyContinue
+& $Gpp @CommonFlags -mwindows @AppSources "src/cppdesk_res.o" -o "CppDesk.exe" @Libs
+Remove-Item "src/cppdesk_res.o" -ErrorAction SilentlyContinue
 if ($LASTEXITCODE -ne 0) {
-    throw "Failed to compile AeroDesk.exe"
+    throw "Failed to compile CppDesk.exe"
 }
-Write-Host "  -> Built AeroDesk.exe ($((Get-Item 'AeroDesk.exe').Length / 1KB -as [int]) KB)" -ForegroundColor Green
+Write-Host "  -> Built CppDesk.exe ($((Get-Item 'CppDesk.exe').Length / 1KB -as [int]) KB)" -ForegroundColor Green
 
 if ($BuildRelay -or $Test -or $Benchmark) {
     Write-Host "[2/3] Building C# (.NET 10) Standalone Relay Server..." -ForegroundColor Cyan
-    & dotnet build "relay-dotnet/AeroDeskRelay.csproj" -c Release --nologo -v q
+    & dotnet build "relay-dotnet/CppDeskRelay.csproj" -c Release --nologo -v q
     if ($LASTEXITCODE -ne 0) {
-        throw "Failed to build C# AeroDeskRelay.csproj"
+        throw "Failed to build C# CppDeskRelay.csproj"
     }
     Write-Host "  -> Verified C# .NET 10 Relay Server (--self-test)..." -ForegroundColor Green
-    & dotnet "relay-dotnet/bin/Release/net10.0/AeroDeskRelay.dll" --port 51998 --self-test
+    & dotnet "relay-dotnet/bin/Release/net10.0/CppDeskRelay.dll" --port 51998 --self-test
     if ($LASTEXITCODE -ne 0) {
-        throw "C# AeroDeskRelay self-test failed"
+        throw "C# CppDeskRelay self-test failed"
     }
 }
 
 if ($Test) {
-    Write-Host "[3/3] Compiling and running AeroDeskTests.exe..." -ForegroundColor Cyan
-    & $Gpp @CommonFlags @TestSources -o "AeroDeskTests.exe" @Libs
+    Write-Host "[3/3] Compiling and running CppDeskTests.exe..." -ForegroundColor Cyan
+    & $Gpp @CommonFlags @TestSources -o "CppDeskTests.exe" @Libs
     if ($LASTEXITCODE -ne 0) {
-        throw "Failed to compile AeroDeskTests.exe"
+        throw "Failed to compile CppDeskTests.exe"
     }
-    & .\AeroDeskTests.exe
+    & .\CppDeskTests.exe
     if ($LASTEXITCODE -ne 0) {
-        throw "AeroDeskTests.exe reported test failures!"
+        throw "CppDeskTests.exe reported test failures!"
     }
 }
 
@@ -115,5 +117,5 @@ if ($Benchmark) {
 }
 
 if ($Run) {
-    Start-Process ".\AeroDesk.exe"
+    Start-Process ".\CppDesk.exe"
 }

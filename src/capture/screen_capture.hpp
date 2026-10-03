@@ -11,7 +11,7 @@
 #include <condition_variable>
 #include <atomic>
 
-namespace aerodesk {
+namespace cppdesk {
 
 struct CursorState {
     float normX = 0.0f;
@@ -141,4 +141,4 @@ private:
     std::vector<uint64_t>     prevTileHashes_;
 };
 
-} // namespace aerodesk
+} // namespace cppdesk

@@ -8,6 +8,13 @@
     .globl aerodesk_avx2_tile_diff
     .globl aerodesk_avx2_hash_tile
     .globl aerodesk_avx2_xor_blocks32
+    .globl cppdesk_avx2_tile_diff
+    .globl cppdesk_avx2_hash_tile
+    .globl cppdesk_avx2_xor_blocks32
+
+    .set cppdesk_avx2_tile_diff, aerodesk_avx2_tile_diff
+    .set cppdesk_avx2_hash_tile, aerodesk_avx2_hash_tile
+    .set cppdesk_avx2_xor_blocks32, aerodesk_avx2_xor_blocks32
 
 # -----------------------------------------------------------------------------
 # int aerodesk_avx2_tile_diff(

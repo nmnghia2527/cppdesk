@@ -3,7 +3,7 @@
 #include "../core/protocol.hpp"
 #include <cstdint>
 
-namespace aerodesk {
+namespace cppdesk {
 
 enum class MouseButtonId : uint8_t {
     Left   = 1,
@@ -28,4 +28,4 @@ public:
     static bool executeSystemAction(SystemActionType action);
 };
 
-} // namespace aerodesk
+} // namespace cppdesk

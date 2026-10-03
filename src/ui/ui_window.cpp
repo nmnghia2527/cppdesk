@@ -18,7 +18,7 @@
 #define DWMWA_WINDOW_CORNER_PREFERENCE 33
 #endif
 
-namespace aerodesk {
+namespace cppdesk {
 
 namespace {
 
@@ -162,7 +162,7 @@ std::wstring utf8ToWide(const std::string& str) {
 
 } // namespace
 
-AeroDeskWindow::AeroDeskWindow(IdentityManager& identity, NetworkEngine& network)
+CppDeskWindow::CppDeskWindow(IdentityManager& identity, NetworkEngine& network)
     : identity_(identity)
     , network_(network)
 {
@@ -180,14 +180,14 @@ AeroDeskWindow::AeroDeskWindow(IdentityManager& identity, NetworkEngine& network
     lastQpcCounter_ = now.QuadPart;
 }
 
-AeroDeskWindow::~AeroDeskWindow() {
+CppDeskWindow::~CppDeskWindow() {
     if (notificationMgr_) {
         notificationMgr_->shutdown();
     }
     releaseGraphics();
 }
 
-void AeroDeskWindow::applyWindowThemeAttribute() {
+void CppDeskWindow::applyWindowThemeAttribute() {
     if (!hwnd_) return;
     BOOL dark = identity_.settings().darkTheme ? TRUE : FALSE;
     DwmSetWindowAttribute(hwnd_, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark, sizeof(dark));
@@ -195,7 +195,7 @@ void AeroDeskWindow::applyWindowThemeAttribute() {
     DwmSetWindowAttribute(hwnd_, DWMWA_WINDOW_CORNER_PREFERENCE, &cornerPref, sizeof(cornerPref));
 }
 
-void AeroDeskWindow::switchTab(ActiveTab newTab) {
+void CppDeskWindow::switchTab(ActiveTab newTab) {
     if (activeTab_ == newTab) return;
     if (activeTab_ == ActiveTab::RemoteSession && newTab != ActiveTab::RemoteSession) {
         network_.sendReleaseAllModifiers();
@@ -211,7 +211,7 @@ void AeroDeskWindow::switchTab(ActiveTab newTab) {
     InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
-bool AeroDeskWindow::create(HINSTANCE hInstance, int nCmdShow) {
+bool CppDeskWindow::create(HINSTANCE hInstance, int nCmdShow) {
     if (!initGraphics()) {
         return false;
     }
@@ -219,17 +219,17 @@ bool AeroDeskWindow::create(HINSTANCE hInstance, int nCmdShow) {
     WNDCLASSEXW wc{};
     wc.cbSize = sizeof(wc);
     wc.style = CS_HREDRAW | CS_VREDRAW | CS_DBLCLKS;
-    wc.lpfnWndProc = &AeroDeskWindow::WndProcStatic;
+    wc.lpfnWndProc = &CppDeskWindow::WndProcStatic;
     wc.hInstance = hInstance;
     wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
     HICON appIcon = LoadIconW(hInstance, MAKEINTRESOURCEW(101));
     if (!appIcon) appIcon = LoadIcon(nullptr, IDI_APPLICATION);
     wc.hIcon = appIcon;
     wc.hIconSm = appIcon;
-    wc.lpszClassName = L"AeroDeskMainWindowClass";
+    wc.lpszClassName = L"CppDeskMainWindowClass";
     RegisterClassExW(&wc);
 
-    std::string title = "AeroDesk";
+    std::string title = "CppDesk";
     if (identity_.instanceId() > 1) {
         title += " #" + std::to_string(identity_.instanceId());
     }
@@ -268,7 +268,7 @@ bool AeroDeskWindow::create(HINSTANCE hInstance, int nCmdShow) {
     return true;
 }
 
-int AeroDeskWindow::messageLoop() {
+int CppDeskWindow::messageLoop() {
     MSG msg{};
     while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
         TranslateMessage(&msg);
@@ -277,7 +277,7 @@ int AeroDeskWindow::messageLoop() {
     return static_cast<int>(msg.wParam);
 }
 
-bool AeroDeskWindow::initGraphics() {
+bool CppDeskWindow::initGraphics() {
     HRESULT hr = D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, &d2dFactory_);
     if (FAILED(hr) || !d2dFactory_) return false;
 
@@ -309,7 +309,7 @@ bool AeroDeskWindow::initGraphics() {
     return true;
 }
 
-void AeroDeskWindow::discardDeviceResources() {
+void CppDeskWindow::discardDeviceResources() {
     if (remoteBitmap_) { remoteBitmap_->Release(); remoteBitmap_ = nullptr; }
     if (solidBrush_) { solidBrush_->Release(); solidBrush_ = nullptr; }
     if (renderTarget_) { renderTarget_->Release(); renderTarget_ = nullptr; }
@@ -317,7 +317,7 @@ void AeroDeskWindow::discardDeviceResources() {
     bitmapH_ = 0;
 }
 
-void AeroDeskWindow::releaseGraphics() {
+void CppDeskWindow::releaseGraphics() {
     discardDeviceResources();
     if (fmtHeroId_) { fmtHeroId_->Release(); fmtHeroId_ = nullptr; }
     if (fmtHeading_) { fmtHeading_->Release(); fmtHeading_ = nullptr; }
@@ -330,7 +330,7 @@ void AeroDeskWindow::releaseGraphics() {
     if (d2dFactory_) { d2dFactory_->Release(); d2dFactory_ = nullptr; }
 }
 
-bool AeroDeskWindow::stepAnimations(float dt) {
+bool CppDeskWindow::stepAnimations(float dt) {
     bool active = false;
     animTimeSec_ += dt;
 
@@ -391,6 +391,21 @@ bool AeroDeskWindow::stepAnimations(float dt) {
     float targetABModal = showAddressBookEditModal_ ? 1.0f : 0.0f;
     if (stepSpring(addressBookModalAnimT_, addressBookModalAnimVel_, targetABModal, 28.0f, 0.74f, dt)) active = true;
 
+    // 11. Mandatory Update Modal Spring (v3.0.0)
+    float targetUpdateModal = showUpdateRequiredModal_ ? 1.0f : 0.0f;
+    if (stepSpring(updateModalAnimT_, updateModalAnimVel_, targetUpdateModal, 28.0f, 0.74f, dt)) active = true;
+
+    // Startup auto-update check timer (queries GitHub 2.0s after launch)
+    if (!startupCheckTriggered_) {
+        startupUpdateCheckTimer_ -= dt;
+        if (startupUpdateCheckTimer_ <= 0.0f) {
+            startupCheckTriggered_ = true;
+            triggerUpdateCheck(false);
+        } else {
+            active = true;
+        }
+    }
+
     // 7. Per-widget macOS tactile hover & press springs
     for (auto& kv : widgetAnims_) {
         const std::string& id = kv.first;
@@ -411,15 +426,15 @@ bool AeroDeskWindow::stepAnimations(float dt) {
     return active;
 }
 
-LRESULT CALLBACK AeroDeskWindow::WndProcStatic(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
-    AeroDeskWindow* self = nullptr;
+LRESULT CALLBACK CppDeskWindow::WndProcStatic(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    CppDeskWindow* self = nullptr;
     if (msg == WM_NCCREATE) {
         auto* cs = reinterpret_cast<CREATESTRUCTW*>(lParam);
-        self = static_cast<AeroDeskWindow*>(cs->lpCreateParams);
+        self = static_cast<CppDeskWindow*>(cs->lpCreateParams);
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(self));
         self->hwnd_ = hwnd;
     } else {
-        self = reinterpret_cast<AeroDeskWindow*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+        self = reinterpret_cast<CppDeskWindow*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
     }
 
     if (self) {
@@ -428,7 +443,7 @@ LRESULT CALLBACK AeroDeskWindow::WndProcStatic(HWND hwnd, UINT msg, WPARAM wPara
     return DefWindowProcW(hwnd, msg, wParam, lParam);
 }
 
-LRESULT AeroDeskWindow::handleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
+LRESULT CppDeskWindow::handleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
         case WM_SETCURSOR: {
             if (LOWORD(lParam) == HTCLIENT) {
@@ -733,6 +748,10 @@ LRESULT AeroDeskWindow::handleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
             onDropFiles(reinterpret_cast<HDROP>(wParam));
             return 0;
 
+        case WM_DESK_UPDATE_CHECK_DONE:
+            InvalidateRect(hwnd_, nullptr, FALSE);
+            return 0;
+
         case WM_DESTROY:
             KillTimer(hwnd_, 1);
             PostQuitMessage(0);
@@ -743,7 +762,7 @@ LRESULT AeroDeskWindow::handleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
 
 // ---------------- Primitive Drawing, Vector Icons & macOS Surface Helpers ----------------
 
-void AeroDeskWindow::drawCardShadow(const UiRect& r, float radius, float intensity) {
+void CppDeskWindow::drawCardShadow(const UiRect& r, float radius, float intensity) {
     if (!renderTarget_ || !solidBrush_ || intensity <= 0.01f) return;
     float shadowScale = 1.0f + 2.4f * std::clamp(themeAnimT_, 0.0f, 1.0f);
     fillRoundRect(r.offset(0.0f, 5.0f).inflate(2.5f, 2.5f), radius + 2.5f, rgba(5, 8, 18, 0.022f * shadowScale * intensity));
@@ -751,7 +770,7 @@ void AeroDeskWindow::drawCardShadow(const UiRect& r, float radius, float intensi
     fillRoundRect(r.offset(0.0f, 1.0f), radius, rgba(5, 8, 18, 0.028f * shadowScale * intensity));
 }
 
-void AeroDeskWindow::drawCardSurface(const UiRect& r, float radius, float alpha, bool /*accentHeader*/) {
+void CppDeskWindow::drawCardSurface(const UiRect& r, float radius, float alpha, bool /*accentHeader*/) {
     drawCardShadow(r, radius, alpha);
     fillRoundRect(r, radius, withAlpha(COL_BG_CARD, alpha));
     strokeRoundRect(r, radius, withAlpha(COL_BORDER, alpha), 1.0f);
@@ -761,7 +780,7 @@ void AeroDeskWindow::drawCardSurface(const UiRect& r, float radius, float alpha,
     fillRoundRect({ r.left + 14.0f, r.top + 0.8f, r.right - 14.0f, r.top + 1.8f }, 0.5f, rgba(255, 255, 255, specAlpha));
 }
 
-void AeroDeskWindow::drawPulseDot(float cx, float cy, float baseRadius, D2D1_COLOR_F color, float alpha) {
+void CppDeskWindow::drawPulseDot(float cx, float cy, float baseRadius, D2D1_COLOR_F color, float alpha) {
     if (!renderTarget_ || !solidBrush_ || alpha <= 0.01f) return;
     float wave = 0.5f + 0.5f * std::sin(animTimeSec_ * 2.2f);
     float haloRadius = baseRadius + 1.2f + 2.2f * wave;
@@ -774,7 +793,7 @@ void AeroDeskWindow::drawPulseDot(float cx, float cy, float baseRadius, D2D1_COL
     renderTarget_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), baseRadius, baseRadius), solidBrush_);
 }
 
-void AeroDeskWindow::drawSparkline(const UiRect& r, const float* values, size_t count, float maxVal, D2D1_COLOR_F color, float alpha) {
+void CppDeskWindow::drawSparkline(const UiRect& r, const float* values, size_t count, float maxVal, D2D1_COLOR_F color, float alpha) {
     if (!renderTarget_ || !solidBrush_ || count < 2 || maxVal <= 0.001f) return;
     fillRoundRect(r, 4.0f, withAlpha(COL_BG_SUBTLE, alpha * 0.85f));
     strokeRoundRect(r, 4.0f, withAlpha(COL_BORDER, alpha * 0.85f), 1.0f);
@@ -792,7 +811,7 @@ void AeroDeskWindow::drawSparkline(const UiRect& r, const float* values, size_t 
     }
 }
 
-void AeroDeskWindow::drawIconStar(float cx, float cy, float radius, bool filled, D2D1_COLOR_F color) {
+void CppDeskWindow::drawIconStar(float cx, float cy, float radius, bool filled, D2D1_COLOR_F color) {
     if (!renderTarget_ || !solidBrush_ || !d2dFactory_) return;
     ID2D1PathGeometry* geo = nullptr;
     if (FAILED(d2dFactory_->CreatePathGeometry(&geo)) || !geo) return;
@@ -822,14 +841,14 @@ void AeroDeskWindow::drawIconStar(float cx, float cy, float radius, bool filled,
     geo->Release();
 }
 
-void AeroDeskWindow::drawIconClose(float cx, float cy, float halfSize, D2D1_COLOR_F color, float strokeWidth) {
+void CppDeskWindow::drawIconClose(float cx, float cy, float halfSize, D2D1_COLOR_F color, float strokeWidth) {
     if (!renderTarget_ || !solidBrush_) return;
     solidBrush_->SetColor(color);
     renderTarget_->DrawLine(D2D1::Point2F(cx - halfSize, cy - halfSize), D2D1::Point2F(cx + halfSize, cy + halfSize), solidBrush_, strokeWidth);
     renderTarget_->DrawLine(D2D1::Point2F(cx + halfSize, cy - halfSize), D2D1::Point2F(cx - halfSize, cy + halfSize), solidBrush_, strokeWidth);
 }
 
-void AeroDeskWindow::drawIconTheme(float cx, float cy, float radius, bool isDark, D2D1_COLOR_F color) {
+void CppDeskWindow::drawIconTheme(float cx, float cy, float radius, bool isDark, D2D1_COLOR_F color) {
     if (!renderTarget_ || !solidBrush_) return;
     solidBrush_->SetColor(color);
     if (!isDark) {
@@ -855,21 +874,21 @@ void AeroDeskWindow::drawIconTheme(float cx, float cy, float radius, bool isDark
     }
 }
 
-void AeroDeskWindow::fillRoundRect(const UiRect& r, float radius, D2D1_COLOR_F color) {
+void CppDeskWindow::fillRoundRect(const UiRect& r, float radius, D2D1_COLOR_F color) {
     if (!renderTarget_ || !solidBrush_) return;
     solidBrush_->SetColor(color);
     D2D1_ROUNDED_RECT rr = D2D1::RoundedRect(D2D1::RectF(r.left, r.top, r.right, r.bottom), radius, radius);
     renderTarget_->FillRoundedRectangle(rr, solidBrush_);
 }
 
-void AeroDeskWindow::strokeRoundRect(const UiRect& r, float radius, D2D1_COLOR_F color, float strokeWidth) {
+void CppDeskWindow::strokeRoundRect(const UiRect& r, float radius, D2D1_COLOR_F color, float strokeWidth) {
     if (!renderTarget_ || !solidBrush_) return;
     solidBrush_->SetColor(color);
     D2D1_ROUNDED_RECT rr = D2D1::RoundedRect(D2D1::RectF(r.left, r.top, r.right, r.bottom), radius, radius);
     renderTarget_->DrawRoundedRectangle(rr, solidBrush_, strokeWidth);
 }
 
-void AeroDeskWindow::drawText(
+void CppDeskWindow::drawText(
     const std::string& utf8,
     const UiRect& r,
     IDWriteTextFormat* fmt,
@@ -886,7 +905,7 @@ void AeroDeskWindow::drawText(
     renderTarget_->DrawText(w.c_str(), static_cast<UINT32>(w.size()), fmt, dr, solidBrush_, D2D1_DRAW_TEXT_OPTIONS_CLIP);
 }
 
-void AeroDeskWindow::drawButton(
+void CppDeskWindow::drawButton(
     const std::string& id,
     const UiRect& r,
     const std::string& label,
@@ -940,7 +959,7 @@ void AeroDeskWindow::drawButton(
     }
 }
 
-void AeroDeskWindow::drawTextField(
+void CppDeskWindow::drawTextField(
     const std::string& id,
     FocusedField fieldType,
     const UiRect& r,
@@ -991,7 +1010,7 @@ void AeroDeskWindow::drawTextField(
     }, true });
 }
 
-void AeroDeskWindow::drawToggleSwitch(
+void CppDeskWindow::drawToggleSwitch(
     const std::string& id,
     const UiRect& r,
     bool checked,
@@ -1046,7 +1065,7 @@ void AeroDeskWindow::drawToggleSwitch(
 
 // ---------------- Main Paint Orchestrator ----------------
 
-void AeroDeskWindow::onPaint() {
+void CppDeskWindow::onPaint() {
     if (!d2dFactory_) return;
 
     LARGE_INTEGER now{};
@@ -1150,6 +1169,11 @@ void AeroDeskWindow::onPaint() {
         drawAddressBookModal(width, height, addressBookModalAnimT_);
     }
 
+    // Mandatory Update Required Modal (v3.0.0)
+    if (updateModalAnimT_ > 0.004f) {
+        drawUpdateRequiredModal(width, height, updateModalAnimT_);
+    }
+
     // Floating Capsule Toast
     if (toastAnimT_ > 0.004f) {
         drawToastBanner(width, height, toastAnimT_);
@@ -1180,7 +1204,7 @@ void AeroDeskWindow::onPaint() {
 
 // ---------------- macOS Unified Top Toolbar ----------------
 
-void AeroDeskWindow::drawTopNavBar(float width, float& outTopOffset) {
+void CppDeskWindow::drawTopNavBar(float width, float& outTopOffset) {
     float navH = 58.0f;
     outTopOffset = navH;
 
@@ -1192,9 +1216,9 @@ void AeroDeskWindow::drawTopNavBar(float width, float& outTopOffset) {
     UiRect logoBadge = { 20.0f, 13.0f, 52.0f, 45.0f };
     fillRoundRect(logoBadge.offset(0.0f, 2.0f), 9.5f, withAlpha(COL_PRIMARY_ACCENT, 0.22f));
     fillRoundRect(logoBadge, 9.5f, COL_PRIMARY_ACCENT);
-    drawText("AD", logoBadge, fmtBodyBold_, COL_TEXT_ON_ACCENT, DWRITE_TEXT_ALIGNMENT_CENTER);
+    drawText("CD", logoBadge, fmtBodyBold_, COL_TEXT_ON_ACCENT, DWRITE_TEXT_ALIGNMENT_CENTER);
 
-    std::string brandTitle = "AeroDesk";
+    std::string brandTitle = "CppDesk";
     if (identity_.instanceId() > 1) {
         brandTitle += " #" + std::to_string(identity_.instanceId());
     }
@@ -1313,7 +1337,7 @@ void AeroDeskWindow::drawTopNavBar(float width, float& outTopOffset) {
 
 // ---------------- Minimalistic macOS Dashboard View ----------------
 
-void AeroDeskWindow::drawDashboardView(const UiRect& bounds, float alpha) {
+void CppDeskWindow::drawDashboardView(const UiRect& bounds, float alpha) {
     if (alpha <= 0.01f) return;
 
     float s1 = std::clamp(tabEnterStaggerT_, 0.0f, 1.15f);
@@ -1774,7 +1798,7 @@ void AeroDeskWindow::drawDashboardView(const UiRect& bounds, float alpha) {
 
 // ---------------- Remote Session View ----------------
 
-void AeroDeskWindow::drawRemoteSessionView(const UiRect& bounds, float alpha) {
+void CppDeskWindow::drawRemoteSessionView(const UiRect& bounds, float alpha) {
     if (alpha <= 0.01f) return;
 
     auto stats = network_.viewerStats();
@@ -2045,7 +2069,7 @@ void AeroDeskWindow::drawRemoteSessionView(const UiRect& bounds, float alpha) {
 
 // ---------------- macOS System Settings View ----------------
 
-void AeroDeskWindow::drawSettingsView(const UiRect& bounds, float alpha) {
+void CppDeskWindow::drawSettingsView(const UiRect& bounds, float alpha) {
     if (alpha <= 0.01f) return;
 
     float sL = std::clamp(tabEnterStaggerT_, 0.0f, 1.15f);
@@ -2267,19 +2291,33 @@ void AeroDeskWindow::drawSettingsView(const UiRect& bounds, float alpha) {
 
     ly = ovBox.bottom + 12.0f;
 
-    // 5. About & Credits
+    // 5. About, Credits & Updates
     if (leftCard.bottom - 20.0f > ly + 36.0f) {
         UiRect aboutBox = { lx, ly, lrx, leftCard.bottom - 20.0f };
         fillRoundRect(aboutBox, 12.0f, COL_BG_SUBTLE);
         strokeRoundRect(aboutBox, 12.0f, COL_BORDER);
 
-        drawText("ABOUT & CREDITS",
+        drawText("ABOUT & UPDATES",
                  { aboutBox.left + 16.0f, aboutBox.top + 8.0f, aboutBox.right - 16.0f, aboutBox.top + 24.0f },
                  fmtSmall_, COL_TEXT_ACCENT);
 
-        drawText("AeroDesk v2.1.0 • C++20 & x86-64 AVX2 Assembly\nInspired by RustDesk (Open Source Remote Desktop)",
-                 { aboutBox.left + 16.0f, aboutBox.top + 28.0f, aboutBox.right - 16.0f, aboutBox.bottom - 6.0f },
+        drawText("CppDesk v3.0.0 • C++20 & x86-64 AVX2 Assembly\nInspired by RustDesk (Open Source Remote Desktop)",
+                 { aboutBox.left + 16.0f, aboutBox.top + 26.0f, aboutBox.right - 16.0f, aboutBox.top + 58.0f },
                  fmtSmall_, COL_TEXT_SECONDARY);
+
+        float updTop = aboutBox.top + 60.0f;
+        if (aboutBox.bottom - 6.0f > updTop + 26.0f) {
+            float btnW = 136.0f;
+            UiRect chkBtn = { aboutBox.left + 16.0f, updTop, aboutBox.left + 16.0f + btnW, updTop + 26.0f };
+            drawButton("sett_check_updates", chkBtn, isCheckingUpdates_ ? "Checking..." : "Check for Updates",
+                       COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 6.0f, [this]() {
+                           triggerUpdateCheck(true);
+                       }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
+
+            UiRect statusRect = { chkBtn.right + 10.0f, updTop, aboutBox.right - 16.0f, updTop + 26.0f };
+            D2D1_COLOR_F statusCol = latestUpdateInfo_.updateRequired ? COL_DANGER : COL_TEXT_MUTED;
+            drawText(updateStatusText_, statusRect, fmtSmall_, statusCol);
+        }
     }
 
     // ==================== RIGHT COLUMN: ACCESS & NETWORK ====================
@@ -2473,7 +2511,7 @@ void AeroDeskWindow::drawSettingsView(const UiRect& bounds, float alpha) {
 
 // ---------------- Floating macOS Side Sheet Drawer ----------------
 
-void AeroDeskWindow::drawFileTransferDrawer(const UiRect& bounds, float slideProgress) {
+void CppDeskWindow::drawFileTransferDrawer(const UiRect& bounds, float slideProgress) {
     float slideOffsetX = (bounds.width() + 24.0f) * (1.0f - slideProgress);
     UiRect r = bounds.offset(slideOffsetX, 0.0f);
 
@@ -2732,7 +2770,7 @@ void AeroDeskWindow::drawFileTransferDrawer(const UiRect& bounds, float slidePro
 
 // ---------------- macOS Sheet Connection Approval Modal ----------------
 
-void AeroDeskWindow::drawIncomingApprovalModal(float width, float height, float modalProgress) {
+void CppDeskWindow::drawIncomingApprovalModal(float width, float height, float modalProgress) {
     auto req = network_.pendingIncomingRequest();
     if (!req.active && modalProgress <= 0.01f) return;
 
@@ -2803,7 +2841,7 @@ void AeroDeskWindow::drawIncomingApprovalModal(float width, float height, float 
 
 // ---------------- macOS Dynamic Island Floating Top Bar ----------------
 
-void AeroDeskWindow::drawDynamicIslandToolbar(float width, float /*height*/) {
+void CppDeskWindow::drawDynamicIslandToolbar(float width, float /*height*/) {
     if (floatingToolbarY_ <= -58.0f) return;
 
     auto stats = network_.viewerStats();
@@ -3127,7 +3165,7 @@ void AeroDeskWindow::drawDynamicIslandToolbar(float width, float /*height*/) {
 
 // ---------------- macOS Keyboard Shortcuts Sheet Modal ----------------
 
-void AeroDeskWindow::drawShortcutsModal(float width, float height, float modalProgress) {
+void CppDeskWindow::drawShortcutsModal(float width, float height, float modalProgress) {
     if (modalProgress <= 0.005f) return;
 
     float alpha = std::clamp(modalProgress, 0.0f, 1.0f);
@@ -3203,7 +3241,7 @@ void AeroDeskWindow::drawShortcutsModal(float width, float height, float modalPr
 
 // ---------------- TCP Port Forwarding Manager Sheet Modal (v2.1.0) ----------------
 
-void AeroDeskWindow::drawPortForwardModal(float width, float height, float modalProgress) {
+void CppDeskWindow::drawPortForwardModal(float width, float height, float modalProgress) {
     if (!showPortForwardModal_ && modalProgress <= 0.01f) return;
 
     float alpha = std::clamp(modalProgress, 0.0f, 1.0f);
@@ -3373,7 +3411,7 @@ void AeroDeskWindow::drawPortForwardModal(float width, float height, float modal
 
 // ---------------- Address Book Edit Sheet Modal (v2.1.0) ----------------
 
-void AeroDeskWindow::drawAddressBookModal(float width, float height, float modalProgress) {
+void CppDeskWindow::drawAddressBookModal(float width, float height, float modalProgress) {
     if (!showAddressBookEditModal_ && modalProgress <= 0.01f) return;
 
     float alpha = std::clamp(modalProgress, 0.0f, 1.0f);
@@ -3449,9 +3487,111 @@ void AeroDeskWindow::drawAddressBookModal(float width, float height, float modal
     renderTarget_->SetTransform(D2D1::Matrix3x2F::Identity());
 }
 
+// ---------------- Mandatory Update Modal (v3.0.0) ----------------
+
+void CppDeskWindow::drawUpdateRequiredModal(float width, float height, float modalProgress) {
+    if (!showUpdateRequiredModal_ && modalProgress <= 0.01f) return;
+
+    float alpha = std::clamp(modalProgress, 0.0f, 1.0f);
+    fillRoundRect({ 0.0f, 0.0f, width, height }, 0.0f, rgba(5, 8, 15, 0.72f * alpha));
+
+    float mw = 520.0f;
+    float mh = 330.0f;
+    UiRect modal = { (width - mw) * 0.5f, (height - mh) * 0.5f, (width + mw) * 0.5f, (height + mh) * 0.5f };
+
+    float scale = 0.90f + 0.10f * modalProgress;
+    renderTarget_->SetTransform(
+        D2D1::Matrix3x2F::Scale(scale, scale, D2D1::Point2F(modal.centerX(), modal.centerY()))
+    );
+
+    drawCardShadow(modal, 24.0f, 1.5f * alpha);
+    drawCardSurface(modal, 20.0f, alpha);
+    strokeRoundRect(modal, 20.0f, withAlpha(COL_DANGER, 0.6f * alpha), 1.5f);
+
+    float mx = modal.left + 32.0f;
+    float mrx = modal.right - 32.0f;
+    float my = modal.top + 28.0f;
+
+    // Warning Badge
+    UiRect badgeRect = { mx, my, mx + 160.0f, my + 24.0f };
+    fillRoundRect(badgeRect, 6.0f, rgba(235, 87, 87, 0.18f));
+    strokeRoundRect(badgeRect, 6.0f, rgba(235, 87, 87, 0.45f), 1.0f);
+    drawText("MANDATORY UPDATE", badgeRect, fmtSmall_, COL_DANGER, DWRITE_TEXT_ALIGNMENT_CENTER);
+    my += 34.0f;
+
+    // Heading
+    drawText("Update Required to Continue", { mx, my, mrx, my + 30.0f }, fmtHeading_, COL_TEXT_PRIMARY);
+    my += 34.0f;
+
+    // Version Information
+    std::string verText = "CppDesk v" + latestUpdateInfo_.latestVersion + " is now available (Current: v" + CPP_DESK_VERSION + ").";
+    drawText(verText, { mx, my, mrx, my + 20.0f }, fmtBodyBold_, COL_PRIMARY_ACCENT);
+    my += 28.0f;
+
+    // Description text box
+    UiRect infoBox = { mx, my, mrx, my + 88.0f };
+    fillRoundRect(infoBox, 10.0f, COL_BG_SUBTLE);
+    strokeRoundRect(infoBox, 10.0f, COL_BORDER);
+
+    std::string descText = "To ensure end-to-end cryptographic security, protocol compatibility, and uninterrupted remote desktop connections, all clients must update to the latest release.\n\nRemote sessions are locked until CppDesk is updated.";
+    drawText(descText, { infoBox.left + 14.0f, infoBox.top + 10.0f, infoBox.right - 14.0f, infoBox.bottom - 10.0f },
+             fmtSmall_, COL_TEXT_SECONDARY);
+    my = infoBox.bottom + 26.0f;
+
+    // Action buttons
+    float btnW = (mrx - mx - 14.0f) * 0.5f;
+
+    UiRect exitBtn = { mx, my, mx + btnW, my + 40.0f };
+    drawButton("update_modal_exit", exitBtn, "Exit CppDesk",
+               COL_SEC_BTN_BG, COL_DANGER, COL_TEXT_PRIMARY, 9.0f, [this]() {
+                   DestroyWindow(hwnd_);
+               }, fmtSmall_, true, COL_BORDER, COL_TEXT_ON_ACCENT);
+
+    UiRect dlBtn = { exitBtn.right + 14.0f, my, mrx, my + 40.0f };
+    drawButton("update_modal_download", dlBtn, "Download & Update Now",
+               COL_PRIMARY_ACCENT, COL_PRIMARY_ACCENT_HV, COL_TEXT_ON_ACCENT, 9.0f, [this]() {
+                   std::string targetUrl = latestUpdateInfo_.releaseUrl.empty()
+                       ? "https://github.com/oocs07/Remote-Desktop/releases/latest"
+                       : latestUpdateInfo_.releaseUrl;
+                   ShellExecuteA(nullptr, "open", targetUrl.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+               }, fmtSmall_);
+
+    renderTarget_->SetTransform(D2D1::Matrix3x2F::Identity());
+}
+
+void CppDeskWindow::triggerUpdateCheck(bool manual) {
+    if (isCheckingUpdates_) return;
+    isCheckingUpdates_ = true;
+    updateStatusText_ = "Checking for updates...";
+    if (manual) {
+        showToast("Checking GitHub for updates...");
+    }
+
+    AutoUpdater::checkForUpdatesAsync("oocs07", "Remote-Desktop", CPP_DESK_VERSION, [this, manual](const UpdateInfo& info) {
+        latestUpdateInfo_ = info;
+        isCheckingUpdates_ = false;
+
+        if (!info.success) {
+            updateStatusText_ = "Check failed (Offline or rate-limited)";
+            if (manual) showToast("Could not check for updates", true);
+        } else if (info.updateRequired) {
+            updateStatusText_ = "Mandatory Update: v" + info.latestVersion;
+            showUpdateRequiredModal_ = true;
+            if (manual) showToast("Mandatory update v" + info.latestVersion + " available!", true);
+        } else {
+            updateStatusText_ = "CppDesk is up to date (v" + std::string(CPP_DESK_VERSION) + ")";
+            if (manual) showToast("You have the latest version (v" + std::string(CPP_DESK_VERSION) + ")");
+        }
+
+        if (hwnd_) {
+            PostMessageW(hwnd_, WM_DESK_UPDATE_CHECK_DONE, 0, 0);
+        }
+    });
+}
+
 // ---------------- Whiteboard & Screen Annotation Overlay (v2.1.0) ----------------
 
-void AeroDeskWindow::drawWhiteboardOverlay(const UiRect& canvasRect) {
+void CppDeskWindow::drawWhiteboardOverlay(const UiRect& canvasRect) {
     if (canvasRect.width() <= 1.0f || canvasRect.height() <= 1.0f) return;
 
     auto strokes = network_.whiteboardManager().snapshotStrokes();
@@ -3618,7 +3758,7 @@ void AeroDeskWindow::drawWhiteboardOverlay(const UiRect& canvasRect) {
 
 // ---------------- macOS Dynamic Capsule Toast Banner ----------------
 
-void AeroDeskWindow::drawToastBanner(float width, float height, float toastProgress) {
+void CppDeskWindow::drawToastBanner(float width, float height, float toastProgress) {
     if (toastText_.empty() || toastProgress <= 0.01f) {
         return;
     }
@@ -3640,7 +3780,7 @@ void AeroDeskWindow::drawToastBanner(float width, float height, float toastProgr
 
 // ---------------- Input & Interaction Handlers ----------------
 
-bool AeroDeskWindow::mapCanvasPointToNormalized(float x, float y, float& outNormX, float& outNormY) const {
+bool CppDeskWindow::mapCanvasPointToNormalized(float x, float y, float& outNormX, float& outNormY) const {
     if (renderedCanvasRect_.width() <= 1.0f || renderedCanvasRect_.height() <= 1.0f) {
         return false;
     }
@@ -3673,7 +3813,7 @@ bool AeroDeskWindow::mapCanvasPointToNormalized(float x, float y, float& outNorm
     return true;
 }
 
-std::string* AeroDeskWindow::activeFocusedTextBuffer() {
+std::string* CppDeskWindow::activeFocusedTextBuffer() {
     if (focusedField_ == FocusedField::RemoteId) return &remoteIdInput_;
     if (focusedField_ == FocusedField::RemotePassword) return &remotePasswordInput_;
     if (focusedField_ == FocusedField::LocalPassword) return &localPasswordEdit_;
@@ -3690,7 +3830,7 @@ std::string* AeroDeskWindow::activeFocusedTextBuffer() {
     return nullptr;
 }
 
-void AeroDeskWindow::onMouseMove(float x, float y) {
+void CppDeskWindow::onMouseMove(float x, float y) {
     mouseX_ = x;
     mouseY_ = y;
     mouseInsideClient_ = true;
@@ -3746,10 +3886,35 @@ void AeroDeskWindow::onMouseMove(float x, float y) {
     }
 }
 
-void AeroDeskWindow::onMouseButton(MouseButtonId btn, bool isDown, float x, float y) {
+void CppDeskWindow::onMouseButton(MouseButtonId btn, bool isDown, float x, float y) {
     mouseX_ = x;
     mouseY_ = y;
     mouseInsideClient_ = true;
+
+    // If Mandatory Update Modal is active, intercept clicks and only allow update_modal_* buttons
+    if (showUpdateRequiredModal_) {
+        if (btn == MouseButtonId::Left) {
+            mouseLeftDown_ = isDown;
+            if (isDown) {
+                for (auto it = clickRegions_.rbegin(); it != clickRegions_.rend(); ++it) {
+                    if (it->rect.contains(x, y) && it->id.rfind("update_modal_", 0) == 0) {
+                        pressedWidgetId_ = it->id;
+                        auto& anim = widgetAnims_[it->id];
+                        anim.rippleT = 0.0f;
+                        anim.rippleX = x;
+                        anim.rippleY = y;
+                        if (it->onClick) it->onClick();
+                        InvalidateRect(hwnd_, nullptr, FALSE);
+                        return;
+                    }
+                }
+            } else {
+                pressedWidgetId_.clear();
+                InvalidateRect(hwnd_, nullptr, FALSE);
+            }
+        }
+        return; // Block all other interaction while mandatory update is pending
+    }
 
     bool insideDrawer = false;
     if (drawerAnimT_ > 0.004f && hwnd_) {
@@ -3833,7 +3998,7 @@ void AeroDeskWindow::onMouseButton(MouseButtonId btn, bool isDown, float x, floa
     }
 }
 
-void AeroDeskWindow::onMouseWheel(int delta) {
+void CppDeskWindow::onMouseWheel(int delta) {
     if (drawerAnimT_ > 0.004f && hwnd_) {
         RECT rc{};
         GetClientRect(hwnd_, &rc);
@@ -3858,7 +4023,7 @@ void AeroDeskWindow::onMouseWheel(int delta) {
     }
 }
 
-void AeroDeskWindow::onCharInput(wchar_t ch) {
+void CppDeskWindow::onCharInput(wchar_t ch) {
     if (activeTab_ == ActiveTab::RemoteSession && focusedField_ == FocusedField::RemoteCanvas) {
         return;
     }
@@ -3910,7 +4075,7 @@ void AeroDeskWindow::onCharInput(wchar_t ch) {
     InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
-void AeroDeskWindow::onKeyEvent(uint16_t vk, uint16_t scan, bool isDown, bool isExtended) {
+void CppDeskWindow::onKeyEvent(uint16_t vk, uint16_t scan, bool isDown, bool isExtended) {
     if (isDown) {
         if (vk == VK_F1 || (vk == 0xBF /* VK_OEM_2 /? */ && (GetKeyState(VK_SHIFT) & 0x8000))) {
             toggleShortcutsModal();
@@ -3995,7 +4160,7 @@ void AeroDeskWindow::onKeyEvent(uint16_t vk, uint16_t scan, bool isDown, bool is
     }
 }
 
-void AeroDeskWindow::onDropFiles(HDROP hDrop) {
+void CppDeskWindow::onDropFiles(HDROP hDrop) {
     UINT count = DragQueryFileA(hDrop, 0xFFFFFFFF, nullptr, 0);
     int sentCount = 0;
     for (UINT i = 0; i < count; ++i) {
@@ -4019,7 +4184,12 @@ void AeroDeskWindow::onDropFiles(HDROP hDrop) {
 
 // ---------------- High-Level UI Actions ----------------
 
-void AeroDeskWindow::initiateConnection() {
+void CppDeskWindow::initiateConnection() {
+    if (showUpdateRequiredModal_ || latestUpdateInfo_.updateRequired) {
+        showUpdateRequiredModal_ = true;
+        showToast("Update required to connect to remote sessions!", true);
+        return;
+    }
     if (remoteIdInput_.empty()) {
         showToast("Enter a 9-digit Desk ID", true);
         return;
@@ -4028,7 +4198,7 @@ void AeroDeskWindow::initiateConnection() {
     showToast("Connecting to " + remoteIdInput_ + "...");
 }
 
-void AeroDeskWindow::openSendFileDialog() {
+void CppDeskWindow::openSendFileDialog() {
     char fileBuf[MAX_PATH] = {};
     OPENFILENAMEA ofn{};
     ofn.lStructSize = sizeof(ofn);
@@ -4050,7 +4220,7 @@ void AeroDeskWindow::openSendFileDialog() {
     }
 }
 
-void AeroDeskWindow::saveRemoteScreenshot() {
+void CppDeskWindow::saveRemoteScreenshot() {
     if (frameBufferBgra_.empty() || frameBufferW_ <= 0 || frameBufferH_ <= 0) {
         showToast("No video frame available yet", true);
         return;
@@ -4092,7 +4262,7 @@ void AeroDeskWindow::saveRemoteScreenshot() {
     }
 }
 
-void AeroDeskWindow::sendChatFromInput() {
+void CppDeskWindow::sendChatFromInput() {
     if (chatInput_.empty()) return;
     if (network_.sendChatMessage(chatInput_)) {
         chatInput_.clear();
@@ -4102,7 +4272,7 @@ void AeroDeskWindow::sendChatFromInput() {
     }
 }
 
-void AeroDeskWindow::sendTerminalFromInput() {
+void CppDeskWindow::sendTerminalFromInput() {
     if (terminalInputText_.empty()) return;
     network_.sendTerminalCommand(terminalInputText_);
     terminalInputText_.clear();
@@ -4110,7 +4280,7 @@ void AeroDeskWindow::sendTerminalFromInput() {
     InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
-void AeroDeskWindow::toggleFullscreen() {
+void CppDeskWindow::toggleFullscreen() {
     DWORD style = static_cast<DWORD>(GetWindowLongPtrW(hwnd_, GWL_STYLE));
     if (!isFullscreen_) {
         savedWindowPlacement_.length = sizeof(WINDOWPLACEMENT);
@@ -4135,19 +4305,19 @@ void AeroDeskWindow::toggleFullscreen() {
     }
 }
 
-void AeroDeskWindow::toggleShortcutsModal() {
+void CppDeskWindow::toggleShortcutsModal() {
     showShortcutsModal_ = !showShortcutsModal_;
     InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
-void AeroDeskWindow::showToast(const std::string& message, bool isError) {
+void CppDeskWindow::showToast(const std::string& message, bool isError) {
     toastText_ = message;
     toastIsError_ = isError;
     toastExpireTick_ = GetTickCount64() + 3500;
     InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
-void AeroDeskWindow::restoreFromTray(NotificationType contextType) {
+void CppDeskWindow::restoreFromTray(NotificationType contextType) {
     ShowWindow(hwnd_, SW_SHOW);
     if (IsIconic(hwnd_)) {
         ShowWindow(hwnd_, SW_RESTORE);
@@ -4174,4 +4344,4 @@ void AeroDeskWindow::restoreFromTray(NotificationType contextType) {
     InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
-} // namespace aerodesk
+} // namespace cppdesk

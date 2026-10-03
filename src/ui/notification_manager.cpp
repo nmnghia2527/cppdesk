@@ -2,7 +2,7 @@
 
 #include <vector>
 
-namespace aerodesk {
+namespace cppdesk {
 
 namespace {
 
@@ -26,7 +26,7 @@ NotificationManager::~NotificationManager() {
 bool NotificationManager::init(HWND hwnd, HINSTANCE hInstance, const std::string& appTitle) {
     hwnd_ = hwnd;
     hInstance_ = hInstance;
-    appTitle_ = appTitle.empty() ? "AeroDesk" : appTitle;
+    appTitle_ = appTitle.empty() ? "CppDesk" : appTitle;
 
     hTrayIcon_ = LoadIconW(hInstance_, MAKEINTRESOURCEW(101));
     if (!hTrayIcon_) {
@@ -133,7 +133,7 @@ void NotificationManager::showContextMenu(int x, int y, const std::string& statu
     HMENU hMenu = CreatePopupMenu();
     if (!hMenu) return;
 
-    AppendMenuW(hMenu, MF_STRING, IDM_TRAY_RESTORE, L"Open AeroDesk");
+    AppendMenuW(hMenu, MF_STRING, IDM_TRAY_RESTORE, L"Open CppDesk");
     SetMenuDefaultItem(hMenu, IDM_TRAY_RESTORE, FALSE);
 
     std::wstring wStatus = L"Status: " + utf8ToWide(statusText.empty() ? "Online" : statusText);
@@ -143,7 +143,7 @@ void NotificationManager::showContextMenu(int x, int y, const std::string& statu
     AppendMenuW(hMenu, MF_STRING | (muted_.load() ? MF_CHECKED : MF_UNCHECKED), IDM_TRAY_MUTE, L"Mute Notifications");
 
     AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(hMenu, MF_STRING, IDM_TRAY_EXIT, L"Exit AeroDesk");
+    AppendMenuW(hMenu, MF_STRING, IDM_TRAY_EXIT, L"Exit CppDesk");
 
     SetForegroundWindow(hwnd_);
     TrackPopupMenuEx(hMenu, TPM_RIGHTBUTTON, x, y, hwnd_, nullptr);
@@ -151,4 +151,4 @@ void NotificationManager::showContextMenu(int x, int y, const std::string& statu
     DestroyMenu(hMenu);
 }
 
-} // namespace aerodesk
+} // namespace cppdesk

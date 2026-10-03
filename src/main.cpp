@@ -22,7 +22,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPSTR /*lpC
 
     int instanceId = 1;
     bool headlessRelayOnly = false;
-    uint16_t relayPort = aerodesk::DEFAULT_RELAY_PORT;
+    uint16_t relayPort = cppdesk::DEFAULT_RELAY_PORT;
 
     int argc = 0;
     LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
@@ -50,7 +50,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPSTR /*lpC
     }
 
     if (headlessRelayOnly) {
-        aerodesk::RelayServer server;
+        cppdesk::RelayServer server;
         if (!server.start(relayPort)) {
             return 1;
         }
@@ -61,10 +61,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPSTR /*lpC
     }
 
     // Enforce single-instance per instanceId to prevent zombie instances and duplicate tray icons
-    std::wstring mutexName = L"Local\\AeroDesk_SingleInstance_Mutex_" + std::to_wstring(instanceId);
+    std::wstring mutexName = L"Local\\CppDesk_SingleInstance_Mutex_" + std::to_wstring(instanceId);
     HANDLE hMutex = CreateMutexW(nullptr, TRUE, mutexName.c_str());
     if (hMutex && GetLastError() == ERROR_ALREADY_EXISTS) {
-        HWND existingHwnd = FindWindowW(L"AeroDeskMainWindowClass", nullptr);
+        HWND existingHwnd = FindWindowW(L"CppDeskMainWindowClass", nullptr);
         if (existingHwnd) {
             if (IsIconic(existingHwnd)) {
                 ShowWindow(existingHwnd, SW_RESTORE);
@@ -78,13 +78,13 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPSTR /*lpC
         return 0;
     }
 
-    aerodesk::IdentityManager identity(instanceId);
+    cppdesk::IdentityManager identity(instanceId);
     identity.loadOrCreate();
 
-    aerodesk::NetworkEngine network(identity);
+    cppdesk::NetworkEngine network(identity);
     network.start();
 
-    aerodesk::AeroDeskWindow window(identity, network);
+    cppdesk::CppDeskWindow window(identity, network);
     if (!window.create(hInstance, nCmdShow)) {
         network.stop();
         if (hMutex) CloseHandle(hMutex);

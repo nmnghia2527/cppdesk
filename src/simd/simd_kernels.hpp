@@ -7,19 +7,29 @@
 #include <cpuid.h>
 #endif
 
-namespace aerodesk {
+namespace cppdesk {
 
 extern "C" {
 
-// x86-64 AVX2 Assembly routine (src/simd/simd_kernels.S)
-// Compares two 2D BGRA tile regions (widthPixels * 4 bytes per row) with given row stride.
-// Windows x64 ABI:
-//   rcx = prevTilePtr
-//   rdx = currTilePtr
-//   r8d = strideBytes
-//   r9d = widthBytes (widthPixels * 4)
-//   [rsp+40] = heightRows
-// Returns 1 if any byte differs, 0 if identical.
+int cppdesk_avx2_tile_diff(
+    const uint8_t* prevTilePtr,
+    const uint8_t* currTilePtr,
+    int strideBytes,
+    int widthBytes,
+    int heightRows);
+
+uint64_t cppdesk_avx2_hash_tile(
+    const uint8_t* tilePtr,
+    int strideBytes,
+    int widthBytes,
+    int heightRows);
+
+void cppdesk_avx2_xor_blocks32(
+    uint8_t* data,
+    const uint8_t* ksBuffer,
+    size_t blocks32);
+
+// Backward-compatible aliases
 int aerodesk_avx2_tile_diff(
     const uint8_t* prevTilePtr,
     const uint8_t* currTilePtr,
@@ -27,25 +37,12 @@ int aerodesk_avx2_tile_diff(
     int widthBytes,
     int heightRows);
 
-// x86-64 AVX2 Assembly routine (src/simd/simd_kernels.S)
-// Computes a fast 64-bit SIMD hash over a 2D BGRA tile region using 256-bit YMM registers.
-// Windows x64 ABI:
-//   rcx = tilePtr
-//    edx = strideBytes
-//   r8d = widthBytes (widthPixels * 4)
-//   r9d = heightRows
 uint64_t aerodesk_avx2_hash_tile(
     const uint8_t* tilePtr,
     int strideBytes,
     int widthBytes,
     int heightRows);
 
-// x86-64 AVX2 Assembly routine (src/simd/simd_kernels.S)
-// XORs `blocks32 * 32` bytes at `data` with `ksBuffer` using 256-bit YMM registers.
-// Windows x64 ABI:
-//   rcx = data
-//   rdx = ksBuffer
-//   r8  = blocks32 (number of 32-byte blocks)
 void aerodesk_avx2_xor_blocks32(
     uint8_t* data,
     const uint8_t* ksBuffer,
@@ -99,4 +96,4 @@ private:
     }
 };
 
-} // namespace aerodesk
+} // namespace cppdesk

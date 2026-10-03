@@ -12,7 +12,7 @@
 #include <memory>
 #include <atomic>
 
-namespace aerodesk {
+namespace cppdesk {
 
 enum class NotificationType : uint8_t {
     IncomingConnection = 0,
@@ -61,7 +61,7 @@ private:
     std::atomic<bool>       isFlashing_{false};
     std::atomic<bool>       muted_{false};
     std::atomic<NotificationType> lastType_{NotificationType::GeneralInfo};
-    std::string             appTitle_ = "AeroDesk";
+    std::string             appTitle_ = "CppDesk";
 };
 
-} // namespace aerodesk
+} // namespace cppdesk

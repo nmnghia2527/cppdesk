@@ -5,11 +5,11 @@ using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Text;
 
-namespace AeroDeskRelay;
+namespace CppDeskRelay;
 
 internal static class Program
 {
-    private const uint ProtocolMagic = 0x4144534B; // "ADSK"
+    private const uint ProtocolMagic = 0x4344534B; // "CDSK"
     private const int DefaultRelayPort = 50999;
     private const int MaxPayloadSize = 32 * 1024 * 1024;
 
@@ -68,7 +68,7 @@ internal static class Program
         listener.Start();
 
         int boundPort = ((IPEndPoint)listener.LocalEndpoint).Port;
-        Log($"AeroDesk .NET 10 Rendezvous & Relay Server listening on 0.0.0.0:{boundPort}");
+        Log($"CppDesk .NET 10 Rendezvous & Relay Server listening on 0.0.0.0:{boundPort}");
 
         if (selfTest)
         {

@@ -8,7 +8,7 @@
 #include <algorithm>
 #include <cmath>
 
-namespace aerodesk {
+namespace cppdesk {
 
 namespace {
 
@@ -281,4 +281,4 @@ bool InputInjector::executeSystemAction(SystemActionType action) {
     }
 }
 
-} // namespace aerodesk
+} // namespace cppdesk
