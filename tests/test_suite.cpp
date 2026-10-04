@@ -7,6 +7,7 @@
 #include "../src/net/network_engine.hpp"
 #include "../src/net/updater.hpp"
 #include "../src/ui/notification_manager.hpp"
+#include "../src/media/session_recorder.hpp"
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -1386,6 +1387,80 @@ void testDirectCanvasDragAndDropFileTransfer() {
     }
 }
 
+void testSessionRecorderAndAviContainer() {
+    std::cout << "[TEST 15] Session Screen Recording & RIFF AVI Container Architecture...\n" << std::flush;
+
+    SessionRecorder recorder;
+    TEST_ASSERT(!recorder.isRecording());
+    TEST_ASSERT(recorder.recordedFrames() == 0);
+
+    std::filesystem::path testFile = std::filesystem::temp_directory_path() / "cppdesk_test_record.avi";
+    std::error_code ec;
+    std::filesystem::remove(testFile, ec);
+
+    const int width = 320;
+    const int height = 240;
+    const int fps = 30;
+
+    // 1. Start recording
+    bool ok = recorder.startRecording(testFile.string(), width, height, fps);
+    TEST_ASSERT(ok);
+    TEST_ASSERT(recorder.isRecording());
+    TEST_ASSERT(recorder.currentFilePath() == testFile.string());
+
+    // 2. Generate and push synthetic test frames
+    std::vector<uint8_t> frameRed(width * height * 4);
+    for (size_t i = 0; i < frameRed.size(); i += 4) {
+        frameRed[i] = 0x00;     // B
+        frameRed[i + 1] = 0x00; // G
+        frameRed[i + 2] = 0xFF; // R
+        frameRed[i + 3] = 0xFF; // A
+    }
+
+    std::vector<uint8_t> frameBlue(width * height * 4);
+    for (size_t i = 0; i < frameBlue.size(); i += 4) {
+        frameBlue[i] = 0xFF;     // B
+        frameBlue[i + 1] = 0x00; // G
+        frameBlue[i + 2] = 0x00; // R
+        frameBlue[i + 3] = 0xFF; // A
+    }
+
+    recorder.pushFrame(frameRed.data(), width, height);
+    recorder.pushFrame(frameBlue.data(), width, height);
+
+    // Give background worker time to encode and write
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+    // 3. Stop recording
+    recorder.stopRecording();
+    TEST_ASSERT(!recorder.isRecording());
+    TEST_ASSERT(recorder.recordedFrames() == 2);
+    TEST_ASSERT(recorder.recordedBytes() > 0);
+
+    // 4. Verify AVI RIFF container structure on disk
+    TEST_ASSERT(std::filesystem::exists(testFile, ec));
+    uint64_t fileSize = std::filesystem::file_size(testFile, ec);
+    TEST_ASSERT(fileSize > 256);
+
+    std::ifstream in(testFile, std::ios::binary);
+    TEST_ASSERT(in.is_open());
+    char hdr[64] = {};
+    in.read(hdr, 64);
+    in.close();
+
+    // Check 'RIFF' magic
+    TEST_ASSERT(hdr[0] == 'R' && hdr[1] == 'I' && hdr[2] == 'F' && hdr[3] == 'F');
+    // Check 'AVI ' type
+    TEST_ASSERT(hdr[8] == 'A' && hdr[9] == 'V' && hdr[10] == 'I' && hdr[11] == ' ');
+    // Check 'LIST' chunk
+    TEST_ASSERT(hdr[12] == 'L' && hdr[13] == 'I' && hdr[14] == 'S' && hdr[15] == 'T');
+    // Check 'hdrl' form
+    TEST_ASSERT(hdr[20] == 'h' && hdr[21] == 'd' && hdr[22] == 'r' && hdr[23] == 'l');
+
+    // Clean up temporary test file
+    std::filesystem::remove(testFile, ec);
+}
+
 } // namespace
 
 int main() {
@@ -1410,6 +1485,7 @@ int main() {
         testAutoUpdaterAndProtocolV3(); std::cout << "Test 12 done\n" << std::flush;
         testHardwareDiagnosticsAndProcessManager(); std::cout << "Test 13 done\n" << std::flush;
         testDirectCanvasDragAndDropFileTransfer(); std::cout << "Test 14 done\n" << std::flush;
+        testSessionRecorderAndAviContainer(); std::cout << "Test 15 done\n" << std::flush;
 
         std::cout << "---------------------------------------------------------\n";
         std::cout << "Assertions Passed: " << g_passed << " | Failed: " << g_failed << "\n";

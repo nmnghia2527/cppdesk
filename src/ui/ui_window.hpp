@@ -3,6 +3,7 @@
 #include "../core/protocol.hpp"
 #include "../core/crypto_identity.hpp"
 #include "../net/network_engine.hpp"
+#include "../media/session_recorder.hpp"
 #include "notification_manager.hpp"
 
 #ifndef WIN32_LEAN_AND_MEAN
@@ -181,6 +182,7 @@ private:
     void initiateConnection();
     void openSendFileDialog();
     void saveRemoteScreenshot();
+    void toggleScreenRecording();
     void sendChatFromInput();
     void sendTerminalFromInput();
     void toggleFullscreen();
@@ -332,6 +334,9 @@ private:
     D2D1_POINT_2F           canvasDropPos_{ 0.0f, 0.0f };
     uint64_t                canvasDropTick_ = 0;
     int                     canvasDropCount_ = 0;
+
+    // In-Session Screen Recording Subsystem (Feature 3)
+    SessionRecorder         sessionRecorder_;
 
     // TCP Port Forwarding modal state (v2.1.0)
     bool                    showPortForwardModal_ = false;

@@ -181,6 +181,9 @@ CppDeskWindow::CppDeskWindow(IdentityManager& identity, NetworkEngine& network)
 }
 
 CppDeskWindow::~CppDeskWindow() {
+    if (sessionRecorder_.isRecording()) {
+        sessionRecorder_.stopRecording();
+    }
     if (notificationMgr_) {
         notificationMgr_->shutdown();
     }
@@ -198,6 +201,9 @@ void CppDeskWindow::applyWindowThemeAttribute() {
 void CppDeskWindow::switchTab(ActiveTab newTab) {
     if (activeTab_ == newTab) return;
     if (activeTab_ == ActiveTab::RemoteSession && newTab != ActiveTab::RemoteSession) {
+        if (sessionRecorder_.isRecording()) {
+            sessionRecorder_.stopRecording();
+        }
         network_.sendReleaseAllModifiers();
     }
     activeTab_ = newTab;
@@ -579,6 +585,9 @@ LRESULT CppDeskWindow::handleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
                 switchTab(ActiveTab::Dashboard);
             } else if (prevViewerState_ == ViewerConnectionState::Connected &&
                        vStats.state == ViewerConnectionState::Disconnected) {
+                if (sessionRecorder_.isRecording()) {
+                    sessionRecorder_.stopRecording();
+                }
                 if (notificationMgr_) {
                     std::string hName = prevViewerHostname_.empty() ? "Remote Desktop" : prevViewerHostname_;
                     notificationMgr_->notify(NotificationType::SessionDropped, "Session Disconnected",
@@ -1834,6 +1843,9 @@ void CppDeskWindow::drawRemoteSessionView(const UiRect& bounds, float alpha) {
         UiRect discBtn = { rx - 88.0f, hudBar.top + 8.0f, rx, hudBar.bottom - 8.0f };
         drawButton("sess_disconnect", discBtn, "Disconnect",
                    COL_DANGER, COL_DANGER_HV, COL_TEXT_ON_ACCENT, 7.5f, [this]() {
+                       if (sessionRecorder_.isRecording()) {
+                           sessionRecorder_.stopRecording();
+                       }
                        network_.disconnectViewer();
                        switchTab(ActiveTab::Dashboard);
                        showToast("Disconnected");
@@ -1874,6 +1886,29 @@ void CppDeskWindow::drawRemoteSessionView(const UiRect& bounds, float alpha) {
                        saveRemoteScreenshot();
                    }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
         rx = shotBtn.left - 6.0f;
+
+        bool isRec = sessionRecorder_.isRecording();
+        std::string recLabel;
+        if (isRec) {
+            uint64_t durSec = sessionRecorder_.durationSeconds();
+            char durBuf[32];
+            std::snprintf(durBuf, sizeof(durBuf), "REC %02llu:%02llu",
+                          (unsigned long long)(durSec / 60), (unsigned long long)(durSec % 60));
+            recLabel = durBuf;
+        } else {
+            recLabel = "Record";
+        }
+        float recBtnWidth = isRec ? 92.0f : 68.0f;
+        UiRect recBtn = { rx - recBtnWidth, hudBar.top + 8.0f, rx, hudBar.bottom - 8.0f };
+        drawButton("sess_record", recBtn, recLabel,
+                   isRec ? COL_DANGER : COL_SEC_BTN_BG,
+                   isRec ? COL_DANGER_HV : COL_SEC_BTN_HV,
+                   isRec ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
+                   7.5f, [this]() {
+                       toggleScreenRecording();
+                   }, fmtSmall_, !isRec, isRec ? COL_DANGER : COL_BORDER,
+                   isRec ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
+        rx = recBtn.left - 6.0f;
 
         bool diagOpen = (showFileDrawer_ && drawerTab_ == DrawerTab::Diagnostics);
         UiRect taskBtn = { rx - 74.0f, hudBar.top + 8.0f, rx, hudBar.bottom - 8.0f };
@@ -2012,6 +2047,9 @@ void CppDeskWindow::drawRemoteSessionView(const UiRect& bounds, float alpha) {
 
     if (network_.copyLatestViewerFrame(displayedFrameSeq_, frameBufferBgra_, frameBufferW_, frameBufferH_, remoteCursor_)) {
         if (frameBufferW_ > 0 && frameBufferH_ > 0 && renderTarget_) {
+            if (sessionRecorder_.isRecording()) {
+                sessionRecorder_.pushFrame(frameBufferBgra_.data(), frameBufferW_, frameBufferH_);
+            }
             if (!remoteBitmap_ || bitmapW_ != frameBufferW_ || bitmapH_ != frameBufferH_) {
                 if (remoteBitmap_) { remoteBitmap_->Release(); remoteBitmap_ = nullptr; }
                 D2D1_BITMAP_PROPERTIES bprops = D2D1::BitmapProperties(
@@ -2145,6 +2183,33 @@ void CppDeskWindow::drawRemoteSessionView(const UiRect& bounds, float alpha) {
                 drawerTab_ = DrawerTab::FilesAndClip;
                 showFileDrawer_ = true;
             }, false });
+        }
+
+        // Screen Recording Live Watermark Pill (Feature 3)
+        if (sessionRecorder_.isRecording()) {
+            float recPillW = 120.0f;
+            float recPillH = 30.0f;
+            UiRect recPill = { renderedCanvasRect_.left + 16.0f,
+                               renderedCanvasRect_.top + 16.0f,
+                               renderedCanvasRect_.left + 16.0f + recPillW,
+                               renderedCanvasRect_.top + 16.0f + recPillH };
+
+            fillRoundRect(recPill, 15.0f, rgba(15, 23, 42, 0.88f));
+            strokeRoundRect(recPill, 15.0f, withAlpha(COL_DANGER, 0.65f), 1.2f);
+
+            uint64_t tick = GetTickCount64();
+            float pulse = 0.5f + 0.5f * std::sin(static_cast<float>(tick % 1000) / 1000.0f * 6.28318f);
+            D2D1_COLOR_F dotColor = D2D1::ColorF(0.95f, 0.2f, 0.2f, 0.5f + 0.5f * pulse);
+            solidBrush_->SetColor(dotColor);
+            renderTarget_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(recPill.left + 16.0f, (recPill.top + recPill.bottom) * 0.5f), 5.0f, 5.0f), solidBrush_);
+
+            uint64_t durSec = sessionRecorder_.durationSeconds();
+            char recTimeBuf[32];
+            std::snprintf(recTimeBuf, sizeof(recTimeBuf), "REC %02llu:%02llu",
+                          (unsigned long long)(durSec / 60), (unsigned long long)(durSec % 60));
+
+            UiRect recTextRect = { recPill.left + 28.0f, recPill.top, recPill.right - 8.0f, recPill.bottom };
+            drawText(recTimeBuf, recTextRect, fmtSmall_, COL_TEXT_PRIMARY, DWRITE_TEXT_ALIGNMENT_LEADING);
         }
     } else {
         renderedCanvasRect_ = {};
@@ -4554,6 +4619,49 @@ void CppDeskWindow::saveRemoteScreenshot() {
         showToast("Saved " + fileName);
     } else {
         showToast("Failed to save screenshot", true);
+    }
+}
+
+void CppDeskWindow::toggleScreenRecording() {
+    if (sessionRecorder_.isRecording()) {
+        std::string path = sessionRecorder_.currentFilePath();
+        sessionRecorder_.stopRecording();
+
+        std::error_code ec;
+        uint64_t fsz = std::filesystem::file_size(path, ec);
+        char szBuf[64];
+        if (fsz > 1024 * 1024) {
+            std::snprintf(szBuf, sizeof(szBuf), "%.1f MB", static_cast<double>(fsz) / (1024.0 * 1024.0));
+        } else {
+            std::snprintf(szBuf, sizeof(szBuf), "%.1f KB", static_cast<double>(fsz) / 1024.0);
+        }
+
+        std::string fname = std::filesystem::path(path).filename().string();
+        showToast("Recording saved: " + fname + " (" + szBuf + ")");
+    } else {
+        if (frameBufferBgra_.empty() || frameBufferW_ <= 0 || frameBufferH_ <= 0) {
+            showToast("No active remote video stream to record", true);
+            return;
+        }
+
+        std::string dir = network_.fileTransferManager().receiveDirectory();
+        std::filesystem::path recDir = std::filesystem::path(dir) / "Recordings";
+        std::error_code ec;
+        std::filesystem::create_directories(recDir, ec);
+
+        SYSTEMTIME st;
+        GetLocalTime(&st);
+        char nameBuf[128];
+        std::snprintf(nameBuf, sizeof(nameBuf), "Recording_%04u-%02u-%02u_%02u-%02u-%02u.avi",
+                      st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
+
+        std::filesystem::path fullPath = recDir / nameBuf;
+        if (sessionRecorder_.startRecording(fullPath.string(), frameBufferW_, frameBufferH_, 30)) {
+            sessionRecorder_.pushFrame(frameBufferBgra_.data(), frameBufferW_, frameBufferH_);
+            showToast("Screen recording started");
+        } else {
+            showToast("Failed to start screen recording", true);
+        }
     }
 }
 

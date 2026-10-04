@@ -21,7 +21,8 @@ $CoreSources = @(
     "src/control/whiteboard_manager.cpp",
     "src/net/network_engine.cpp",
     "src/net/updater.cpp",
-    "src/ui/notification_manager.cpp"
+    "src/ui/notification_manager.cpp",
+    "src/media/session_recorder.cpp"
 )
 
 $AppSources = $CoreSources + @(
