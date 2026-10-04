@@ -183,7 +183,7 @@ private:
     void sendTerminalFromInput();
     void toggleFullscreen();
     void toggleShortcutsModal();
-    void switchToSessionTab(uint32_t tabId);
+    void switchToSessionTab(uint32_t tabId, bool force = false);
     void closeSessionTab(uint32_t tabId);
     void showToast(const std::string& message, bool isError = false);
     void restoreFromTray(NotificationType contextType = NotificationType::GeneralInfo);

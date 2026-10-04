@@ -119,9 +119,11 @@ void VoiceIntercom::stopCapture() {
     captureStopping_.store(true);
     if (hCaptureEvent_) SetEvent(hCaptureEvent_);
 
-    if (captureThread_.joinable()) {
-        captureThread_.join();
-    }
+    try {
+        if (captureThread_.joinable()) {
+            captureThread_.join();
+        }
+    } catch (...) {}
 
     if (hWaveIn_) {
         waveInReset(hWaveIn_);

@@ -324,9 +324,11 @@ TileThreadPool::~TileThreadPool() {
     stop_.store(true);
     cvTask_.notify_all();
     for (auto& t : workers_) {
-        if (t.joinable()) {
-            t.join();
-        }
+        try {
+            if (t.joinable()) {
+                t.join();
+            }
+        } catch (...) {}
     }
 }
 

@@ -127,9 +127,11 @@ void SessionRecorder::stopRecording() {
 
     workerStopping_.store(true);
     queueCv_.notify_all();
-    if (workerThread_.joinable()) {
-        workerThread_.join();
-    }
+    try {
+        if (workerThread_.joinable()) {
+            workerThread_.join();
+        }
+    } catch (...) {}
 
     if (file_.is_open()) {
         updateAviHeadersOnClose();

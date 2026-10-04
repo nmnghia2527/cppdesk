@@ -4839,12 +4839,13 @@ void CppDeskWindow::onDropFiles(HDROP hDrop) {
 
 // ---------------- High-Level UI Actions ----------------
 
-void CppDeskWindow::switchToSessionTab(uint32_t tabId) {
-    if (tabId == 0 || tabId == sessionTabs_.activeTabId()) return;
+void CppDeskWindow::switchToSessionTab(uint32_t tabId, bool force) {
+    if (tabId == 0) return;
+    if (!force && tabId == sessionTabs_.activeTabId()) return;
 
     // 1. Cache current active tab state and frame
     SessionTab* curTab = sessionTabs_.activeTab();
-    if (curTab) {
+    if (curTab && curTab->id != tabId) {
         curTab->scaleMode = scaleMode_;
         curTab->remoteInputEnabled = remoteInputEnabled_;
         if (!frameBufferBgra_.empty()) {
@@ -4887,6 +4888,17 @@ void CppDeskWindow::switchToSessionTab(uint32_t tabId) {
             bitmapW_ = frameBufferW_;
             bitmapH_ = frameBufferH_;
         }
+    } else {
+        frameBufferBgra_.clear();
+        frameBufferW_ = 0;
+        frameBufferH_ = 0;
+        displayedFrameSeq_ = 0;
+        if (remoteBitmap_) {
+            remoteBitmap_->Release();
+            remoteBitmap_ = nullptr;
+        }
+        bitmapW_ = 0;
+        bitmapH_ = 0;
     }
 
     // 5. Check if connection target matches current network engine connection
@@ -4936,10 +4948,20 @@ void CppDeskWindow::closeSessionTab(uint32_t tabId) {
 
     if (sessionTabs_.tabCount() > 0) {
         if (wasActive) {
-            switchToSessionTab(sessionTabs_.activeTabId());
+            switchToSessionTab(sessionTabs_.activeTabId(), true);
         }
         showToast("Closed tab: " + tabName);
     } else {
+        frameBufferBgra_.clear();
+        frameBufferW_ = 0;
+        frameBufferH_ = 0;
+        displayedFrameSeq_ = 0;
+        if (remoteBitmap_) {
+            remoteBitmap_->Release();
+            remoteBitmap_ = nullptr;
+        }
+        bitmapW_ = 0;
+        bitmapH_ = 0;
         switchTab(ActiveTab::Dashboard);
         showToast("All session tabs closed");
     }
@@ -4962,22 +4984,21 @@ void CppDeskWindow::initiateConnection() {
 
     uint64_t targetDeskId = CryptoUtils::parseDeskId(remoteIdInput_);
     SessionTab* existing = (targetDeskId != 0) ? sessionTabs_.findTabByDeskId(targetDeskId) : sessionTabs_.findTabByTarget(remoteIdInput_);
+    uint32_t targetTabId = 0;
     if (!existing) {
-        uint32_t newId = sessionTabs_.createTab(targetDeskId, remoteIdInput_, "Desk " + remoteIdInput_);
-        SessionTab* tab = sessionTabs_.getTab(newId);
+        targetTabId = sessionTabs_.createTab(targetDeskId, remoteIdInput_, "Desk " + remoteIdInput_);
+        SessionTab* tab = sessionTabs_.getTab(targetTabId);
         if (tab) {
             tab->password = remotePasswordInput_;
             tab->state = ViewerConnectionState::ConnectingTcp;
         }
-        sessionTabs_.selectTab(newId);
     } else {
+        targetTabId = existing->id;
         existing->password = remotePasswordInput_;
         existing->state = ViewerConnectionState::ConnectingTcp;
-        sessionTabs_.selectTab(existing->id);
     }
 
-    network_.connectToRemote(remoteIdInput_, remotePasswordInput_);
-    showToast("Connecting to " + remoteIdInput_ + "...");
+    switchToSessionTab(targetTabId, true);
 }
 
 void CppDeskWindow::openSendFileDialog() {

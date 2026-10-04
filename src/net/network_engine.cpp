@@ -486,9 +486,11 @@ void RelayServer::stop() {
         bridges_.clear();
     }
     bridgeCv_.notify_all();
-    if (acceptThread_.joinable()) {
-        acceptThread_.join();
-    }
+    try {
+        if (acceptThread_.joinable()) {
+            acceptThread_.join();
+        }
+    } catch (...) {}
 }
 
 size_t RelayServer::registeredPeerCount() const {
