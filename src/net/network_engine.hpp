@@ -70,17 +70,6 @@ struct PortForwardRule {
     uint64_t    bytesTransferredOut = 0;
 };
 
-enum class ViewerConnectionState : uint8_t {
-    Disconnected    = 0,
-    ResolvingId     = 1,
-    ConnectingTcp   = 2,
-    Authenticating  = 3,
-    WaitingApproval = 4,
-    Connected       = 5,
-    Error           = 6,
-    Reconnecting    = 7
-};
-
 struct ViewerSessionStats {
     ViewerConnectionState state = ViewerConnectionState::Disconnected;
     std::string           statusMessage = "Ready";
@@ -337,6 +326,7 @@ private:
     // Host server & session
     uintptr_t                   hostListenSock_ = ~uintptr_t(0);
     std::thread                 hostAcceptThread_;
+    mutable std::mutex          hostSessionThreadMutex_;
     std::thread                 hostSessionThread_;
     std::atomic<uintptr_t>      activeHostClientSock_{~uintptr_t(0)};
     std::mutex                  hostSendMutex_;
@@ -368,6 +358,7 @@ private:
     std::atomic<uint8_t>        hostLivePermissions_{PERM_ALL};
 
     // Viewer session
+    mutable std::mutex          viewerThreadMutex_;
     std::thread                 viewerThread_;
     std::atomic<bool>           viewerActive_{false};
     std::atomic<uintptr_t>      viewerSock_{~uintptr_t(0)};

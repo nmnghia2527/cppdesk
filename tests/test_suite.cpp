@@ -10,6 +10,7 @@
 #include "../src/media/session_recorder.hpp"
 #include "../src/media/voice_intercom.hpp"
 #include "../src/capture/display_manager.hpp"
+#include "../src/control/session_tab_manager.hpp"
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -180,7 +181,7 @@ void testScreenCapturer() {
 }
 
 void testEndToEndSessionAndFileTransfer() {
-    std::cout << "[TEST 4] End-to-End 9-Digit ID Resolution, E2EE Stream, Video, File SHA-256, Chat & Rate Limiting...\n";
+    std::cout << "[TEST 4] End-to-End 9-Digit ID Resolution, E2EE Stream, Video, File SHA-256, Chat & Rate Limiting...\n" << std::flush;
 
     IdentityManager hostIdentity(11);
     hostIdentity.loadOrCreate();
@@ -213,7 +214,7 @@ void testEndToEndSessionAndFileTransfer() {
 
     // Connect Viewer -> Host using the formatted 9-digit Desk ID ("XXX XXX XXX") and Unattended Password
     std::string targetIdStr = hostIdentity.formattedDeskId();
-    std::cout << "  -> Dialing Host by 9-digit ID: " << targetIdStr << "...\n";
+    std::cout << "  -> Dialing Host by 9-digit ID: " << targetIdStr << "...\n" << std::flush;
     TEST_ASSERT(viewerNet.connectToRemote(targetIdStr, "TestPass99"));
 
     // Wait up to 4 seconds for Connected state and first decoded video frame
@@ -1637,6 +1638,89 @@ void testVirtualDisplayFitAndResolutionMatching() {
     }
 }
 
+void testMultiSessionTabbedManagement() {
+    std::cout << "[TEST 18] Multi-Session Tabbed Management...\n";
+
+    SessionTabManager mgr;
+    TEST_ASSERT(mgr.tabCount() == 0);
+    TEST_ASSERT(mgr.activeTabId() == 0);
+    TEST_ASSERT(mgr.activeTab() == nullptr);
+
+    // 1. Create tabs
+    uint32_t t1 = mgr.createTab(401115368, "401 115 368", "Dev Workstation");
+    TEST_ASSERT(t1 != 0);
+    TEST_ASSERT(mgr.tabCount() == 1);
+    TEST_ASSERT(mgr.activeTabId() == t1);
+    TEST_ASSERT(mgr.activeTab() != nullptr);
+    TEST_ASSERT(mgr.activeTab()->title == "Dev Workstation");
+    TEST_ASSERT(mgr.activeTab()->deskId == 401115368);
+
+    uint32_t t2 = mgr.createTab(502226479, "502 226 479", "Database Server");
+    TEST_ASSERT(t2 != 0 && t2 != t1);
+    TEST_ASSERT(mgr.tabCount() == 2);
+    TEST_ASSERT(mgr.activeTabId() == t2);
+
+    // 2. Tab selection & navigation
+    TEST_ASSERT(mgr.selectTab(t1));
+    TEST_ASSERT(mgr.activeTabId() == t1);
+    TEST_ASSERT(!mgr.selectTab(999999));
+    TEST_ASSERT(mgr.nextTab() == t2);
+    TEST_ASSERT(mgr.nextTab() == t1);
+    TEST_ASSERT(mgr.prevTab() == t2);
+    TEST_ASSERT(mgr.prevTab() == t1);
+
+    // 3. Tab Framebuffer Caching & Restoration
+    {
+        std::vector<uint8_t> dummyFrame(1280 * 720 * 4, 0xEE);
+        CursorState cur{ 0.35f, 0.75f, true };
+        mgr.cacheActiveTabFrame(dummyFrame.data(), 1280, 720, 100, cur);
+
+        SessionTab* tab1 = mgr.getTab(t1);
+        TEST_ASSERT(tab1 != nullptr);
+        TEST_ASSERT(tab1->cachedW == 1280);
+        TEST_ASSERT(tab1->cachedH == 720);
+        TEST_ASSERT(tab1->lastFrameSeq == 100);
+        TEST_ASSERT(tab1->cachedFrameBgra.size() == 1280 * 720 * 4);
+        TEST_ASSERT(tab1->cachedFrameBgra[0] == 0xEE);
+        TEST_ASSERT(tab1->cursor.normX == 0.35f);
+        TEST_ASSERT(tab1->cursor.normY == 0.75f);
+    }
+
+    // 4. Per-tab Isolated State
+    {
+        SessionTab* tab1 = mgr.getTab(t1);
+        tab1->scaleMode = ScaleMode::FillAspect;
+        tab1->remoteInputEnabled = false;
+        tab1->unreadChat = 7;
+
+        SessionTab* tab2 = mgr.getTab(t2);
+        TEST_ASSERT(tab2 != nullptr);
+        TEST_ASSERT(tab2->scaleMode == ScaleMode::FitAspect);
+        TEST_ASSERT(tab2->remoteInputEnabled == true);
+        TEST_ASSERT(tab2->unreadChat == 0);
+    }
+
+    // 5. Lookups by Desk ID and Target
+    {
+        TEST_ASSERT(mgr.findTabByDeskId(401115368) != nullptr);
+        TEST_ASSERT(mgr.findTabByTarget("502 226 479") != nullptr);
+        TEST_ASSERT(mgr.findTabByDeskId(999999999) == nullptr);
+    }
+
+    // 6. Tab Closure & Active Tab Fallback
+    {
+        mgr.selectTab(t1);
+        TEST_ASSERT(mgr.closeTab(t1));
+        TEST_ASSERT(mgr.tabCount() == 1);
+        TEST_ASSERT(mgr.activeTabId() == t2);
+
+        TEST_ASSERT(mgr.closeTab(t2));
+        TEST_ASSERT(mgr.tabCount() == 0);
+        TEST_ASSERT(mgr.activeTabId() == 0);
+        TEST_ASSERT(mgr.activeTab() == nullptr);
+    }
+}
+
 } // namespace
 
 int main() {
@@ -1664,6 +1748,7 @@ int main() {
         testSessionRecorderAndAviContainer(); std::cout << "Test 15 done\n" << std::flush;
         testBidirectionalVoiceIntercom(); std::cout << "Test 16 done\n" << std::flush;
         testVirtualDisplayFitAndResolutionMatching(); std::cout << "Test 17 done\n" << std::flush;
+        testMultiSessionTabbedManagement(); std::cout << "Test 18 done\n" << std::flush;
 
         std::cout << "---------------------------------------------------------\n";
         std::cout << "Assertions Passed: " << g_passed << " | Failed: " << g_failed << "\n";

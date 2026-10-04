@@ -4,6 +4,7 @@
 #include "../core/crypto_identity.hpp"
 #include "../net/network_engine.hpp"
 #include "../media/session_recorder.hpp"
+#include "../control/session_tab_manager.hpp"
 #include "notification_manager.hpp"
 
 #ifndef WIN32_LEAN_AND_MEAN
@@ -128,6 +129,7 @@ private:
     // Rendering views
     void drawTopNavBar(float width, float& outTopOffset);
     void drawDashboardView(const UiRect& bounds, float alpha = 1.0f);
+    void drawSessionTabBar(const UiRect& bounds, float alpha = 1.0f);
     void drawRemoteSessionView(const UiRect& bounds, float alpha = 1.0f);
     void drawSettingsView(const UiRect& bounds, float alpha = 1.0f);
     void drawFileTransferDrawer(const UiRect& bounds, float slideProgress);
@@ -181,6 +183,8 @@ private:
     void sendTerminalFromInput();
     void toggleFullscreen();
     void toggleShortcutsModal();
+    void switchToSessionTab(uint32_t tabId);
+    void closeSessionTab(uint32_t tabId);
     void showToast(const std::string& message, bool isError = false);
     void restoreFromTray(NotificationType contextType = NotificationType::GeneralInfo);
     bool mapCanvasPointToNormalized(float x, float y, float& outNormX, float& outNormY) const;
@@ -374,6 +378,9 @@ private:
     UpdateInfo              latestUpdateInfo_{};
     float                   startupUpdateCheckTimer_ = 2.0f;
     bool                    startupCheckTriggered_ = false;
+
+    // Multi-Session Tabbed Management (Feature 6)
+    SessionTabManager       sessionTabs_;
 };
 
 } // namespace cppdesk

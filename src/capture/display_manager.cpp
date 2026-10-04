@@ -60,8 +60,11 @@ DisplayModeEntry DisplayResolutionManager::findBestResolutionMatch(
     uint32_t targetHeight,
     const std::vector<DisplayModeEntry>& modes)
 {
+    if (targetWidth == 0) targetWidth = 1920;
+    if (targetHeight == 0) targetHeight = 1080;
+
     if (modes.empty()) {
-        return { targetWidth > 0 ? targetWidth : 1920, targetHeight > 0 ? targetHeight : 1080, 60 };
+        return { targetWidth, targetHeight, 60 };
     }
 
     // 1. Direct exact match check

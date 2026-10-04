@@ -131,6 +131,17 @@ enum class ScaleMode : uint8_t {
     FillAspect = 3
 };
 
+enum class ViewerConnectionState : uint8_t {
+    Disconnected    = 0,
+    ResolvingId     = 1,
+    ConnectingTcp   = 2,
+    Authenticating  = 3,
+    WaitingApproval = 4,
+    Connected       = 5,
+    Error           = 6,
+    Reconnecting    = 7
+};
+
 // Automatically drops effective FPS (60 -> 30 -> 15) when network RTT or TCP send duration indicates poor connection
 inline uint8_t computeAdaptiveFpsCap(uint8_t userTargetFps, bool adaptiveEnabled, uint32_t rttMs, float avgSendMs) {
     uint8_t target = clampTargetFps(userTargetFps);

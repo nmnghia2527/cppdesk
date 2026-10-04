@@ -844,8 +844,11 @@ void NetworkEngine::stop() {
     if (!running_.exchange(false)) return;
 
     stopHostAudioCapture();
+    stopHostTerminal();
+    stopHostTunnelProxy();
     destroyPrivacyCurtainWindow();
     shutdownViewerAudioPlayback();
+    stopViewerTunnelMultiplexer();
 
     disconnectViewer();
     disconnectHostClient();
@@ -856,11 +859,17 @@ void NetworkEngine::stop() {
     closeWinSock(relayControlSock_);
     localRelay_.stop();
 
-    if (discoveryThread_.joinable()) discoveryThread_.join();
-    if (relayRegThread_.joinable()) relayRegThread_.join();
-    if (hostAcceptThread_.joinable()) hostAcceptThread_.join();
-    if (hostSessionThread_.joinable()) hostSessionThread_.join();
-    if (viewerThread_.joinable()) viewerThread_.join();
+    try { if (discoveryThread_.joinable()) discoveryThread_.join(); } catch (...) {}
+    try { if (relayRegThread_.joinable()) relayRegThread_.join(); } catch (...) {}
+    try { if (hostAcceptThread_.joinable()) hostAcceptThread_.join(); } catch (...) {}
+    {
+        std::lock_guard<std::mutex> lk(hostSessionThreadMutex_);
+        try { if (hostSessionThread_.joinable()) hostSessionThread_.join(); } catch (...) {}
+    }
+    {
+        std::lock_guard<std::mutex> lk(viewerThreadMutex_);
+        try { if (viewerThread_.joinable()) viewerThread_.join(); } catch (...) {}
+    }
 }
 
 std::vector<DiscoveredPeer> NetworkEngine::discoveredPeers() const {
@@ -1051,7 +1060,10 @@ void NetworkEngine::relayRegistrationLoop() {
                         uintptr_t bSock = fromWinSock(bs);
                         if (sendFrame(bSock, PacketType::RELAY_BRIDGE_ACCEPT, 0, bw.buffer().data(), bw.buffer().size(), bm)) {
                             if (activeHostClientSock_.load() == ~uintptr_t(0)) {
-                                if (hostSessionThread_.joinable()) hostSessionThread_.join();
+                                std::lock_guard<std::mutex> slk(hostSessionThreadMutex_);
+                                try {
+                                    if (hostSessionThread_.joinable()) hostSessionThread_.join();
+                                } catch (...) {}
                                 hostSessionThread_ = std::thread(&NetworkEngine::runHostSession, this, bSock, "Relay-Bridge");
                             } else {
                                 closeWinSock(bSock);
@@ -1183,10 +1195,15 @@ void NetworkEngine::hostAcceptLoop() {
             continue;
         }
 
-        if (hostSessionThread_.joinable()) {
-            hostSessionThread_.join();
+        {
+            std::lock_guard<std::mutex> slk(hostSessionThreadMutex_);
+            try {
+                if (hostSessionThread_.joinable()) {
+                    hostSessionThread_.join();
+                }
+            } catch (...) {}
+            hostSessionThread_ = std::thread(&NetworkEngine::runHostSession, this, clientSock, clientIp);
         }
-        hostSessionThread_ = std::thread(&NetworkEngine::runHostSession, this, clientSock, clientIp);
     }
 }
 
@@ -1854,6 +1871,17 @@ void NetworkEngine::runHostSession(uintptr_t clientSock, std::string clientIp) {
             }
         });
 
+        struct ScopedThreadJoiner {
+            std::thread& t;
+            ~ScopedThreadJoiner() {
+                if (t.joinable()) {
+                    try { t.join(); } catch (...) {}
+                }
+            }
+        };
+        ScopedThreadJoiner joinSend(sendWorkerThread);
+        ScopedThreadJoiner joinReader(readerThread);
+
         // Main capture & streaming loop with 15 / 30 / 60 FPS pacing + Automatic Network Congestion FPS Drop
         uint64_t lastClipboardCheck = 0;
         uint64_t lastDiagnosticsSend = 0;
@@ -1971,8 +1999,12 @@ void NetworkEngine::runHostSession(uintptr_t clientSock, std::string clientIp) {
         sessionAlive.store(false);
         outboxCv.notify_all();
         closeWinSock(clientSock);
-        if (sendWorkerThread.joinable()) sendWorkerThread.join();
-        if (readerThread.joinable()) readerThread.join();
+        if (sendWorkerThread.joinable()) {
+            try { sendWorkerThread.join(); } catch (...) {}
+        }
+        if (readerThread.joinable()) {
+            try { readerThread.join(); } catch (...) {}
+        }
 
         if (identity_.settings().lockWorkstationOnDisconnect) {
             LockWorkStation();
@@ -1986,9 +2018,12 @@ void NetworkEngine::runHostSession(uintptr_t clientSock, std::string clientIp) {
 
 bool NetworkEngine::connectToRemote(const std::string& targetIdOrAddr, const std::string& password) {
     disconnectViewer();
-    if (viewerThread_.joinable()) {
-        viewerThread_.join();
-    }
+    std::lock_guard<std::mutex> vlk(viewerThreadMutex_);
+    try {
+        if (viewerThread_.joinable()) {
+            viewerThread_.join();
+        }
+    } catch (...) {}
 
     viewerActive_.store(true);
     viewerEncrypted_.store(false);
@@ -3185,9 +3220,11 @@ void NetworkEngine::startHostAudioCapture() {
 
 void NetworkEngine::stopHostAudioCapture() {
     hostAudioActive_.store(false);
-    if (hostAudioThread_.joinable()) {
-        hostAudioThread_.join();
-    }
+    try {
+        if (hostAudioThread_.joinable()) {
+            hostAudioThread_.join();
+        }
+    } catch (...) {}
 }
 
 void NetworkEngine::hostAudioCaptureLoop() {
@@ -3634,9 +3671,11 @@ void NetworkEngine::startHostTerminal(bool usePowerShell) {
 
 void NetworkEngine::stopHostTerminal() {
     hostTerminalActive_.store(false);
-    if (hostTerminalThread_.joinable()) {
-        hostTerminalThread_.join();
-    }
+    try {
+        if (hostTerminalThread_.joinable()) {
+            hostTerminalThread_.join();
+        }
+    } catch (...) {}
     if (hChildProcess_) {
         TerminateProcess(hChildProcess_, 0);
         CloseHandle(hChildProcess_);
@@ -3788,9 +3827,11 @@ void NetworkEngine::startViewerTunnelMultiplexer() {
 
 void NetworkEngine::stopViewerTunnelMultiplexer() {
     viewerTunnelActive_.store(false);
-    if (viewerTunnelThread_.joinable()) {
-        viewerTunnelThread_.join();
-    }
+    try {
+        if (viewerTunnelThread_.joinable()) {
+            viewerTunnelThread_.join();
+        }
+    } catch (...) {}
     std::lock_guard<std::mutex> lk(tunnelMutex_);
     for (auto& l : tunnelListeners_) {
         closesocket(l.listenSock);
@@ -3935,9 +3976,11 @@ void NetworkEngine::startHostTunnelProxy() {
 
 void NetworkEngine::stopHostTunnelProxy() {
     hostTunnelActive_.store(false);
-    if (hostTunnelThread_.joinable()) {
-        hostTunnelThread_.join();
-    }
+    try {
+        if (hostTunnelThread_.joinable()) {
+            hostTunnelThread_.join();
+        }
+    } catch (...) {}
     std::lock_guard<std::mutex> lk(tunnelMutex_);
     for (auto& kv : hostTunnels_) {
         closesocket(kv.second.sock);
@@ -4017,10 +4060,12 @@ SystemDiagnosticsPayload NetworkEngine::sampleHostDiagnostics() {
     SystemDiagnosticsPayload diag{};
 
     // 1. CPU Usage % via GetSystemTimes
+    static std::mutex s_cpuTimesMutex;
     static uint64_t s_prevIdleTime = 0;
     static uint64_t s_prevKernelTime = 0;
     static uint64_t s_prevUserTime = 0;
 
+    std::lock_guard<std::mutex> lk(s_cpuTimesMutex);
     FILETIME idleTime{}, kernelTime{}, userTime{};
     if (GetSystemTimes(&idleTime, &kernelTime, &userTime)) {
         auto ftToU64 = [](const FILETIME& ft) -> uint64_t {

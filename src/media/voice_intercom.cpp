@@ -179,7 +179,8 @@ bool VoiceIntercom::startPlayback(uint32_t sampleRate, uint8_t channels) {
 }
 
 void VoiceIntercom::enqueuePlaybackChunk(const uint8_t* pcm, size_t bytes) {
-    if (!pcm || bytes == 0) return;
+    bytes = (bytes / sizeof(int16_t)) * sizeof(int16_t);
+    if (!pcm || bytes < sizeof(int16_t)) return;
     std::lock_guard<std::mutex> lk(playbackMutex_);
     if (!hWaveOut_) return;
 

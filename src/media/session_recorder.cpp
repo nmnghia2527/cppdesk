@@ -280,8 +280,12 @@ void SessionRecorder::workerLoop() {
             }
         }
 
-        if (file_.is_open() && !frame.empty()) {
-            uint32_t chunkStart = static_cast<uint32_t>(file_.tellp());
+        if (file_.is_open() && file_.good() && !frame.empty()) {
+            std::streampos pos = file_.tellp();
+            if (pos == std::streampos(-1)) {
+                break;
+            }
+            uint32_t chunkStart = static_cast<uint32_t>(pos);
             uint32_t relOffset = chunkStart - moviDataOffset_;
 
             file_.write("00dc", 4);

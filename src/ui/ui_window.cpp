@@ -208,6 +208,16 @@ void CppDeskWindow::switchTab(ActiveTab newTab) {
             network_.stopVoiceIntercom();
         }
         network_.sendReleaseAllModifiers();
+
+        // Multi-Session: Preserve active tab framebuffer & settings
+        if (!frameBufferBgra_.empty()) {
+            sessionTabs_.cacheActiveTabFrame(frameBufferBgra_.data(), frameBufferW_, frameBufferH_, displayedFrameSeq_, remoteCursor_);
+        }
+        SessionTab* curTab = sessionTabs_.activeTab();
+        if (curTab) {
+            curTab->scaleMode = scaleMode_;
+            curTab->remoteInputEnabled = remoteInputEnabled_;
+        }
     }
     activeTab_ = newTab;
     tabEnterStaggerT_ = 0.0f;
@@ -582,10 +592,28 @@ LRESULT CppDeskWindow::handleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
                     remoteInputEnabled_ = true;
                     showToast("Connected to " + vStats.remoteHostname);
                 }
+
+                SessionTab* activeTab = sessionTabs_.activeTab();
+                if (activeTab) {
+                    activeTab->state = ViewerConnectionState::Connected;
+                    activeTab->deskId = vStats.remoteDeskId;
+                    activeTab->remoteHostname = vStats.remoteHostname;
+                    if (!vStats.remoteHostname.empty()) {
+                        activeTab->title = vStats.remoteHostname;
+                    }
+                    activeTab->connectedSinceTickMs = tickNow;
+                }
             } else if (vStats.state == ViewerConnectionState::Error &&
                        prevViewerState_ != ViewerConnectionState::Error) {
+                SessionTab* activeTab = sessionTabs_.activeTab();
+                if (activeTab) {
+                    activeTab->state = ViewerConnectionState::Error;
+                    activeTab->statusMessage = vStats.statusMessage;
+                }
                 showToast(vStats.statusMessage, true);
-                switchTab(ActiveTab::Dashboard);
+                if (sessionTabs_.tabCount() <= 1) {
+                    switchTab(ActiveTab::Dashboard);
+                }
             } else if (prevViewerState_ == ViewerConnectionState::Connected &&
                        vStats.state == ViewerConnectionState::Disconnected) {
                 if (sessionRecorder_.isRecording()) {
@@ -599,10 +627,30 @@ LRESULT CppDeskWindow::handleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
                     notificationMgr_->notify(NotificationType::SessionDropped, "Session Disconnected",
                                              "Remote session with " + hName + " ended.", identity_.settings());
                 }
-                switchTab(ActiveTab::Dashboard);
+                SessionTab* activeTab = sessionTabs_.activeTab();
+                if (activeTab) {
+                    activeTab->state = ViewerConnectionState::Disconnected;
+                }
+                if (sessionTabs_.tabCount() <= 1) {
+                    sessionTabs_.closeAllTabs();
+                    switchTab(ActiveTab::Dashboard);
+                }
             }
             if (vStats.state == ViewerConnectionState::Connected) {
                 prevViewerHostname_ = vStats.remoteHostname;
+                SessionTab* curTab = sessionTabs_.activeTab();
+                if (curTab) {
+                    curTab->fps = vStats.fps;
+                    curTab->rttMs = vStats.rttMs;
+                    curTab->activeMonitorIndex = vStats.activeMonitorIndex;
+                    curTab->monitorCount = vStats.monitorCount;
+                    curTab->qualityPreset = vStats.qualityPreset;
+                    curTab->privacyModeEngaged = vStats.privacyModeEngaged;
+                    if (!vStats.remoteHostname.empty() && curTab->remoteHostname != vStats.remoteHostname) {
+                        curTab->remoteHostname = vStats.remoteHostname;
+                        curTab->title = vStats.remoteHostname;
+                    }
+                }
             }
             prevViewerState_ = vStats.state;
 
@@ -1244,7 +1292,7 @@ void CppDeskWindow::drawTopNavBar(float width, float& outTopOffset) {
 
     // Center: Dead-Center macOS Segmented Control Track + Liquid Spring Pill
     auto vStats = network_.viewerStats();
-    bool hasSession = (vStats.state != ViewerConnectionState::Disconnected);
+    bool hasSession = (vStats.state != ViewerConnectionState::Disconnected) || (sessionTabs_.tabCount() > 0);
 
     float dashW = 108.0f;
     float sessW = hasSession ? 172.0f : 0.0f;
@@ -1292,7 +1340,7 @@ void CppDeskWindow::drawTopNavBar(float width, float& outTopOffset) {
     if (hasSession) {
         std::string sessLabel = (vStats.remoteDeskId > 0)
             ? ("Session • " + CryptoUtils::formatDeskId(vStats.remoteDeskId))
-            : "Session";
+            : (sessionTabs_.tabCount() > 1 ? ("Sessions (" + std::to_string(sessionTabs_.tabCount()) + ")") : "Session");
         bool onSess = (activeTab_ == ActiveTab::RemoteSession);
         drawButton("tab_session", sessTab, sessLabel,
                    rgba(255, 255, 255, 0.0f),
@@ -1811,6 +1859,70 @@ void CppDeskWindow::drawDashboardView(const UiRect& bounds, float alpha) {
     }
 }
 
+// ---------------- Session Tab Bar (Feature 6) ----------------
+
+void CppDeskWindow::drawSessionTabBar(const UiRect& bounds, float alpha) {
+    if (alpha <= 0.01f || sessionTabs_.tabCount() == 0) return;
+
+    fillRoundRect(bounds, 0.0f, COL_BG_SUBTLE);
+    fillRoundRect({ bounds.left, bounds.bottom - 1.0f, bounds.right, bounds.bottom }, 0.0f, COL_BORDER);
+
+    float curX = bounds.left + 8.0f;
+    float tabH = 26.0f;
+    float tabY = bounds.top + (bounds.height() - tabH) * 0.5f;
+    size_t count = sessionTabs_.tabCount();
+    float maxTabW = 160.0f;
+    float minTabW = 100.0f;
+    float availableW = bounds.width() - 60.0f;
+    float tabW = std::clamp(availableW / static_cast<float>(std::max<size_t>(1, count)), minTabW, maxTabW);
+
+    for (const auto& tab : sessionTabs_.tabs()) {
+        bool isActive = (tab.id == sessionTabs_.activeTabId());
+        UiRect chipRect = { curX, tabY, curX + tabW, tabY + tabH };
+
+        D2D1_COLOR_F chipBg = isActive ? COL_BG_CARD : withAlpha(COL_BG_INPUT, 0.75f);
+        D2D1_COLOR_F chipBorder = isActive ? COL_PRIMARY_ACCENT : COL_BORDER;
+
+        // Base chip click area
+        std::string tabChipId = "tab_chip_" + std::to_string(tab.id);
+        drawButton(tabChipId, chipRect, "", chipBg, withAlpha(chipBg, 0.85f), COL_TEXT_PRIMARY, 6.0f, [this, tabId = tab.id]() {
+            switchToSessionTab(tabId);
+        }, nullptr, true, chipBorder);
+
+        // Status indicator dot
+        bool isConn = (tab.state == ViewerConnectionState::Connected);
+        bool isConnecting = (tab.state == ViewerConnectionState::ConnectingTcp ||
+                             tab.state == ViewerConnectionState::ResolvingId ||
+                             tab.state == ViewerConnectionState::Authenticating ||
+                             tab.state == ViewerConnectionState::WaitingApproval ||
+                             tab.state == ViewerConnectionState::Reconnecting);
+        D2D1_COLOR_F dotColor = isConn ? COL_SUCCESS : (isConnecting ? COL_WARNING : COL_TEXT_MUTED);
+        drawPulseDot(chipRect.left + 10.0f, chipRect.centerY(), 3.2f, dotColor, alpha);
+
+        // Title
+        std::string displayTitle = tab.title.empty() ? (tab.targetInput.empty() ? ("Desk " + std::to_string(tab.deskId)) : tab.targetInput) : tab.title;
+        UiRect titleRect = { chipRect.left + 18.0f, chipRect.top, chipRect.right - 22.0f, chipRect.bottom };
+        drawText(displayTitle, titleRect, fmtSmall_, isActive ? COL_TEXT_PRIMARY : COL_TEXT_SECONDARY, DWRITE_TEXT_ALIGNMENT_LEADING);
+
+        // Close button '×'
+        UiRect closeRect = { chipRect.right - 20.0f, chipRect.top + 3.0f, chipRect.right - 4.0f, chipRect.bottom - 3.0f };
+        std::string closeBtnId = "tab_close_" + std::to_string(tab.id);
+        drawButton(closeBtnId, closeRect, "×", D2D1::ColorF(0, 0, 0, 0), withAlpha(COL_DANGER, 0.35f),
+                   isActive ? COL_TEXT_PRIMARY : COL_TEXT_MUTED, 4.0f, [this, tabId = tab.id]() {
+            closeSessionTab(tabId);
+        }, fmtSmall_);
+
+        curX += tabW + 4.0f;
+    }
+
+    // New Tab '+' button
+    UiRect plusRect = { curX + 2.0f, tabY + 1.0f, curX + 26.0f, tabY + tabH - 1.0f };
+    drawButton("tab_plus_btn", plusRect, "+", COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 5.0f, [this]() {
+        switchTab(ActiveTab::Dashboard);
+        focusedField_ = FocusedField::RemoteId;
+    }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
+}
+
 // ---------------- Remote Session View ----------------
 
 void CppDeskWindow::drawRemoteSessionView(const UiRect& bounds, float alpha) {
@@ -1822,8 +1934,14 @@ void CppDeskWindow::drawRemoteSessionView(const UiRect& bounds, float alpha) {
     UiRect stageRect = bounds;
 
     if (!isFullscreen_) {
+        float tabBarH = (sessionTabs_.tabCount() > 0) ? 36.0f : 0.0f;
+        if (tabBarH > 0.0f) {
+            UiRect tabBarRect = { bounds.left, bounds.top, bounds.right, bounds.top + tabBarH };
+            drawSessionTabBar(tabBarRect, alpha);
+        }
+
         float barH = 48.0f;
-        UiRect hudBar = { bounds.left, bounds.top, bounds.right, bounds.top + barH };
+        UiRect hudBar = { bounds.left, bounds.top + tabBarH, bounds.right, bounds.top + tabBarH + barH };
         fillRoundRect(hudBar, 0.0f, COL_BG_CARD);
         fillRoundRect({ hudBar.left, hudBar.bottom - 1.0f, hudBar.right, hudBar.bottom }, 0.0f, COL_BORDER);
 
@@ -1852,9 +1970,16 @@ void CppDeskWindow::drawRemoteSessionView(const UiRect& bounds, float alpha) {
                        if (sessionRecorder_.isRecording()) {
                            sessionRecorder_.stopRecording();
                        }
+                       if (network_.isVoiceIntercomActive()) {
+                           network_.stopVoiceIntercom();
+                       }
                        network_.disconnectViewer();
-                       switchTab(ActiveTab::Dashboard);
-                       showToast("Disconnected");
+                       if (sessionTabs_.tabCount() > 0) {
+                           closeSessionTab(sessionTabs_.activeTabId());
+                       } else {
+                           switchTab(ActiveTab::Dashboard);
+                           showToast("Disconnected");
+                       }
                    }, fmtSmall_);
         rx = discBtn.left - 6.0f;
 
@@ -2110,6 +2235,7 @@ void CppDeskWindow::drawRemoteSessionView(const UiRect& bounds, float alpha) {
     fillRoundRect(stageRect, 0.0f, COL_STAGE_BG);
 
     if (network_.copyLatestViewerFrame(displayedFrameSeq_, frameBufferBgra_, frameBufferW_, frameBufferH_, remoteCursor_)) {
+        sessionTabs_.cacheActiveTabFrame(frameBufferBgra_.data(), frameBufferW_, frameBufferH_, displayedFrameSeq_, remoteCursor_);
         if (frameBufferW_ > 0 && frameBufferH_ > 0 && renderTarget_) {
             if (sessionRecorder_.isRecording()) {
                 sessionRecorder_.pushFrame(frameBufferBgra_.data(), frameBufferW_, frameBufferH_);
@@ -4608,6 +4734,34 @@ void CppDeskWindow::onKeyEvent(uint16_t vk, uint16_t scan, bool isDown, bool isE
                 return;
             }
         }
+        // Multi-Session Tab Navigation Hotkeys:
+        if ((GetKeyState(VK_CONTROL) & 0x8000) && !(GetKeyState(VK_MENU) & 0x8000)) {
+            if (vk == VK_TAB) {
+                bool shiftDown = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+                uint32_t tid = shiftDown ? sessionTabs_.prevTab() : sessionTabs_.nextTab();
+                if (tid != 0) {
+                    switchToSessionTab(tid);
+                }
+                return;
+            }
+            if (vk == 'W' && activeTab_ == ActiveTab::RemoteSession && sessionTabs_.tabCount() > 0) {
+                closeSessionTab(sessionTabs_.activeTabId());
+                return;
+            }
+            if (vk == 'T' && activeTab_ == ActiveTab::RemoteSession) {
+                switchTab(ActiveTab::Dashboard);
+                focusedField_ = FocusedField::RemoteId;
+                return;
+            }
+            if (vk >= '1' && vk <= '9' && !(GetKeyState(VK_SHIFT) & 0x8000) && sessionTabs_.tabCount() > 1) {
+                size_t tabIdx = static_cast<size_t>(vk - '1');
+                if (tabIdx < sessionTabs_.tabCount()) {
+                    switchToSessionTab(sessionTabs_.tabs()[tabIdx].id);
+                    return;
+                }
+            }
+        }
+
         if (vk == VK_F8 && activeTab_ == ActiveTab::RemoteSession) {
             remoteInputEnabled_ = !remoteInputEnabled_;
             if (!remoteInputEnabled_) network_.sendReleaseAllModifiers();
@@ -4664,6 +4818,116 @@ void CppDeskWindow::onDropFiles(HDROP hDrop) {
 
 // ---------------- High-Level UI Actions ----------------
 
+void CppDeskWindow::switchToSessionTab(uint32_t tabId) {
+    if (tabId == 0 || tabId == sessionTabs_.activeTabId()) return;
+
+    // 1. Cache current active tab state and frame
+    SessionTab* curTab = sessionTabs_.activeTab();
+    if (curTab) {
+        curTab->scaleMode = scaleMode_;
+        curTab->remoteInputEnabled = remoteInputEnabled_;
+        if (!frameBufferBgra_.empty()) {
+            sessionTabs_.cacheActiveTabFrame(frameBufferBgra_.data(), frameBufferW_, frameBufferH_, displayedFrameSeq_, remoteCursor_);
+        }
+    }
+
+    // 2. Select new tab
+    if (!sessionTabs_.selectTab(tabId)) return;
+    SessionTab* newTab = sessionTabs_.activeTab();
+    if (!newTab) return;
+
+    // 3. Restore per-tab state
+    scaleMode_ = newTab->scaleMode;
+    remoteInputEnabled_ = newTab->remoteInputEnabled;
+
+    // 4. Restore cached frame buffer
+    if (!newTab->cachedFrameBgra.empty() && newTab->cachedW > 0 && newTab->cachedH > 0) {
+        frameBufferBgra_ = newTab->cachedFrameBgra;
+        frameBufferW_ = newTab->cachedW;
+        frameBufferH_ = newTab->cachedH;
+        displayedFrameSeq_ = newTab->lastFrameSeq;
+        remoteCursor_ = newTab->cursor;
+
+        if (renderTarget_) {
+            if (remoteBitmap_) {
+                remoteBitmap_->Release();
+                remoteBitmap_ = nullptr;
+            }
+            D2D1_BITMAP_PROPERTIES bprops = D2D1::BitmapProperties(
+                D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_IGNORE)
+            );
+            renderTarget_->CreateBitmap(
+                D2D1::SizeU(static_cast<UINT32>(frameBufferW_), static_cast<UINT32>(frameBufferH_)),
+                frameBufferBgra_.data(),
+                static_cast<UINT32>(frameBufferW_ * 4),
+                &bprops,
+                &remoteBitmap_
+            );
+            bitmapW_ = frameBufferW_;
+            bitmapH_ = frameBufferH_;
+        }
+    }
+
+    // 5. Check if connection target matches current network engine connection
+    auto vStats = network_.viewerStats();
+    bool isSameDesk = (newTab->deskId != 0 && vStats.remoteDeskId == newTab->deskId);
+    if (!isSameDesk) {
+        if (sessionRecorder_.isRecording()) {
+            sessionRecorder_.stopRecording();
+        }
+        if (network_.isVoiceIntercomActive()) {
+            network_.stopVoiceIntercom();
+        }
+        prevViewerState_ = ViewerConnectionState::Disconnected;
+        network_.disconnectViewer();
+        if (!newTab->targetInput.empty()) {
+            network_.connectToRemote(newTab->targetInput, newTab->password);
+        }
+    }
+
+    switchTab(ActiveTab::RemoteSession);
+    std::string toastTitle = newTab->title.empty() ? (newTab->targetInput.empty() ? ("Desk " + std::to_string(newTab->deskId)) : newTab->targetInput) : newTab->title;
+    showToast("Switched to tab: " + toastTitle);
+    if (hwnd_) {
+        InvalidateRect(hwnd_, nullptr, FALSE);
+    }
+}
+
+void CppDeskWindow::closeSessionTab(uint32_t tabId) {
+    if (tabId == 0) return;
+
+    bool wasActive = (tabId == sessionTabs_.activeTabId());
+    SessionTab* tab = sessionTabs_.getTab(tabId);
+    std::string tabName = tab ? (tab->title.empty() ? tab->targetInput : tab->title) : "Session";
+
+    if (wasActive) {
+        if (sessionRecorder_.isRecording()) {
+            sessionRecorder_.stopRecording();
+        }
+        if (network_.isVoiceIntercomActive()) {
+            network_.stopVoiceIntercom();
+        }
+        prevViewerState_ = ViewerConnectionState::Disconnected;
+        network_.disconnectViewer();
+    }
+
+    sessionTabs_.closeTab(tabId);
+
+    if (sessionTabs_.tabCount() > 0) {
+        if (wasActive) {
+            switchToSessionTab(sessionTabs_.activeTabId());
+        }
+        showToast("Closed tab: " + tabName);
+    } else {
+        switchTab(ActiveTab::Dashboard);
+        showToast("All session tabs closed");
+    }
+
+    if (hwnd_) {
+        InvalidateRect(hwnd_, nullptr, FALSE);
+    }
+}
+
 void CppDeskWindow::initiateConnection() {
     if (showUpdateRequiredModal_ || latestUpdateInfo_.updateRequired) {
         showUpdateRequiredModal_ = true;
@@ -4674,6 +4938,23 @@ void CppDeskWindow::initiateConnection() {
         showToast("Enter a 9-digit Desk ID", true);
         return;
     }
+
+    uint64_t targetDeskId = CryptoUtils::parseDeskId(remoteIdInput_);
+    SessionTab* existing = (targetDeskId != 0) ? sessionTabs_.findTabByDeskId(targetDeskId) : sessionTabs_.findTabByTarget(remoteIdInput_);
+    if (!existing) {
+        uint32_t newId = sessionTabs_.createTab(targetDeskId, remoteIdInput_, "Desk " + remoteIdInput_);
+        SessionTab* tab = sessionTabs_.getTab(newId);
+        if (tab) {
+            tab->password = remotePasswordInput_;
+            tab->state = ViewerConnectionState::ConnectingTcp;
+        }
+        sessionTabs_.selectTab(newId);
+    } else {
+        existing->password = remotePasswordInput_;
+        existing->state = ViewerConnectionState::ConnectingTcp;
+        sessionTabs_.selectTab(existing->id);
+    }
+
     network_.connectToRemote(remoteIdInput_, remotePasswordInput_);
     showToast("Connecting to " + remoteIdInput_ + "...");
 }
