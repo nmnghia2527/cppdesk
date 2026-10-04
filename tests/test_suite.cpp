@@ -1113,12 +1113,12 @@ void testAutoUpdaterAndProtocolV3() {
     TEST_ASSERT(PROTOCOL_MAGIC == 0x43505044); // "CPPD"
     TEST_ASSERT(RELAY_MAGIC == 0x4344534B);    // "CDSK"
     TEST_ASSERT(PROTOCOL_VERSION == 3);
-    TEST_ASSERT(std::string(CPP_DESK_VERSION) == "3.0.0");
-    TEST_ASSERT(CPP_DESK_VERSION_NUM == 0x030000);
+    TEST_ASSERT(std::string(CPP_DESK_VERSION) == "3.1.0");
+    TEST_ASSERT(CPP_DESK_VERSION_NUM == 0x030100);
 
     // 2. Semantic Version Triad Parsing
     int maj = 0, min = 0, pat = 0;
-    TEST_ASSERT(AutoUpdater::parseVersionTriad("3.0.0", maj, min, pat) && maj == 3 && min == 0 && pat == 0);
+    TEST_ASSERT(AutoUpdater::parseVersionTriad("3.1.0", maj, min, pat) && maj == 3 && min == 1 && pat == 0);
     TEST_ASSERT(AutoUpdater::parseVersionTriad("v3.1.2", maj, min, pat) && maj == 3 && min == 1 && pat == 2);
     TEST_ASSERT(AutoUpdater::parseVersionTriad("v10.200.300-preview", maj, min, pat) && maj == 10 && min == 200 && pat == 300);
     TEST_ASSERT(!AutoUpdater::parseVersionTriad("invalid_tag", maj, min, pat));

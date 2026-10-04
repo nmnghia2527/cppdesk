@@ -22,32 +22,37 @@
 
 ---
 
-CppDesk is a zero-install, hardware-accelerated Remote Desktop application for Windows distributed as a single portable executable (**`CppDesk.exe`**). Works out of the box with no external runtime dependencies. You have full control of your connection and data, backed by end-to-end authenticated encryption.
+CppDesk is a zero-install, hardware-accelerated Remote Desktop application for Windows distributed as a single portable executable (**`CppDesk.exe`**). It operates out of the box with no external runtime dependencies. Connection control and data remain strictly with you, protected by end-to-end authenticated encryption.
 
-Connect seamlessly across networks using a **9-Digit Desk ID** (`XXX XXX XXX`) with permanent password or interactive approval.
+Connect across networks using a **9-Digit Desk ID** (`XXX XXX XXX`) with a permanent password or interactive host approval.
 
 ---
 
 ## Features
 
-- 🖥️ **High-Performance Screen Sharing**: Smooth 60 FPS remote desktop streaming with multi-monitor switching, borderless fullscreen, and live quality adjustments (High, Balanced, Fast).
-- 🔊 **Real-Time Remote Audio**: Stream crystal-clear stereo audio from the host PC with low-latency playback and instant mute/volume controls.
-- 🛡️ **Host Privacy Curtain Mode**: Blank out the physical host display and block local keyboard/mouse input while you work securely from afar.
-- 🔌 **TCP Port Forwarding & Tunneling**: Tunnel local ports to remote services with one-click presets for RDP (3389), SSH (22), Web (80/443), and VNC (5900).
-- 💻 **Interactive Remote Terminal**: Built-in Command Prompt and PowerShell console accessible directly from the side drawer with administrator quick actions.
-- 🎨 **Screen Annotation & Whiteboard**: Collaborative drawing tools (Pen, Highlighter, Arrow, Laser pointer) rendered live on both viewer and host screens.
-- 🔄 **Integrated Auto-Updater**: Background GitHub Release verification ensuring security fixes, protocol compatibility, and latest features.
-- 📇 **Address Book & Categories**: Save and organize remote desks with custom aliases, category tags (Work, Personal, Servers), and instant search.
-- 📁 **Chunked File Transfer & Chat**: High-speed drag-and-drop file transfers with integrity verification, plus integrated real-time text chat.
-- 🔔 **Windows Integration**: Native push notifications, taskbar flashing alerts, and responsive system tray support.
-- 🔒 **End-to-End Security**: Protected with modern cryptographic handshakes (ECDH P-256) and authenticated AES-256-GCM stream encryption.
+- **High-Performance Screen Sharing**: Smooth 60 FPS desktop streaming using DXGI Desktop Duplication with GDI fallback, multi-monitor enumeration and switching, borderless fullscreen, and live quality adjustments (High, Balanced, Fast).
+- **Virtual Display Fit & Dynamic Resolution Matching**: FillAspect zoom-to-fill scaling to eliminate black bars, plus on-demand host resolution adaptation matching the viewer viewport via `ChangeDisplaySettingsExW` with automatic restoration upon disconnect.
+- **Multi-Session Tabbed Management**: Browser-style session tabs with live connection status dots, unread chat message badges, cached framebuffer previews, and keyboard navigation shortcuts (`Ctrl+Tab`, `Ctrl+Shift+Tab`, `Ctrl+W`, `Ctrl+T`, `Ctrl+1..9`).
+- **Remote Hardware Diagnostics & Process Manager**: Real-time CPU, RAM, and network telemetry charts, complete process table with PID, footprint, and CPU utilization, plus remote process termination.
+- **Canvas Drag-and-Drop & Recursive Directory Transfer**: Direct file and directory drop onto the remote canvas with recursive directory hierarchy preservation, chunked transfer, and streaming SHA-256 verification.
+- **In-Session Screen Recording**: Direct recording of decrypted session video to seekable RIFF AVI containers with asynchronous disk I/O, elapsed timecode, and floating recording pill.
+- **Bidirectional Voice Intercom**: Real-time VoIP microphone capture and low-latency audio playback via Win32 `waveIn`/`waveOut` with live RMS VU meters and mute controls.
+- **Host Audio Streaming**: Real-time system audio capture using Windows WASAPI loopback at 48000 Hz stereo PCM with low-latency playback and instant mute controls.
+- **Host Privacy Curtain Mode**: Blanks out the physical host display with a topmost security window and blocks local keyboard/mouse input (`BlockInput`) while remote control proceeds unhindered.
+- **TCP Port Forwarding & Tunneling**: Local-to-remote TCP port proxy with built-in presets for RDP (3389), SSH (22), Web (80/443), and VNC (5900).
+- **Interactive Remote Terminal**: Embedded Command Prompt and PowerShell console with redirected anonymous pipes, monospaced font, and administrator action triggers.
+- **Bidirectional Whiteboard & Screen Annotation**: Collaborative drawing overlay (pen, highlighter, arrow, laser pointer) synchronized in real time between viewer and host screens.
+- **Address Book & Machine Aliases**: Save and organize remote desks with custom aliases, category tags (Work, Personal, Servers), notes, and instant search filter.
+- **End-to-End Cryptographic Security**: NIST P-256 ephemeral ECDH key exchange, AES-256-GCM AEAD encryption with ratcheted keys, brute-force rate limiting, and short authentication string (SAS) fingerprint verification.
+- **Integrated Auto-Updater**: Zero-dependency WinHTTP GitHub release checking with version triad comparison and enforced update modal.
+- **Native Windows Integration**: Desktop push notifications, taskbar flashing alerts, and system tray management.
 
 ---
 
 ## Quick Start
 
 ### 1. Download & Run
-Download **[`CppDesk.exe`](https://github.com/oocs07/Remote-Desktop/releases/latest)** — no installation required. Just double-click to launch.
+Download **[`CppDesk.exe`](https://github.com/oocs07/Remote-Desktop/releases/latest)** (no installation required). Double-click to launch.
 
 ```powershell
 .\CppDesk.exe
@@ -88,11 +93,12 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1 -Test
 ├── CppDesk.exe                   # Standalone portable Windows executable
 ├── build.ps1                     # Build and test automation script
 ├── src/
-│   ├── capture/                  # Screen capture & tile encoding
-│   ├── control/                  # Input injection, file transfer & whiteboard
+│   ├── capture/                  # Screen capture, DXGI/GDI & display manager
+│   ├── control/                  # Input injection, tab manager, file transfer & whiteboard
 │   ├── core/                     # Wire protocol, security & address book
+│   ├── media/                    # Voice intercom & AVI session recording
 │   ├── net/                      # Networking, audio streaming, TCP tunnels & updater
-│   ├── simd/                     # Hardware vector acceleration
+│   ├── simd/                     # Hardware vector acceleration (AVX2 assembly)
 │   └── ui/                       # Direct2D interface & notification manager
 ├── relay-dotnet/                 # Optional .NET 10 Rendezvous & Relay server
 ├── scripts/                      # Benchmark and verification scripts
@@ -103,7 +109,7 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1 -Test
 
 ## Acknowledgments & Credits
 
-CppDesk proudly draws architectural and feature inspiration from [**RustDesk**](https://github.com/rustdesk/rustdesk), an outstanding open-source remote desktop software. We express our sincere appreciation to the RustDesk project, its maintainers, and community for pioneering open-source remote desktop capabilities.
+CppDesk draws architectural and feature inspiration from [**RustDesk**](https://github.com/rustdesk/rustdesk), an open-source remote desktop software. We express our appreciation to the RustDesk project, its maintainers, and community for pioneering open-source remote desktop capabilities.
 
 ### Copyright & Licensing Notice
 - **Independent Clean-Room Implementation**: CppDesk is an independent software project developed in native C++20 and x86-64 AVX2 SIMD Assembly, using standard Windows operating system APIs (Win32, Direct2D, DirectWrite, DXGI Desktop Duplication, WASAPI Audio, WinHTTP, and Windows CNG Cryptography).
