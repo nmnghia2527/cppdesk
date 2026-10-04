@@ -6,6 +6,7 @@
 #include "../control/input_injector.hpp"
 #include "../control/clipboard_file_manager.hpp"
 #include "../control/whiteboard_manager.hpp"
+#include "../media/voice_intercom.hpp"
 
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -268,6 +269,15 @@ public:
     void sendProcessKill(uint32_t pid);
     SystemDiagnosticsPayload latestDiagnostics() const;
 
+    // Bidirectional Voice Intercom (VoIP Microphone & Playback - Feature 4)
+    bool startVoiceIntercom();
+    void stopVoiceIntercom();
+    bool isVoiceIntercomActive() const;
+    void setVoiceIntercomMicMuted(bool muted);
+    bool isVoiceIntercomMicMuted() const;
+    float voiceIntercomInputLevel() const;
+    void handleIncomingVoiceChunk(const uint8_t* payload, size_t len);
+
 private:
     // Background worker loops
     void discoveryLoop();
@@ -469,6 +479,9 @@ private:
     std::atomic<bool>                          hostDiagnosticsStreamActive_{false};
     mutable std::mutex                         diagnosticsMutex_;
     SystemDiagnosticsPayload                   latestDiagnostics_;
+
+    // Voice Intercom State (Feature 4)
+    VoiceIntercom                              voiceIntercom_;
 };
 
 } // namespace cppdesk

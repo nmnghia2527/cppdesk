@@ -204,6 +204,9 @@ void CppDeskWindow::switchTab(ActiveTab newTab) {
         if (sessionRecorder_.isRecording()) {
             sessionRecorder_.stopRecording();
         }
+        if (network_.isVoiceIntercomActive()) {
+            network_.stopVoiceIntercom();
+        }
         network_.sendReleaseAllModifiers();
     }
     activeTab_ = newTab;
@@ -587,6 +590,9 @@ LRESULT CppDeskWindow::handleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
                        vStats.state == ViewerConnectionState::Disconnected) {
                 if (sessionRecorder_.isRecording()) {
                     sessionRecorder_.stopRecording();
+                }
+                if (network_.isVoiceIntercomActive()) {
+                    network_.stopVoiceIntercom();
                 }
                 if (notificationMgr_) {
                     std::string hName = prevViewerHostname_.empty() ? "Remote Desktop" : prevViewerHostname_;
@@ -1910,6 +1916,47 @@ void CppDeskWindow::drawRemoteSessionView(const UiRect& bounds, float alpha) {
                    isRec ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
         rx = recBtn.left - 6.0f;
 
+        bool voiceActive = network_.isVoiceIntercomActive();
+        bool voiceMuted = network_.isVoiceIntercomMicMuted();
+        std::string voiceLabel;
+        if (!voiceActive) {
+            voiceLabel = "Intercom";
+        } else if (voiceMuted) {
+            voiceLabel = "Mic: Muted";
+        } else {
+            float lvl = network_.voiceIntercomInputLevel();
+            if (lvl > 0.35f) {
+                voiceLabel = "Talk [|||]";
+            } else if (lvl > 0.08f) {
+                voiceLabel = "Talk [||.]";
+            } else {
+                voiceLabel = "Talk [|..]";
+            }
+        }
+
+        UiRect voiceBtn = { rx - 78.0f, hudBar.top + 8.0f, rx, hudBar.bottom - 8.0f };
+        drawButton("sess_voice_intercom", voiceBtn, voiceLabel,
+                   voiceActive ? (voiceMuted ? COL_SEC_BTN_BG : rgba(16, 185, 129, 0.95f)) : COL_SEC_BTN_BG,
+                   voiceActive ? (voiceMuted ? COL_SEC_BTN_HV : rgba(5, 150, 105, 0.95f)) : COL_SEC_BTN_HV,
+                   voiceActive ? (voiceMuted ? COL_TEXT_PRIMARY : COL_TEXT_ON_ACCENT) : COL_TEXT_PRIMARY,
+                   7.5f, [this, voiceActive, voiceMuted]() {
+                       if (!voiceActive) {
+                           if (network_.startVoiceIntercom()) {
+                               showToast("Voice Intercom active (Mic live)");
+                           } else {
+                               showToast("Failed to open microphone", true);
+                           }
+                       } else if (!voiceMuted) {
+                           network_.setVoiceIntercomMicMuted(true);
+                           showToast("Intercom Mic muted");
+                       } else {
+                           network_.stopVoiceIntercom();
+                           showToast("Voice Intercom stopped");
+                       }
+                   }, fmtSmall_, !voiceActive || voiceMuted, COL_BORDER,
+                   (voiceActive && !voiceMuted) ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
+        rx = voiceBtn.left - 6.0f;
+
         bool diagOpen = (showFileDrawer_ && drawerTab_ == DrawerTab::Diagnostics);
         UiRect taskBtn = { rx - 74.0f, hudBar.top + 8.0f, rx, hudBar.bottom - 8.0f };
         drawButton("sess_taskmgr", taskBtn, "Task Mgr",
@@ -2210,6 +2257,35 @@ void CppDeskWindow::drawRemoteSessionView(const UiRect& bounds, float alpha) {
 
             UiRect recTextRect = { recPill.left + 28.0f, recPill.top, recPill.right - 8.0f, recPill.bottom };
             drawText(recTimeBuf, recTextRect, fmtSmall_, COL_TEXT_PRIMARY, DWRITE_TEXT_ALIGNMENT_LEADING);
+        }
+
+        // Voice Intercom Live In-Canvas Pill (Feature 4)
+        if (network_.isVoiceIntercomActive()) {
+            float topY = sessionRecorder_.isRecording()
+                ? (renderedCanvasRect_.top + 16.0f + 30.0f + 8.0f)
+                : (renderedCanvasRect_.top + 16.0f);
+            float icomW = 120.0f;
+            float icomH = 30.0f;
+            UiRect icomPill = { renderedCanvasRect_.left + 16.0f,
+                                topY,
+                                renderedCanvasRect_.left + 16.0f + icomW,
+                                topY + icomH };
+
+            bool isMuted = network_.isVoiceIntercomMicMuted();
+            D2D1_COLOR_F accentCol = isMuted ? rgba(239, 68, 68, 0.9f) : rgba(16, 185, 129, 0.9f);
+
+            fillRoundRect(icomPill, 15.0f, rgba(15, 23, 42, 0.88f));
+            strokeRoundRect(icomPill, 15.0f, withAlpha(accentCol, 0.65f), 1.2f);
+
+            // Audio level indicator dot with size responding to RMS volume
+            float lvl = network_.voiceIntercomInputLevel();
+            float dotRadius = 4.0f + std::min(lvl * 12.0f, 4.0f);
+            solidBrush_->SetColor(accentCol);
+            renderTarget_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(icomPill.left + 16.0f, (icomPill.top + icomPill.bottom) * 0.5f), dotRadius, dotRadius), solidBrush_);
+
+            std::string icomText = isMuted ? "Mic: Muted" : "Voice: Live";
+            UiRect icomTextRect = { icomPill.left + 28.0f, icomPill.top, icomPill.right - 8.0f, icomPill.bottom };
+            drawText(icomText, icomTextRect, fmtSmall_, COL_TEXT_PRIMARY, DWRITE_TEXT_ALIGNMENT_LEADING);
         }
     } else {
         renderedCanvasRect_ = {};

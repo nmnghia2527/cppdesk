@@ -61,6 +61,7 @@ enum class PacketType : uint8_t {
     DIAGNOSTICS_REQ     = 0x26, // Viewer -> Host: Enable/Disable active diagnostics streaming
     SYSTEM_DIAGNOSTICS  = 0x27, // Host -> Viewer: Hardware telemetry & top processes
     PROCESS_KILL        = 0x28, // Viewer -> Host: Request process termination
+    VOICE_INTERCOM_CHUNK= 0x29, // Bidirectional: VoIP microphone audio stream chunk
 
     // Clipboard, File Transfer & Live Chat
     CLIPBOARD_TEXT      = 0x30,
@@ -185,6 +186,14 @@ struct AudioChunkHeader {
     uint8_t  channels;       // Channel count (e.g. 2 for stereo)
     uint8_t  bitsPerSample;  // e.g. 16
     uint8_t  isSilent;       // 1 = silent/zero payload, 0 = active PCM
+    uint32_t sampleFrames;   // number of sample frames in this chunk
+};
+
+struct VoiceChunkHeader {
+    uint32_t sampleRate;     // Target sample rate (e.g. 48000 or 16000)
+    uint8_t  channels;       // 1 (mono) or 2 (stereo)
+    uint8_t  bitsPerSample;  // 16
+    uint8_t  flags;          // 0x01: isSilent/muted, 0x02: pushToTalk
     uint32_t sampleFrames;   // number of sample frames in this chunk
 };
 

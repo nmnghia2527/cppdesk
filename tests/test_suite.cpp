@@ -8,6 +8,7 @@
 #include "../src/net/updater.hpp"
 #include "../src/ui/notification_manager.hpp"
 #include "../src/media/session_recorder.hpp"
+#include "../src/media/voice_intercom.hpp"
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -1461,6 +1462,94 @@ void testSessionRecorderAndAviContainer() {
     std::filesystem::remove(testFile, ec);
 }
 
+void testBidirectionalVoiceIntercom() {
+    std::cout << "[TEST 16] Bidirectional Voice Intercom (VoIP Microphone & Playback)...\n";
+
+    // 1. Protocol opcode validation
+    TEST_ASSERT(static_cast<uint8_t>(PacketType::VOICE_INTERCOM_CHUNK) == 0x29);
+
+    // 2. VoiceChunkHeader serialization & deserialization
+    {
+        VoiceChunkHeader vch{};
+        vch.sampleRate = 48000;
+        vch.channels = 1;
+        vch.bitsPerSample = 16;
+        vch.flags = 0x00;
+        vch.sampleFrames = 480; // 10ms chunk
+
+        ByteWriter w;
+        w.writeBytes(&vch, sizeof(vch));
+        // Append simulated 480 16-bit PCM samples
+        std::vector<int16_t> pcm(480, 1500);
+        w.writeBytes(pcm.data(), pcm.size() * sizeof(int16_t));
+
+        TEST_ASSERT(w.buffer().size() == sizeof(VoiceChunkHeader) + 480 * sizeof(int16_t));
+
+        ByteReader r(w.buffer());
+        VoiceChunkHeader decoded{};
+        r.readBytes(&decoded, sizeof(decoded));
+        TEST_ASSERT(decoded.sampleRate == 48000);
+        TEST_ASSERT(decoded.channels == 1);
+        TEST_ASSERT(decoded.bitsPerSample == 16);
+        TEST_ASSERT(decoded.flags == 0x00);
+        TEST_ASSERT(decoded.sampleFrames == 480);
+
+        std::vector<int16_t> readPcm(decoded.sampleFrames);
+        r.readBytes(readPcm.data(), readPcm.size() * sizeof(int16_t));
+        TEST_ASSERT(readPcm[0] == 1500);
+        TEST_ASSERT(readPcm[479] == 1500);
+    }
+
+    // 3. Audio RMS Level Calculation & Gain Processing
+    {
+        // Silence test
+        std::vector<int16_t> silent(480, 0);
+        float silentRms = VoiceIntercom::calculateRmsLevel(silent.data(), silent.size());
+        TEST_ASSERT(silentRms <= 0.001f);
+
+        // Loud signal test
+        std::vector<int16_t> loud(480, 20000);
+        float loudRms = VoiceIntercom::calculateRmsLevel(loud.data(), loud.size());
+        TEST_ASSERT(loudRms > 0.5f);
+
+        // Gain test
+        std::vector<int16_t> gainPcm = { 1000, -2000, 3000 };
+        VoiceIntercom::applyGain(gainPcm.data(), gainPcm.size(), 2.0f);
+        TEST_ASSERT(gainPcm[0] == 2000);
+        TEST_ASSERT(gainPcm[1] == -4000);
+        TEST_ASSERT(gainPcm[2] == 6000);
+
+        // Clipping prevention test
+        gainPcm = { 25000 };
+        VoiceIntercom::applyGain(gainPcm.data(), gainPcm.size(), 2.0f);
+        TEST_ASSERT(gainPcm[0] == 32767); // Clamped to max int16_t
+    }
+
+    // 4. VoiceIntercom Lifecycle, Mute & Volume
+    {
+        VoiceIntercom intercom;
+        TEST_ASSERT(!intercom.isCapturing());
+        TEST_ASSERT(!intercom.isPlaying());
+        TEST_ASSERT(!intercom.isMicMuted());
+
+        intercom.setMicMuted(true);
+        TEST_ASSERT(intercom.isMicMuted());
+        intercom.setMicMuted(false);
+        TEST_ASSERT(!intercom.isMicMuted());
+
+        intercom.setOutputVolume(75);
+        TEST_ASSERT(intercom.outputVolume() == 75);
+        intercom.setOutputVolume(150); // Clamped to 100
+        TEST_ASSERT(intercom.outputVolume() == 100);
+        intercom.setOutputVolume(-10); // Clamped to 0
+        TEST_ASSERT(intercom.outputVolume() == 0);
+
+        // Enqueue playback chunk (should not crash even if device is missing or uninitialized)
+        std::vector<int16_t> testSamples(480, 100);
+        intercom.enqueuePlaybackChunk(reinterpret_cast<const uint8_t*>(testSamples.data()), testSamples.size() * sizeof(int16_t));
+    }
+}
+
 } // namespace
 
 int main() {
@@ -1486,6 +1575,7 @@ int main() {
         testHardwareDiagnosticsAndProcessManager(); std::cout << "Test 13 done\n" << std::flush;
         testDirectCanvasDragAndDropFileTransfer(); std::cout << "Test 14 done\n" << std::flush;
         testSessionRecorderAndAviContainer(); std::cout << "Test 15 done\n" << std::flush;
+        testBidirectionalVoiceIntercom(); std::cout << "Test 16 done\n" << std::flush;
 
         std::cout << "---------------------------------------------------------\n";
         std::cout << "Assertions Passed: " << g_passed << " | Failed: " << g_failed << "\n";

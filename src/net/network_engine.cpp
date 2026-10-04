@@ -1120,6 +1120,7 @@ void NetworkEngine::updateHostSessionPermissions(uint8_t newPermissions) {
 }
 
 void NetworkEngine::disconnectHostClient() {
+    stopVoiceIntercom();
     uintptr_t cs = activeHostClientSock_.exchange(~uintptr_t(0));
     if (cs != ~uintptr_t(0)) {
         bool enc = hostEncrypted_.exchange(false);
@@ -1713,6 +1714,10 @@ void NetworkEngine::runHostSession(uintptr_t clientSock, std::string clientIp) {
                             }
                             break;
                         }
+                        case PacketType::VOICE_INTERCOM_CHUNK: {
+                            handleIncomingVoiceChunk(payload.data(), payload.size());
+                            break;
+                        }
                         case PacketType::TUNNEL_OPEN: {
                             if (r.hasRemaining(sizeof(TunnelOpenHeader))) {
                                 TunnelOpenHeader toh{};
@@ -1999,6 +2004,7 @@ bool NetworkEngine::connectToRemote(const std::string& targetIdOrAddr, const std
 void NetworkEngine::disconnectViewer() {
     viewerActive_.store(false);
     shutdownViewerAudioPlayback();
+    stopVoiceIntercom();
     stopViewerTunnelMultiplexer();
     viewerPrivacyModeActive_.store(false);
     whiteboardMgr_.clearAllStrokes();
@@ -2705,6 +2711,10 @@ void NetworkEngine::runViewerSession(std::string targetInput, std::string passwo
                         }
                         case PacketType::AUDIO_STREAM_CHUNK: {
                             enqueueViewerAudioChunk(payload.data(), payload.size());
+                            break;
+                        }
+                        case PacketType::VOICE_INTERCOM_CHUNK: {
+                            handleIncomingVoiceChunk(payload.data(), payload.size());
                             break;
                         }
                         case PacketType::PRIVACY_MODE_TOGGLE: {
@@ -3424,6 +3434,64 @@ void NetworkEngine::enqueueViewerAudioChunk(const uint8_t* payload, size_t len) 
         waveOutWrite(hWaveOut_, &curHdr, sizeof(WAVEHDR));
         currentWaveIdx_ = (currentWaveIdx_ + 1) % 3;
     }
+}
+
+// ---------------- Bidirectional Voice Intercom (Feature 4) ----------------
+
+bool NetworkEngine::startVoiceIntercom() {
+    voiceIntercom_.startPlayback(48000, 1);
+
+    return voiceIntercom_.startCapture([this](const uint8_t* pcm, size_t bytes, uint32_t sampleRate, uint8_t channels) {
+        VoiceChunkHeader hdr{};
+        hdr.sampleRate = sampleRate;
+        hdr.channels = channels;
+        hdr.bitsPerSample = 16;
+        hdr.flags = 0x00;
+        hdr.sampleFrames = static_cast<uint32_t>(bytes / (channels * sizeof(int16_t)));
+
+        ByteWriter w;
+        w.writeBytes(&hdr, sizeof(hdr));
+        w.writeBytes(pcm, bytes);
+
+        if (viewerActive_.load()) {
+            sendViewerEncryptedPacket(PacketType::VOICE_INTERCOM_CHUNK, 0, w.buffer().data(), w.buffer().size());
+        } else if (activeHostClientSock_.load() != ~uintptr_t(0)) {
+            sendHostEncryptedPacket(PacketType::VOICE_INTERCOM_CHUNK, 0, w.buffer().data(), w.buffer().size());
+        }
+    }, 48000, 1);
+}
+
+void NetworkEngine::stopVoiceIntercom() {
+    voiceIntercom_.stopCapture();
+    voiceIntercom_.stopPlayback();
+}
+
+bool NetworkEngine::isVoiceIntercomActive() const {
+    return voiceIntercom_.isCapturing();
+}
+
+void NetworkEngine::setVoiceIntercomMicMuted(bool muted) {
+    voiceIntercom_.setMicMuted(muted);
+}
+
+bool NetworkEngine::isVoiceIntercomMicMuted() const {
+    return voiceIntercom_.isMicMuted();
+}
+
+float NetworkEngine::voiceIntercomInputLevel() const {
+    return voiceIntercom_.inputLevel();
+}
+
+void NetworkEngine::handleIncomingVoiceChunk(const uint8_t* payload, size_t len) {
+    if (!payload || len < sizeof(VoiceChunkHeader)) return;
+    const uint8_t* pcm = payload + sizeof(VoiceChunkHeader);
+    size_t pcmBytes = len - sizeof(VoiceChunkHeader);
+    if (pcmBytes == 0) return;
+
+    if (!voiceIntercom_.isPlaying()) {
+        voiceIntercom_.startPlayback(48000, 1);
+    }
+    voiceIntercom_.enqueuePlaybackChunk(pcm, pcmBytes);
 }
 
 // ---------------- Remote Terminal & TCP Port Forwarding (v2.1.0) ----------------
