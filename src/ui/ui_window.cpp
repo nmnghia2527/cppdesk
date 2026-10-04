@@ -811,9 +811,28 @@ LRESULT CppDeskWindow::handleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
             onDropFiles(reinterpret_cast<HDROP>(wParam));
             return 0;
 
-        case WM_DESK_UPDATE_CHECK_DONE:
+        case WM_DESK_UPDATE_CHECK_DONE: {
+            auto* info = reinterpret_cast<UpdateInfo*>(wParam);
+            bool manual = (lParam != 0);
+            if (info) {
+                latestUpdateInfo_ = *info;
+                isCheckingUpdates_ = false;
+                if (!info->success) {
+                    updateStatusText_ = "Check failed (Offline or rate-limited)";
+                    if (manual) showToast("Could not check for updates", true);
+                } else if (info->updateRequired) {
+                    updateStatusText_ = "Mandatory Update: v" + info->latestVersion;
+                    showUpdateRequiredModal_ = true;
+                    if (manual) showToast("Mandatory update v" + info->latestVersion + " available!", true);
+                } else {
+                    updateStatusText_ = "CppDesk is up to date (v" + std::string(CPP_DESK_VERSION) + ")";
+                    if (manual) showToast("You have the latest version (v" + std::string(CPP_DESK_VERSION) + ")");
+                }
+                delete info;
+            }
             InvalidateRect(hwnd_, nullptr, FALSE);
             return 0;
+        }
 
         case WM_DESTROY:
             KillTimer(hwnd_, 1);
@@ -4162,24 +4181,13 @@ void CppDeskWindow::triggerUpdateCheck(bool manual) {
         showToast("Checking GitHub for updates...");
     }
 
-    AutoUpdater::checkForUpdatesAsync("oocs07", "cppdesk", CPP_DESK_VERSION, [this, manual](const UpdateInfo& info) {
-        latestUpdateInfo_ = info;
-        isCheckingUpdates_ = false;
-
-        if (!info.success) {
-            updateStatusText_ = "Check failed (Offline or rate-limited)";
-            if (manual) showToast("Could not check for updates", true);
-        } else if (info.updateRequired) {
-            updateStatusText_ = "Mandatory Update: v" + info.latestVersion;
-            showUpdateRequiredModal_ = true;
-            if (manual) showToast("Mandatory update v" + info.latestVersion + " available!", true);
-        } else {
-            updateStatusText_ = "CppDesk is up to date (v" + std::string(CPP_DESK_VERSION) + ")";
-            if (manual) showToast("You have the latest version (v" + std::string(CPP_DESK_VERSION) + ")");
-        }
-
-        if (hwnd_) {
-            PostMessageW(hwnd_, WM_DESK_UPDATE_CHECK_DONE, 0, 0);
+    HWND targetHwnd = hwnd_;
+    AutoUpdater::checkForUpdatesAsync("oocs07", "cppdesk", CPP_DESK_VERSION, [targetHwnd, manual](const UpdateInfo& info) {
+        if (targetHwnd && IsWindow(targetHwnd)) {
+            auto* pInfo = new UpdateInfo(info);
+            if (!PostMessageW(targetHwnd, WM_DESK_UPDATE_CHECK_DONE, reinterpret_cast<WPARAM>(pInfo), manual ? 1 : 0)) {
+                delete pInfo;
+            }
         }
     });
 }

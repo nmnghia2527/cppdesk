@@ -104,10 +104,7 @@ SessionTab* SessionTabManager::getTab(uint32_t tabId) {
 }
 
 const SessionTab* SessionTabManager::getTab(uint32_t tabId) const {
-    for (const auto& t : tabs_) {
-        if (t.id == tabId) return &t;
-    }
-    return nullptr;
+    return const_cast<SessionTabManager*>(this)->getTab(tabId);
 }
 
 SessionTab* SessionTabManager::findTabByDeskId(uint64_t deskId) {
@@ -134,7 +131,7 @@ void SessionTabManager::cacheTabFrame(uint32_t tabId, const uint8_t* bgra, int w
     SessionTab* tab = getTab(tabId);
     if (!tab) return;
 
-    if (bgra && width > 0 && height > 0) {
+    if (bgra && width > 0 && height > 0 && width <= 16384 && height <= 16384) {
         size_t bytes = static_cast<size_t>(width) * height * 4;
         tab->cachedFrameBgra.assign(bgra, bgra + bytes);
         tab->cachedW = width;

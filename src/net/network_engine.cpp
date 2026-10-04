@@ -3529,12 +3529,16 @@ float NetworkEngine::voiceIntercomInputLevel() const {
 
 void NetworkEngine::handleIncomingVoiceChunk(const uint8_t* payload, size_t len) {
     if (!payload || len < sizeof(VoiceChunkHeader)) return;
+    const auto* hdr = reinterpret_cast<const VoiceChunkHeader*>(payload);
     const uint8_t* pcm = payload + sizeof(VoiceChunkHeader);
     size_t pcmBytes = len - sizeof(VoiceChunkHeader);
     if (pcmBytes == 0) return;
 
+    uint32_t srate = (hdr->sampleRate >= 8000 && hdr->sampleRate <= 96000) ? hdr->sampleRate : 48000;
+    uint8_t ch = (hdr->channels == 1 || hdr->channels == 2) ? hdr->channels : 1;
+
     if (!voiceIntercom_.isPlaying()) {
-        voiceIntercom_.startPlayback(48000, 1);
+        voiceIntercom_.startPlayback(srate, ch);
     }
     voiceIntercom_.enqueuePlaybackChunk(pcm, pcmBytes);
 }

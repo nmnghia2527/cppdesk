@@ -17,6 +17,9 @@ uint64_t nowMs() {
 WhiteboardManager::WhiteboardManager() = default;
 
 WhiteboardManager::~WhiteboardManager() {
+    if (hwndOverlay_) {
+        SetWindowLongPtrW(hwndOverlay_, GWLP_USERDATA, 0);
+    }
     hideHostOverlay();
 }
 
@@ -143,17 +146,22 @@ bool WhiteboardManager::deserializeStroke(const uint8_t* data, size_t len, Annot
     try {
         ByteReader r(data, len);
         outStroke.strokeId = r.readU32();
-        outStroke.tool = static_cast<WhiteboardTool>(r.readU8());
+        uint8_t toolVal = r.readU8();
+        outStroke.tool = (toolVal <= 4) ? static_cast<WhiteboardTool>(toolVal) : WhiteboardTool::Pen;
         outStroke.argbColor = r.readU32();
-        outStroke.thickness = r.readF32();
+        float thick = r.readF32();
+        outStroke.thickness = (std::isnan(thick) || std::isinf(thick)) ? 3.5f : std::clamp(thick, 0.5f, 50.0f);
         uint16_t ptCount = r.readU16();
+        ptCount = std::min<uint16_t>(ptCount, 4096);
         outStroke.points.clear();
         outStroke.points.reserve(ptCount);
         for (uint16_t i = 0; i < ptCount; ++i) {
             if (!r.hasRemaining(8)) break;
             float px = r.readF32();
             float py = r.readF32();
-            outStroke.points.push_back({ px, py });
+            if (std::isnan(px) || std::isinf(px)) px = 0.0f;
+            if (std::isnan(py) || std::isinf(py)) py = 0.0f;
+            outStroke.points.push_back({ std::clamp(px, 0.0f, 1.0f), std::clamp(py, 0.0f, 1.0f) });
         }
         outStroke.timestampMs = nowMs();
         return true;

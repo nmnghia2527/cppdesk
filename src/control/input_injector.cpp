@@ -7,6 +7,7 @@
 #include <shellapi.h>
 #include <algorithm>
 #include <cmath>
+#include <mutex>
 
 namespace cppdesk {
 
@@ -203,6 +204,8 @@ bool InputInjector::syncToInputDesktop() {
         return true;
     }
 
+    static std::mutex s_deskMtx;
+    std::lock_guard<std::mutex> lk(s_deskMtx);
     static HDESK s_prevSwitchedDesk = nullptr;
     if (SetThreadDesktop(hInputDesk)) {
         if (s_prevSwitchedDesk) {

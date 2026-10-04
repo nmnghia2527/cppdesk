@@ -522,9 +522,22 @@ bool IdentityManager::save() const {
     out << "taskbar_flash=" << (settings_.enableTaskbarFlash ? "1" : "0") << "\n";
     out << "notification_sound=" << (settings_.enableNotificationSounds ? "1" : "0") << "\n";
     out << "minimize_to_tray=" << (settings_.minimizeToTray ? "1" : "0") << "\n";
+    auto sanitizeIniValue = [](const std::string& in) -> std::string {
+        std::string out;
+        out.reserve(in.size());
+        for (char c : in) {
+            if (c == '|' || c == '\r' || c == '\n') {
+                out.push_back(' ');
+            } else {
+                out.push_back(c);
+            }
+        }
+        return out;
+    };
+
     for (const auto& r : recentSessions_) {
-        out << "recent=" << r.deskId << "|" << r.hostname << "|" << r.address << "|" << (r.isFavorite ? "1" : "0")
-            << "|" << r.alias << "|" << r.tag << "|" << r.notes << "\n";
+        out << "recent=" << r.deskId << "|" << sanitizeIniValue(r.hostname) << "|" << sanitizeIniValue(r.address) << "|" << (r.isFavorite ? "1" : "0")
+            << "|" << sanitizeIniValue(r.alias) << "|" << sanitizeIniValue(r.tag) << "|" << sanitizeIniValue(r.notes) << "\n";
     }
     return true;
 }

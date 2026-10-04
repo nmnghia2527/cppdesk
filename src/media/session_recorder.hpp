@@ -67,6 +67,7 @@ private:
     std::mutex                      queueMutex_;
     std::condition_variable         queueCv_;
     std::queue<std::vector<uint8_t>> frameQueue_;
+    std::vector<uint8_t>            flippedBuffer_;
 };
 
 } // namespace cppdesk

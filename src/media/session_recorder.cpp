@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <iostream>
 #include <algorithm>
+#include <cstring>
 
 namespace cppdesk {
 
@@ -294,12 +295,19 @@ void SessionRecorder::workerLoop() {
             uint32_t frameBytes = static_cast<uint32_t>(width_ * height_ * 4);
             file_.write(reinterpret_cast<const char*>(&frameBytes), 4);
 
-            // Invert vertically for bottom-up DIB
-            const uint8_t* p = frame.data();
-            size_t rowBytes = static_cast<size_t>(width_ * 4);
-            for (int y = height_ - 1; y >= 0; --y) {
-                file_.write(reinterpret_cast<const char*>(p + y * rowBytes), rowBytes);
+            // Invert vertically for bottom-up DIB in memory and write in a single call
+            if (flippedBuffer_.size() < frameBytes) {
+                flippedBuffer_.resize(frameBytes);
             }
+            const uint8_t* p = frame.data();
+            uint8_t* dst = flippedBuffer_.data();
+            size_t rowBytes = static_cast<size_t>(width_ * 4);
+            for (int y = 0; y < height_; ++y) {
+                std::memcpy(dst + static_cast<size_t>(y) * rowBytes,
+                            p + static_cast<size_t>(height_ - 1 - y) * rowBytes,
+                            rowBytes);
+            }
+            file_.write(reinterpret_cast<const char*>(dst), frameBytes);
 
             AviIndexEntry entry{};
             entry.ckid = 0x63643030; // '00dc'

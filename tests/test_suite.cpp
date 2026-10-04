@@ -1103,6 +1103,22 @@ void testV210PowerFeaturesInheritance() {
         TEST_ASSERT(std::fabs(lx - 0.45f) < 0.001f);
         TEST_ASSERT(std::fabs(ly - 0.55f) < 0.001f);
         TEST_ASSERT(lalpha > 0.8f && lalpha <= 1.0f);
+
+        // Malformed whiteboard packet resilience
+        AnnotationStroke badStroke{};
+        ByteWriter badW;
+        badW.writeU32(999);
+        badW.writeU8(99); // Invalid tool
+        badW.writeU32(0xFFFFFFFF);
+        badW.writeF32(9999.0f); // Out of bounds thickness
+        badW.writeU16(1);
+        badW.writeF32(2.5f); // Out of bounds coordinate
+        badW.writeF32(-1.5f);
+        TEST_ASSERT(WhiteboardManager::deserializeStroke(badW.buffer().data(), badW.buffer().size(), badStroke));
+        TEST_ASSERT(badStroke.tool == WhiteboardTool::Pen); // Reset to default tool
+        TEST_ASSERT(badStroke.thickness <= 50.0f); // Clamped
+        TEST_ASSERT(badStroke.points[0].x <= 1.0f); // Clamped
+        TEST_ASSERT(badStroke.points[0].y >= 0.0f); // Clamped
     }
 }
 
@@ -1718,6 +1734,21 @@ void testMultiSessionTabbedManagement() {
         TEST_ASSERT(mgr.tabCount() == 0);
         TEST_ASSERT(mgr.activeTabId() == 0);
         TEST_ASSERT(mgr.activeTab() == nullptr);
+    }
+
+    // 7. Dimension sanity guards on cacheTabFrame
+    {
+        uint32_t t3 = mgr.createTab(998877665, "Test Tab", "Tab 3");
+        std::vector<uint8_t> dummyFrame(64 * 64 * 4, 0x55);
+        CursorState cur{};
+        mgr.cacheTabFrame(t3, dummyFrame.data(), 64, 64, 1, cur);
+        TEST_ASSERT(mgr.getTab(t3)->cachedW == 64);
+        TEST_ASSERT(mgr.getTab(t3)->cachedH == 64);
+
+        // Huge dimensions should be rejected without altering valid cached frame
+        mgr.cacheTabFrame(t3, dummyFrame.data(), 25000, 25000, 2, cur);
+        TEST_ASSERT(mgr.getTab(t3)->cachedW == 64);
+        TEST_ASSERT(mgr.getTab(t3)->cachedH == 64);
     }
 }
 
