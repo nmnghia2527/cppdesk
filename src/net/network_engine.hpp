@@ -7,6 +7,7 @@
 #include "../control/clipboard_file_manager.hpp"
 #include "../control/whiteboard_manager.hpp"
 #include "../media/voice_intercom.hpp"
+#include "../capture/display_manager.hpp"
 
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -278,6 +279,12 @@ public:
     float voiceIntercomInputLevel() const;
     void handleIncomingVoiceChunk(const uint8_t* payload, size_t len);
 
+    // Virtual Display Fit & Dynamic Resolution Matching (Feature 5)
+    bool requestHostResolution(uint32_t width, uint32_t height, uint8_t mode = 2);
+    bool restoreHostResolution();
+    bool isHostResolutionChanged() const;
+    void handleIncomingResolutionChangeReq(const uint8_t* payload, size_t len, uint8_t callerPermissions);
+
 private:
     // Background worker loops
     void discoveryLoop();
@@ -482,6 +489,9 @@ private:
 
     // Voice Intercom State (Feature 4)
     VoiceIntercom                              voiceIntercom_;
+
+    // Virtual Display & Dynamic Resolution Manager (Feature 5)
+    DisplayResolutionManager                   displayManager_;
 };
 
 } // namespace cppdesk

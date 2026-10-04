@@ -23,7 +23,8 @@ $CoreSources = @(
     "src/net/updater.cpp",
     "src/ui/notification_manager.cpp",
     "src/media/session_recorder.cpp",
-    "src/media/voice_intercom.cpp"
+    "src/media/voice_intercom.cpp",
+    "src/capture/display_manager.cpp"
 )
 
 $AppSources = $CoreSources + @(

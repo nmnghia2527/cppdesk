@@ -170,7 +170,7 @@ CppDeskWindow::CppDeskWindow(IdentityManager& identity, NetworkEngine& network)
 
     const auto& s = identity_.settings();
     themeAnimT_ = s.darkTheme ? 1.0f : 0.0f;
-    scaleMode_ = static_cast<ScaleMode>(std::clamp<int>(s.defaultScaleMode, 0, 2));
+    scaleMode_ = static_cast<ScaleMode>(std::clamp<int>(s.defaultScaleMode, 0, 3));
     updateActivePalette(themeAnimT_);
 
     LARGE_INTEGER freq{}, now{};
@@ -573,7 +573,7 @@ LRESULT CppDeskWindow::handleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
             if (vStats.state == ViewerConnectionState::Connected &&
                 prevViewerState_ != ViewerConnectionState::Connected) {
                 switchTab(ActiveTab::RemoteSession);
-                scaleMode_ = static_cast<ScaleMode>(std::clamp<int>(identity_.settings().defaultScaleMode, 0, 2));
+                scaleMode_ = static_cast<ScaleMode>(std::clamp<int>(identity_.settings().defaultScaleMode, 0, 3));
                 if (vStats.remoteAddress.find("127.0.0.1") != std::string::npos ||
                     vStats.remoteDeskId == identity_.deskId()) {
                     remoteInputEnabled_ = false;
@@ -1977,15 +1977,31 @@ void CppDeskWindow::drawRemoteSessionView(const UiRect& bounds, float alpha) {
         rx = taskBtn.left - 6.0f;
 
         std::string scaleLabel = (scaleMode_ == ScaleMode::FitAspect) ? "Scale: Fit" :
+                                 (scaleMode_ == ScaleMode::FillAspect) ? "Scale: Fill" :
                                  (scaleMode_ == ScaleMode::Stretch) ? "Scale: Stretch" : "Scale: 1:1";
         UiRect scaleBtn = { rx - 88.0f, hudBar.top + 8.0f, rx, hudBar.bottom - 8.0f };
         drawButton("sess_scale", scaleBtn, scaleLabel,
-                   COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 7.5f, [this]() {
-                       if (scaleMode_ == ScaleMode::FitAspect) scaleMode_ = ScaleMode::Stretch;
+                   (scaleMode_ == ScaleMode::FillAspect) ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
+                   (scaleMode_ == ScaleMode::FillAspect) ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
+                   (scaleMode_ == ScaleMode::FillAspect) ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
+                   7.5f, [this]() {
+                       if (scaleMode_ == ScaleMode::FitAspect) scaleMode_ = ScaleMode::FillAspect;
+                       else if (scaleMode_ == ScaleMode::FillAspect) scaleMode_ = ScaleMode::Stretch;
                        else if (scaleMode_ == ScaleMode::Stretch) scaleMode_ = ScaleMode::Original;
                        else scaleMode_ = ScaleMode::FitAspect;
-                   }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
+                   }, fmtSmall_, (scaleMode_ != ScaleMode::FillAspect), COL_BORDER,
+                   (scaleMode_ == ScaleMode::FillAspect) ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
         rx = scaleBtn.left - 6.0f;
+
+        UiRect matchBtn = { rx - 84.0f, hudBar.top + 8.0f, rx, hudBar.bottom - 8.0f };
+        drawButton("sess_match_res", matchBtn, "Match Res",
+                   COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 7.5f, [this, bounds]() {
+                       float targetW = bounds.width();
+                       float targetH = std::max(480.0f, bounds.height() - 48.0f);
+                       network_.requestHostResolution(static_cast<uint32_t>(targetW), static_cast<uint32_t>(targetH), 2);
+                       showToast("Requested host resolution match (" + std::to_string(static_cast<int>(targetW)) + "x" + std::to_string(static_cast<int>(targetH)) + ")");
+                   }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
+        rx = matchBtn.left - 6.0f;
 
         std::string qualLabel = (stats.qualityPreset == QualityPreset::Ultra) ? "Quality: High" :
                                 (stats.qualityPreset == QualityPreset::Balanced) ? "Quality: Bal" : "Quality: Fast";
@@ -2088,6 +2104,7 @@ void CppDeskWindow::drawRemoteSessionView(const UiRect& bounds, float alpha) {
 
         stageRect = { bounds.left, hudBar.bottom, bounds.right, bounds.bottom };
     }
+    stageRect_ = stageRect;
 
     // Remote Desktop Canvas Stage
     fillRoundRect(stageRect, 0.0f, COL_STAGE_BG);
@@ -2128,6 +2145,10 @@ void CppDeskWindow::drawRemoteSessionView(const UiRect& bounds, float alpha) {
             float scale = std::min(availW / bitmapW_, availH / bitmapH_);
             drawW = bitmapW_ * scale;
             drawH = bitmapH_ * scale;
+        } else if (scaleMode_ == ScaleMode::FillAspect) {
+            float scale = std::max(availW / bitmapW_, availH / bitmapH_);
+            drawW = bitmapW_ * scale;
+            drawH = bitmapH_ * scale;
         } else if (scaleMode_ == ScaleMode::Original) {
             drawW = std::min(availW, static_cast<float>(bitmapW_));
             drawH = std::min(availH, static_cast<float>(bitmapH_));
@@ -2142,9 +2163,18 @@ void CppDeskWindow::drawRemoteSessionView(const UiRect& bounds, float alpha) {
             strokeRoundRect(renderedCanvasRect_.inflate(1.2f, 1.2f), 6.0f, COL_BORDER_ALT, 1.2f);
         }
 
+        if (scaleMode_ == ScaleMode::FillAspect) {
+            D2D1_RECT_F clipRect = D2D1::RectF(stageRect.left, stageRect.top, stageRect.right, stageRect.bottom);
+            renderTarget_->PushAxisAlignedClip(clipRect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+        }
+
         D2D1_RECT_F dRect = D2D1::RectF(renderedCanvasRect_.left, renderedCanvasRect_.top,
                                         renderedCanvasRect_.right, renderedCanvasRect_.bottom);
         renderTarget_->DrawBitmap(remoteBitmap_, dRect, alpha, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+
+        if (scaleMode_ == ScaleMode::FillAspect) {
+            renderTarget_->PopAxisAlignedClip();
+        }
 
         if (remoteCursor_.visible && appSett.showRemoteCursor) {
             float curX = renderedCanvasRect_.left + remoteCursor_.normX * renderedCanvasRect_.width();
@@ -2511,8 +2541,10 @@ void CppDeskWindow::drawSettingsView(const UiRect& bounds, float alpha) {
                (defQ == QualityPreset::LowBandwidth) ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
 
     uint8_t defScale = s.defaultScaleMode;
-    UiRect scFitBtn  = { qualBox.left + 16.0f, qualBox.top + 68.0f, qualBox.left + 16.0f + thirdW, qualBox.top + 100.0f };
-    UiRect scStrBtn  = { scFitBtn.right + 8.0f, qualBox.top + 68.0f, scFitBtn.right + 8.0f + thirdW, qualBox.top + 100.0f };
+    float quarterW = (qualBox.width() - 32.0f - 24.0f) / 4.0f;
+    UiRect scFitBtn  = { qualBox.left + 16.0f, qualBox.top + 68.0f, qualBox.left + 16.0f + quarterW, qualBox.top + 100.0f };
+    UiRect scFillBtn = { scFitBtn.right + 8.0f, qualBox.top + 68.0f, scFitBtn.right + 8.0f + quarterW, qualBox.top + 100.0f };
+    UiRect scStrBtn  = { scFillBtn.right + 8.0f, qualBox.top + 68.0f, scFillBtn.right + 8.0f + quarterW, qualBox.top + 100.0f };
     UiRect scOrigBtn = { scStrBtn.right + 8.0f, qualBox.top + 68.0f, qualBox.right - 16.0f, qualBox.top + 100.0f };
 
     auto setScaleAction = [this](uint8_t scMode) {
@@ -2529,6 +2561,13 @@ void CppDeskWindow::drawSettingsView(const UiRect& bounds, float alpha) {
                8.0f, [setScaleAction]() { setScaleAction(0); }, fmtSmall_, defScale != 0, COL_BORDER,
                (defScale == 0) ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
 
+    drawButton("sett_sc_fill", scFillBtn, "Fill",
+               (defScale == 3) ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
+               (defScale == 3) ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
+               (defScale == 3) ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
+               8.0f, [setScaleAction]() { setScaleAction(3); }, fmtSmall_, defScale != 3, COL_BORDER,
+               (defScale == 3) ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
+
     drawButton("sett_sc_str", scStrBtn, "Stretch",
                (defScale == 1) ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
                (defScale == 1) ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
@@ -2536,7 +2575,7 @@ void CppDeskWindow::drawSettingsView(const UiRect& bounds, float alpha) {
                8.0f, [setScaleAction]() { setScaleAction(1); }, fmtSmall_, defScale != 1, COL_BORDER,
                (defScale == 1) ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
 
-    drawButton("sett_sc_orig", scOrigBtn, "Actual Size",
+    drawButton("sett_sc_orig", scOrigBtn, "1:1",
                (defScale == 2) ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
                (defScale == 2) ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
                (defScale == 2) ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
@@ -4195,6 +4234,11 @@ bool CppDeskWindow::mapCanvasPointToNormalized(float x, float y, float& outNormX
     }
     if (!renderedCanvasRect_.contains(x, y)) {
         return false;
+    }
+    if (scaleMode_ == ScaleMode::FillAspect && stageRect_.width() > 1.0f && stageRect_.height() > 1.0f) {
+        if (!stageRect_.contains(x, y)) {
+            return false;
+        }
     }
 
     if (modalAnimT_ > 0.004f || shortcutsModalAnimT_ > 0.004f || portForwardModalAnimT_ > 0.004f || addressBookModalAnimT_ > 0.004f) {

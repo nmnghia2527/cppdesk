@@ -9,6 +9,7 @@
 #include "../src/ui/notification_manager.hpp"
 #include "../src/media/session_recorder.hpp"
 #include "../src/media/voice_intercom.hpp"
+#include "../src/capture/display_manager.hpp"
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -1550,6 +1551,92 @@ void testBidirectionalVoiceIntercom() {
     }
 }
 
+void testVirtualDisplayFitAndResolutionMatching() {
+    std::cout << "[TEST 17] Virtual Display Fit & Dynamic Resolution Matching...\n";
+
+    // 1. Protocol opcode validation
+    TEST_ASSERT(static_cast<uint8_t>(PacketType::RESOLUTION_CHANGE_REQ) == 0x2A);
+
+    // 2. ScaleMode enum extension (FillAspect = 3)
+    TEST_ASSERT(static_cast<uint8_t>(ScaleMode::FillAspect) == 3);
+
+    // 3. ResolutionChangePayload serialization & deserialization
+    {
+        ResolutionChangePayload rcp{};
+        rcp.targetWidth = 1920;
+        rcp.targetHeight = 1080;
+        rcp.mode = 2; // BestFitAspect
+
+        ByteWriter w;
+        w.writeBytes(&rcp, sizeof(rcp));
+        TEST_ASSERT(w.buffer().size() == sizeof(ResolutionChangePayload));
+
+        ByteReader r(w.buffer());
+        ResolutionChangePayload decoded{};
+        r.readBytes(&decoded, sizeof(decoded));
+        TEST_ASSERT(decoded.targetWidth == 1920);
+        TEST_ASSERT(decoded.targetHeight == 1080);
+        TEST_ASSERT(decoded.mode == 2);
+    }
+
+    // 4. DisplayResolutionManager aspect ratio matching logic
+    {
+        std::vector<DisplayModeEntry> candidateModes = {
+            { 800, 600, 60 },    // 4:3 (1.333)
+            { 1024, 768, 60 },   // 4:3 (1.333)
+            { 1280, 800, 60 },   // 16:10 (1.600)
+            { 1600, 900, 60 },   // 16:9 (1.777)
+            { 1920, 1080, 60 },  // 16:9 (1.777)
+            { 2560, 1440, 60 }   // 16:9 (1.777)
+        };
+
+        // Match 16:9 target: should find exact 1920x1080
+        DisplayModeEntry best16_9 = DisplayResolutionManager::findBestResolutionMatch(1920, 1080, candidateModes);
+        TEST_ASSERT(best16_9.width == 1920);
+        TEST_ASSERT(best16_9.height == 1080);
+
+        // Match 16:10 target (e.g. 1920x1200 MacBook/Surface): closest aspect ratio in candidates is 1280x800
+        DisplayModeEntry best16_10 = DisplayResolutionManager::findBestResolutionMatch(1920, 1200, candidateModes);
+        TEST_ASSERT(best16_10.width == 1280);
+        TEST_ASSERT(best16_10.height == 800);
+
+        // Match 4:3 target (e.g. 1024x768 iPad): closest aspect ratio in candidates is 1024x768
+        DisplayModeEntry best4_3 = DisplayResolutionManager::findBestResolutionMatch(1024, 768, candidateModes);
+        TEST_ASSERT(best4_3.width == 1024);
+        TEST_ASSERT(best4_3.height == 768);
+    }
+
+    // 5. Virtual Display Fit Math (Zoom-to-fill vs Fit-with-letterbox)
+    {
+        float stageW = 800.0f;
+        float stageH = 600.0f; // 4:3 stage
+        float bitmapW = 1920.0f;
+        float bitmapH = 1080.0f; // 16:9 remote desktop
+
+        // FitAspect: letterboxed
+        float fitScale = std::min(stageW / bitmapW, stageH / bitmapH);
+        float fitW = bitmapW * fitScale;
+        float fitH = bitmapH * fitScale;
+        TEST_ASSERT(fitW == 800.0f);
+        TEST_ASSERT(fitH == 450.0f); // 150px vertical black bar letterboxing
+
+        // FillAspect: zero letterbox
+        float fillScale = std::max(stageW / bitmapW, stageH / bitmapH);
+        float fillW = bitmapW * fillScale;
+        float fillH = bitmapH * fillScale;
+        TEST_ASSERT(fillH == 600.0f);
+        TEST_ASSERT(fillW > 800.0f); // Bleeds horizontally, zero black bars!
+    }
+
+    // 6. DisplayResolutionManager state tracking
+    {
+        DisplayResolutionManager mgr;
+        TEST_ASSERT(!mgr.isResolutionChanged());
+        TEST_ASSERT(mgr.originalWidth() > 0);
+        TEST_ASSERT(mgr.originalHeight() > 0);
+    }
+}
+
 } // namespace
 
 int main() {
@@ -1576,6 +1663,7 @@ int main() {
         testDirectCanvasDragAndDropFileTransfer(); std::cout << "Test 14 done\n" << std::flush;
         testSessionRecorderAndAviContainer(); std::cout << "Test 15 done\n" << std::flush;
         testBidirectionalVoiceIntercom(); std::cout << "Test 16 done\n" << std::flush;
+        testVirtualDisplayFitAndResolutionMatching(); std::cout << "Test 17 done\n" << std::flush;
 
         std::cout << "---------------------------------------------------------\n";
         std::cout << "Assertions Passed: " << g_passed << " | Failed: " << g_failed << "\n";

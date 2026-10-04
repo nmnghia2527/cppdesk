@@ -1121,6 +1121,7 @@ void NetworkEngine::updateHostSessionPermissions(uint8_t newPermissions) {
 
 void NetworkEngine::disconnectHostClient() {
     stopVoiceIntercom();
+    displayManager_.restoreResolution();
     uintptr_t cs = activeHostClientSock_.exchange(~uintptr_t(0));
     if (cs != ~uintptr_t(0)) {
         bool enc = hostEncrypted_.exchange(false);
@@ -1200,6 +1201,7 @@ void NetworkEngine::runHostSession(uintptr_t clientSock, std::string clientIp) {
         stopHostTunnelProxy();
         whiteboardMgr_.hideHostOverlay();
         whiteboardMgr_.clearAllStrokes();
+        displayManager_.restoreResolution();
         InputInjector::releaseAllModifiers();
         fileManager_.abortActiveTransfers();
         hostEncrypted_.store(false);
@@ -1836,6 +1838,10 @@ void NetworkEngine::runHostSession(uintptr_t clientSock, std::string clientIp) {
                                 serializeSystemDiagnostics(diag, payload);
                                 sendHostEncryptedPacket(PacketType::SYSTEM_DIAGNOSTICS, FLAG_ENCRYPTED, payload.data(), payload.size());
                             }
+                            break;
+                        }
+                        case PacketType::RESOLUTION_CHANGE_REQ: {
+                            handleIncomingResolutionChangeReq(r.currentPtr(), r.remaining(), perms);
                             break;
                         }
                         case PacketType::DISCONNECT:
@@ -4166,6 +4172,52 @@ void NetworkEngine::sendProcessKill(uint32_t pid) {
 SystemDiagnosticsPayload NetworkEngine::latestDiagnostics() const {
     std::lock_guard<std::mutex> lk(diagnosticsMutex_);
     return latestDiagnostics_;
+}
+
+// ---------------- Virtual Display Fit & Dynamic Resolution Matching (Feature 5) ----------------
+
+bool NetworkEngine::requestHostResolution(uint32_t width, uint32_t height, uint8_t mode) {
+    ResolutionChangePayload payload{};
+    payload.targetWidth = width;
+    payload.targetHeight = height;
+    payload.mode = mode;
+    return sendViewerEncryptedPacket(PacketType::RESOLUTION_CHANGE_REQ, 0, &payload, sizeof(payload));
+}
+
+bool NetworkEngine::restoreHostResolution() {
+    ResolutionChangePayload payload{};
+    payload.targetWidth = 0;
+    payload.targetHeight = 0;
+    payload.mode = 0;
+    return sendViewerEncryptedPacket(PacketType::RESOLUTION_CHANGE_REQ, 0, &payload, sizeof(payload));
+}
+
+bool NetworkEngine::isHostResolutionChanged() const {
+    return displayManager_.isResolutionChanged();
+}
+
+void NetworkEngine::handleIncomingResolutionChangeReq(const uint8_t* payload, size_t len, uint8_t callerPermissions) {
+    if ((callerPermissions & PERM_INPUT) == 0) {
+        return;
+    }
+    if (!payload || len < sizeof(ResolutionChangePayload)) {
+        return;
+    }
+    ResolutionChangePayload req{};
+    std::memcpy(&req, payload, sizeof(req));
+    if (req.mode == 0 || (req.targetWidth == 0 && req.targetHeight == 0)) {
+        displayManager_.restoreResolution();
+    } else if (req.mode == 2) {
+        auto modes = DisplayResolutionManager::enumerateDisplayModes();
+        auto best = DisplayResolutionManager::findBestResolutionMatch(req.targetWidth, req.targetHeight, modes);
+        if (best.width > 0 && best.height > 0) {
+            displayManager_.changeResolution(best.width, best.height);
+        } else {
+            displayManager_.changeResolution(req.targetWidth, req.targetHeight);
+        }
+    } else {
+        displayManager_.changeResolution(req.targetWidth, req.targetHeight);
+    }
 }
 
 } // namespace cppdesk

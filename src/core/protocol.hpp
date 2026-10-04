@@ -62,6 +62,7 @@ enum class PacketType : uint8_t {
     SYSTEM_DIAGNOSTICS  = 0x27, // Host -> Viewer: Hardware telemetry & top processes
     PROCESS_KILL        = 0x28, // Viewer -> Host: Request process termination
     VOICE_INTERCOM_CHUNK= 0x29, // Bidirectional: VoIP microphone audio stream chunk
+    RESOLUTION_CHANGE_REQ=0x2A, // Viewer -> Host: Request host resolution change or aspect fit
 
     // Clipboard, File Transfer & Live Chat
     CLIPBOARD_TEXT      = 0x30,
@@ -122,6 +123,13 @@ inline uint8_t clampTargetFps(uint8_t fps) {
     if (fps <= 45) return 30;
     return 60;
 }
+
+enum class ScaleMode : uint8_t {
+    FitAspect  = 0,
+    Stretch    = 1,
+    Original   = 2,
+    FillAspect = 3
+};
 
 // Automatically drops effective FPS (60 -> 30 -> 15) when network RTT or TCP send duration indicates poor connection
 inline uint8_t computeAdaptiveFpsCap(uint8_t userTargetFps, bool adaptiveEnabled, uint32_t rttMs, float avgSendMs) {
@@ -200,6 +208,12 @@ struct VoiceChunkHeader {
 struct PrivacyModePayload {
     uint8_t enable;          // 1 = engage, 0 = disengage
     uint8_t acknowledge;     // 0 = request, 1 = ACK confirmation
+};
+
+struct ResolutionChangePayload {
+    uint32_t targetWidth;   // Desired width or 0 to restore original
+    uint32_t targetHeight;  // Desired height or 0 to restore original
+    uint8_t  mode;          // 0 = RestoreDefault, 1 = ExactMatch, 2 = BestFitAspect
 };
 
 struct TunnelOpenHeader {

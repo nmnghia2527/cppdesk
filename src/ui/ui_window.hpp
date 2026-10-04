@@ -31,12 +31,6 @@ enum class ActiveTab : uint8_t {
     Settings      = 2
 };
 
-enum class ScaleMode : uint8_t {
-    FitAspect = 0,
-    Stretch   = 1,
-    Original  = 2
-};
-
 enum class FocusedField : uint8_t {
     None            = 0,
     RemoteId        = 1,
@@ -249,6 +243,7 @@ private:
     int                     frameBufferH_ = 0;
     CursorState             remoteCursor_{};
     UiRect                  renderedCanvasRect_{};
+    UiRect                  stageRect_{};
 
     // Rolling network telemetry history
     static constexpr size_t SPARKLINE_SAMPLES = 36;
