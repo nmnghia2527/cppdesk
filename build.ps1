@@ -63,7 +63,8 @@ $Libs = @(
     "-luser32",
     "-lshell32",
     "-lwinmm",
-    "-lwinhttp"
+    "-lwinhttp",
+    "-lpsapi"
 )
 
 $Windres = "C:\msys64\ucrt64\bin\windres.exe"

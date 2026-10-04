@@ -57,7 +57,8 @@ enum class FocusedField : uint8_t {
 enum class DrawerTab : uint8_t {
     FilesAndClip   = 0,
     LiveChat       = 1,
-    RemoteTerminal = 2
+    RemoteTerminal = 2,
+    Diagnostics    = 3
 };
 
 struct UiRect {
@@ -322,6 +323,9 @@ private:
     std::string             terminalInputText_;
     int                     terminalHistoryIndex_ = -1;
     float                   terminalScrollOffset_ = 0.0f;
+
+    // Remote Hardware Diagnostics & Process Telemetry UI state (Feature 1)
+    float                   diagnosticsScrollOffset_ = 0.0f;
 
     // TCP Port Forwarding modal state (v2.1.0)
     bool                    showPortForwardModal_ = false;

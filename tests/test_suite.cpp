@@ -1176,6 +1176,96 @@ void testAutoUpdaterAndProtocolV3() {
     TEST_ASSERT(caughtOvf);
 }
 
+void testHardwareDiagnosticsAndProcessManager() {
+    std::cout << "[TEST 13] Hardware Diagnostics & Process Manager Engine...\n" << std::flush;
+
+    // 1. Packet binary serialization & deserialization round-trip
+    {
+        // A. DIAGNOSTICS_REQ packet
+        std::vector<uint8_t> reqBuf;
+        ByteWriter reqWriter(reqBuf);
+        reqWriter.writeU8(1); // active = true
+        ByteReader reqReader(reqBuf);
+        TEST_ASSERT(reqReader.readU8() == 1);
+
+        // B. PROCESS_KILL packet
+        std::vector<uint8_t> killBuf;
+        ByteWriter killWriter(killBuf);
+        killWriter.writeU32(1337);
+        ByteReader killReader(killBuf);
+        TEST_ASSERT(killReader.readU32() == 1337);
+
+        // C. SYSTEM_DIAGNOSTICS packet payload
+        SystemDiagnosticsPayload payload;
+        payload.cpuUsagePercent = 38.5f;
+        payload.ramUsedBytes = 8589934592ULL;   // 8 GB
+        payload.ramTotalBytes = 17179869184ULL; // 16 GB
+        payload.diskUsedBytes = 268435456000ULL;// 250 GB
+        payload.diskTotalBytes = 536870912000ULL;// 500 GB
+
+        ProcessTelemetryItem p1;
+        p1.pid = 1024;
+        p1.workingSetBytes = 524288000ULL; // 500 MB
+        p1.name = "CppDesk.exe";
+
+        ProcessTelemetryItem p2;
+        p2.pid = 2048;
+        p2.workingSetBytes = 104857600ULL; // 100 MB
+        p2.name = "dwm.exe";
+
+        payload.processes.push_back(p1);
+        payload.processes.push_back(p2);
+
+        std::vector<uint8_t> diagBuf;
+        serializeSystemDiagnostics(payload, diagBuf);
+
+        SystemDiagnosticsPayload unpacked;
+        TEST_ASSERT(deserializeSystemDiagnostics(diagBuf.data(), diagBuf.size(), unpacked));
+        TEST_ASSERT(std::abs(unpacked.cpuUsagePercent - 38.5f) < 0.01f);
+        TEST_ASSERT(unpacked.ramUsedBytes == 8589934592ULL);
+        TEST_ASSERT(unpacked.ramTotalBytes == 17179869184ULL);
+        TEST_ASSERT(unpacked.diskUsedBytes == 268435456000ULL);
+        TEST_ASSERT(unpacked.diskTotalBytes == 536870912000ULL);
+        TEST_ASSERT(unpacked.processes.size() == 2);
+        TEST_ASSERT(unpacked.processes[0].pid == 1024);
+        TEST_ASSERT(unpacked.processes[0].name == "CppDesk.exe");
+        TEST_ASSERT(unpacked.processes[0].workingSetBytes == 524288000ULL);
+        TEST_ASSERT(unpacked.processes[1].pid == 2048);
+        TEST_ASSERT(unpacked.processes[1].name == "dwm.exe");
+    }
+
+    // 2. Live Host Diagnostics Sampler
+    {
+        auto liveDiag = NetworkEngine::sampleHostDiagnostics();
+        TEST_ASSERT(liveDiag.cpuUsagePercent >= 0.0f && liveDiag.cpuUsagePercent <= 100.0f);
+        TEST_ASSERT(liveDiag.ramTotalBytes > 0);
+        TEST_ASSERT(liveDiag.ramUsedBytes <= liveDiag.ramTotalBytes);
+        TEST_ASSERT(liveDiag.diskTotalBytes > 0);
+        TEST_ASSERT(!liveDiag.processes.empty());
+
+        // Verify top processes are sorted descending by memory usage
+        if (liveDiag.processes.size() >= 2) {
+            TEST_ASSERT(liveDiag.processes[0].workingSetBytes >= liveDiag.processes[1].workingSetBytes);
+        }
+    }
+
+    // 3. Process Kill Permission & Safety Enforcement
+    {
+        IdentityManager idMgr(100);
+        NetworkEngine netEngine(idMgr);
+
+        // A. Revoked input permission: must reject kill requests
+        bool killedWithoutPerm = netEngine.executeProcessKill(1337, PERM_NONE);
+        TEST_ASSERT(!killedWithoutPerm);
+
+        // B. Protected critical system PIDs (PID 0 System Idle, PID 4 System): must reject even with input permission
+        bool killedPid0 = netEngine.executeProcessKill(0, PERM_INPUT);
+        TEST_ASSERT(!killedPid0);
+        bool killedPid4 = netEngine.executeProcessKill(4, PERM_INPUT);
+        TEST_ASSERT(!killedPid4);
+    }
+}
+
 } // namespace
 
 int main() {
@@ -1198,6 +1288,7 @@ int main() {
         testNotificationSystemAndTray(); std::cout << "Test 10 done\n" << std::flush;
         testV210PowerFeaturesInheritance(); std::cout << "Test 11 done\n" << std::flush;
         testAutoUpdaterAndProtocolV3(); std::cout << "Test 12 done\n" << std::flush;
+        testHardwareDiagnosticsAndProcessManager(); std::cout << "Test 13 done\n" << std::flush;
 
         std::cout << "---------------------------------------------------------\n";
         std::cout << "Assertions Passed: " << g_passed << " | Failed: " << g_failed << "\n";

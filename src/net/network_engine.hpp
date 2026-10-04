@@ -255,6 +255,14 @@ public:
     void sendWhiteboardClear();
     void sendWhiteboardLaser(float normX, float normY);
 
+    // Remote Hardware Diagnostics & Live Process Telemetry (Feature 1)
+    static SystemDiagnosticsPayload sampleHostDiagnostics();
+    bool executeProcessKill(uint32_t pid, uint8_t callerPermissions);
+    void setDiagnosticsActive(bool active);
+    bool isDiagnosticsActive() const { return viewerDiagnosticsActive_.load(); }
+    void sendProcessKill(uint32_t pid);
+    SystemDiagnosticsPayload latestDiagnostics() const;
+
 private:
     // Background worker loops
     void discoveryLoop();
@@ -450,6 +458,12 @@ private:
 
     // Whiteboard Manager (v2.1.0)
     WhiteboardManager                          whiteboardMgr_;
+
+    // Diagnostics Telemetry State (Feature 1)
+    std::atomic<bool>                          viewerDiagnosticsActive_{false};
+    std::atomic<bool>                          hostDiagnosticsStreamActive_{false};
+    mutable std::mutex                         diagnosticsMutex_;
+    SystemDiagnosticsPayload                   latestDiagnostics_;
 };
 
 } // namespace cppdesk

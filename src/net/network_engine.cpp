@@ -10,6 +10,8 @@
 #include <mmsystem.h>
 #include <mmdeviceapi.h>
 #include <audioclient.h>
+#include <tlhelp32.h>
+#include <psapi.h>
 
 #include <cstring>
 #include <chrono>
@@ -1801,6 +1803,27 @@ void NetworkEngine::runHostSession(uintptr_t clientSock, std::string clientIp) {
                             }
                             break;
                         }
+                        case PacketType::DIAGNOSTICS_REQ: {
+                            uint8_t act = r.readU8();
+                            hostDiagnosticsStreamActive_.store(act != 0);
+                            if (act != 0) {
+                                auto diag = sampleHostDiagnostics();
+                                std::vector<uint8_t> payload;
+                                serializeSystemDiagnostics(diag, payload);
+                                sendHostEncryptedPacket(PacketType::SYSTEM_DIAGNOSTICS, FLAG_ENCRYPTED, payload.data(), payload.size());
+                            }
+                            break;
+                        }
+                        case PacketType::PROCESS_KILL: {
+                            uint32_t pid = r.readU32();
+                            if (executeProcessKill(pid, perms)) {
+                                auto diag = sampleHostDiagnostics();
+                                std::vector<uint8_t> payload;
+                                serializeSystemDiagnostics(diag, payload);
+                                sendHostEncryptedPacket(PacketType::SYSTEM_DIAGNOSTICS, FLAG_ENCRYPTED, payload.data(), payload.size());
+                            }
+                            break;
+                        }
                         case PacketType::DISCONNECT:
                             sessionAlive.store(false);
                             break;
@@ -1813,10 +1836,21 @@ void NetworkEngine::runHostSession(uintptr_t clientSock, std::string clientIp) {
 
         // Main capture & streaming loop with 15 / 30 / 60 FPS pacing + Automatic Network Congestion FPS Drop
         uint64_t lastClipboardCheck = 0;
+        uint64_t lastDiagnosticsSend = 0;
         CursorState prevCursor{};
 
         while (sessionAlive.load() && running_.load() && activeHostClientSock_.load() != ~uintptr_t(0)) {
             uint64_t frameStart = nowTickMs();
+
+            if (hostDiagnosticsStreamActive_.load()) {
+                if (frameStart - lastDiagnosticsSend >= 1500) {
+                    lastDiagnosticsSend = frameStart;
+                    auto diag = sampleHostDiagnostics();
+                    std::vector<uint8_t> payload;
+                    serializeSystemDiagnostics(diag, payload);
+                    sendHostEncryptedPacket(PacketType::SYSTEM_DIAGNOSTICS, FLAG_ENCRYPTED, payload.data(), payload.size());
+                }
+            }
 
             int targetMon = requestedMonitor.load();
             if (targetMon != capturer.currentMonitorIndex()) {
@@ -2664,6 +2698,14 @@ void NetworkEngine::runViewerSession(std::string targetInput, std::string passwo
                                     std::lock_guard<std::mutex> lock(viewerStatsMutex_);
                                     viewerStats_.privacyModeEngaged = (ack.enable != 0);
                                 }
+                            }
+                            break;
+                        }
+                        case PacketType::SYSTEM_DIAGNOSTICS: {
+                            SystemDiagnosticsPayload diag;
+                            if (deserializeSystemDiagnostics(payload.data(), payload.size(), diag)) {
+                                std::lock_guard<std::mutex> lk(diagnosticsMutex_);
+                                latestDiagnostics_ = std::move(diag);
                             }
                             break;
                         }
@@ -3859,6 +3901,169 @@ void NetworkEngine::hostTunnelProxyLoop() {
             }
         }
     }
+}
+
+// ---------------- Remote Hardware Diagnostics & Live Process Telemetry ----------------
+
+SystemDiagnosticsPayload NetworkEngine::sampleHostDiagnostics() {
+    SystemDiagnosticsPayload diag{};
+
+    // 1. CPU Usage % via GetSystemTimes
+    static uint64_t s_prevIdleTime = 0;
+    static uint64_t s_prevKernelTime = 0;
+    static uint64_t s_prevUserTime = 0;
+
+    FILETIME idleTime{}, kernelTime{}, userTime{};
+    if (GetSystemTimes(&idleTime, &kernelTime, &userTime)) {
+        auto ftToU64 = [](const FILETIME& ft) -> uint64_t {
+            return (static_cast<uint64_t>(ft.dwHighDateTime) << 32) | ft.dwLowDateTime;
+        };
+        uint64_t curIdle = ftToU64(idleTime);
+        uint64_t curKernel = ftToU64(kernelTime);
+        uint64_t curUser = ftToU64(userTime);
+
+        if (s_prevKernelTime > 0 || s_prevUserTime > 0) {
+            uint64_t deltaIdle = (curIdle >= s_prevIdleTime) ? (curIdle - s_prevIdleTime) : 0;
+            uint64_t deltaKernel = (curKernel >= s_prevKernelTime) ? (curKernel - s_prevKernelTime) : 0;
+            uint64_t deltaUser = (curUser >= s_prevUserTime) ? (curUser - s_prevUserTime) : 0;
+            uint64_t deltaTotal = deltaKernel + deltaUser;
+            if (deltaTotal > 0 && deltaTotal >= deltaIdle) {
+                diag.cpuUsagePercent = static_cast<float>((deltaTotal - deltaIdle) * 100.0 / static_cast<double>(deltaTotal));
+                diag.cpuUsagePercent = std::clamp(diag.cpuUsagePercent, 0.0f, 100.0f);
+            }
+        } else {
+            // First time sampling: short sleep to establish an initial delta
+            Sleep(15);
+            FILETIME i2{}, k2{}, u2{};
+            if (GetSystemTimes(&i2, &k2, &u2)) {
+                uint64_t curIdle2 = ftToU64(i2);
+                uint64_t curKernel2 = ftToU64(k2);
+                uint64_t curUser2 = ftToU64(u2);
+                uint64_t deltaIdle = (curIdle2 >= curIdle) ? (curIdle2 - curIdle) : 0;
+                uint64_t deltaKernel = (curKernel2 >= curKernel) ? (curKernel2 - curKernel) : 0;
+                uint64_t deltaUser = (curUser2 >= curUser) ? (curUser2 - curUser) : 0;
+                uint64_t deltaTotal = deltaKernel + deltaUser;
+                if (deltaTotal > 0 && deltaTotal >= deltaIdle) {
+                    diag.cpuUsagePercent = static_cast<float>((deltaTotal - deltaIdle) * 100.0 / static_cast<double>(deltaTotal));
+                    diag.cpuUsagePercent = std::clamp(diag.cpuUsagePercent, 0.0f, 100.0f);
+                }
+                curIdle = curIdle2;
+                curKernel = curKernel2;
+                curUser = curUser2;
+            }
+        }
+        s_prevIdleTime = curIdle;
+        s_prevKernelTime = curKernel;
+        s_prevUserTime = curUser;
+    }
+
+    // 2. Physical RAM Usage via GlobalMemoryStatusEx
+    MEMORYSTATUSEX memStatus{};
+    memStatus.dwLength = sizeof(memStatus);
+    if (GlobalMemoryStatusEx(&memStatus)) {
+        diag.ramTotalBytes = memStatus.ullTotalPhys;
+        diag.ramUsedBytes = (memStatus.ullTotalPhys >= memStatus.ullAvailPhys)
+            ? (memStatus.ullTotalPhys - memStatus.ullAvailPhys)
+            : 0;
+    }
+
+    // 3. Primary Disk Space via GetDiskFreeSpaceExW
+    ULARGE_INTEGER freeBytesAvail{}, totalBytes{}, totalFreeBytes{};
+    if (GetDiskFreeSpaceExW(L"C:\\", &freeBytesAvail, &totalBytes, &totalFreeBytes)) {
+        diag.diskTotalBytes = totalBytes.QuadPart;
+        diag.diskUsedBytes = (totalBytes.QuadPart >= totalFreeBytes.QuadPart)
+            ? (totalBytes.QuadPart - totalFreeBytes.QuadPart)
+            : 0;
+    }
+
+    // 4. Top active processes sorted by memory usage
+    HANDLE hSnap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (hSnap != INVALID_HANDLE_VALUE) {
+        PROCESSENTRY32W pe{};
+        pe.dwSize = sizeof(pe);
+        if (Process32FirstW(hSnap, &pe)) {
+            std::vector<ProcessTelemetryItem> candidates;
+            candidates.reserve(128);
+            do {
+                if (pe.th32ProcessID == 0) continue; // skip System Idle
+
+                ProcessTelemetryItem item;
+                item.pid = pe.th32ProcessID;
+
+                // Convert wchar_t process name to UTF-8
+                int reqSize = WideCharToMultiByte(CP_UTF8, 0, pe.szExeFile, -1, nullptr, 0, nullptr, nullptr);
+                if (reqSize > 1) {
+                    std::string u8Name(reqSize - 1, '\0');
+                    WideCharToMultiByte(CP_UTF8, 0, pe.szExeFile, -1, u8Name.data(), reqSize, nullptr, nullptr);
+                    item.name = std::move(u8Name);
+                } else {
+                    item.name = "Unknown";
+                }
+
+                // Query working set memory
+                HANDLE hProc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pe.th32ProcessID);
+                if (hProc) {
+                    PROCESS_MEMORY_COUNTERS pmc{};
+                    pmc.cb = sizeof(pmc);
+                    if (K32GetProcessMemoryInfo(hProc, &pmc, sizeof(pmc))) {
+                        item.workingSetBytes = pmc.WorkingSetSize;
+                    }
+                    CloseHandle(hProc);
+                }
+                candidates.push_back(std::move(item));
+            } while (Process32NextW(hSnap, &pe));
+
+            // Sort descending by memory usage
+            std::sort(candidates.begin(), candidates.end(), [](const ProcessTelemetryItem& a, const ProcessTelemetryItem& b) {
+                return a.workingSetBytes > b.workingSetBytes;
+            });
+
+            // Keep top 15
+            size_t maxProcs = std::min<size_t>(candidates.size(), 15);
+            diag.processes.assign(candidates.begin(), candidates.begin() + maxProcs);
+        }
+        CloseHandle(hSnap);
+    }
+
+    return diag;
+}
+
+bool NetworkEngine::executeProcessKill(uint32_t pid, uint8_t callerPermissions) {
+    if ((callerPermissions & PERM_INPUT) == 0) {
+        return false;
+    }
+    if (pid == 0 || pid == 4) {
+        return false;
+    }
+    if (pid == GetCurrentProcessId()) {
+        return false;
+    }
+
+    HANDLE hProc = OpenProcess(PROCESS_TERMINATE, FALSE, pid);
+    if (!hProc) {
+        return false;
+    }
+    BOOL success = TerminateProcess(hProc, 1);
+    CloseHandle(hProc);
+    return success != FALSE;
+}
+
+void NetworkEngine::setDiagnosticsActive(bool active) {
+    viewerDiagnosticsActive_.store(active);
+    ByteWriter w;
+    w.writeU8(active ? 1 : 0);
+    sendViewerEncryptedPacket(PacketType::DIAGNOSTICS_REQ, 0, w.buffer().data(), w.buffer().size());
+}
+
+void NetworkEngine::sendProcessKill(uint32_t pid) {
+    ByteWriter w;
+    w.writeU32(pid);
+    sendViewerEncryptedPacket(PacketType::PROCESS_KILL, 0, w.buffer().data(), w.buffer().size());
+}
+
+SystemDiagnosticsPayload NetworkEngine::latestDiagnostics() const {
+    std::lock_guard<std::mutex> lk(diagnosticsMutex_);
+    return latestDiagnostics_;
 }
 
 } // namespace cppdesk

@@ -58,6 +58,9 @@ enum class PacketType : uint8_t {
     INPUT_KEY_EVENT     = 0x23,
     INPUT_RELEASE_ALL   = 0x24, // Release all pressed modifier keys on focus loss / tab switch
     SYSTEM_ACTION       = 0x25, // Trigger remote system action (Task Manager, Show Desktop, Lock PC, SAS, Reboot)
+    DIAGNOSTICS_REQ     = 0x26, // Viewer -> Host: Enable/Disable active diagnostics streaming
+    SYSTEM_DIAGNOSTICS  = 0x27, // Host -> Viewer: Hardware telemetry & top processes
+    PROCESS_KILL        = 0x28, // Viewer -> Host: Request process termination
 
     // Clipboard, File Transfer & Live Chat
     CLIPBOARD_TEXT      = 0x30,
@@ -265,7 +268,10 @@ struct EncodedTile {
 // Binary serialization helper
 class ByteWriter {
 public:
-    void writeU8(uint8_t v) { buf_.push_back(v); }
+    ByteWriter() : bufRef_(ownedBuf_) {}
+    explicit ByteWriter(std::vector<uint8_t>& externalBuf) : bufRef_(externalBuf) {}
+
+    void writeU8(uint8_t v) { bufRef_.push_back(v); }
     void writeU16(uint16_t v) { writeBytes(&v, sizeof(v)); }
     void writeU32(uint32_t v) { writeBytes(&v, sizeof(v)); }
     void writeI32(int32_t v) { writeBytes(&v, sizeof(v)); }
@@ -282,17 +288,18 @@ public:
 
     void writeBytes(const void* ptr, size_t len) {
         const uint8_t* p = static_cast<const uint8_t*>(ptr);
-        buf_.insert(buf_.end(), p, p + len);
+        bufRef_.insert(bufRef_.end(), p, p + len);
     }
 
-    const std::vector<uint8_t>& buffer() const { return buf_; }
-    std::vector<uint8_t> takeBuffer() { return std::move(buf_); }
+    const std::vector<uint8_t>& buffer() const { return bufRef_; }
+    std::vector<uint8_t> takeBuffer() { return std::move(bufRef_); }
     std::string toString() const {
-        return std::string(reinterpret_cast<const char*>(buf_.data()), buf_.size());
+        return std::string(reinterpret_cast<const char*>(bufRef_.data()), bufRef_.size());
     }
 
 private:
-    std::vector<uint8_t> buf_;
+    std::vector<uint8_t> ownedBuf_;
+    std::vector<uint8_t>& bufRef_;
 };
 
 class ByteReader {
@@ -378,5 +385,63 @@ private:
     size_t         size_;
     size_t         pos_;
 };
+
+struct ProcessTelemetryItem {
+    uint32_t pid = 0;
+    uint64_t workingSetBytes = 0;
+    std::string name;
+};
+
+struct SystemDiagnosticsPayload {
+    float cpuUsagePercent = 0.0f;
+    uint64_t ramUsedBytes = 0;
+    uint64_t ramTotalBytes = 0;
+    uint64_t diskUsedBytes = 0;
+    uint64_t diskTotalBytes = 0;
+    std::vector<ProcessTelemetryItem> processes;
+};
+
+inline void serializeSystemDiagnostics(const SystemDiagnosticsPayload& payload, std::vector<uint8_t>& out) {
+    ByteWriter w;
+    w.writeF32(payload.cpuUsagePercent);
+    w.writeU64(payload.ramUsedBytes);
+    w.writeU64(payload.ramTotalBytes);
+    w.writeU64(payload.diskUsedBytes);
+    w.writeU64(payload.diskTotalBytes);
+    uint16_t count = static_cast<uint16_t>(std::min<size_t>(payload.processes.size(), 65535));
+    w.writeU16(count);
+    for (size_t i = 0; i < count; ++i) {
+        const auto& p = payload.processes[i];
+        w.writeU32(p.pid);
+        w.writeU64(p.workingSetBytes);
+        w.writeString(p.name);
+    }
+    out = w.takeBuffer();
+}
+
+inline bool deserializeSystemDiagnostics(const uint8_t* data, size_t size, SystemDiagnosticsPayload& out) {
+    if (!data || size < (4 + 8 * 4 + 2)) return false;
+    try {
+        ByteReader r(data, size);
+        out.cpuUsagePercent = r.readF32();
+        out.ramUsedBytes = r.readU64();
+        out.ramTotalBytes = r.readU64();
+        out.diskUsedBytes = r.readU64();
+        out.diskTotalBytes = r.readU64();
+        uint16_t count = r.readU16();
+        out.processes.clear();
+        out.processes.reserve(count);
+        for (uint16_t i = 0; i < count; ++i) {
+            ProcessTelemetryItem item;
+            item.pid = r.readU32();
+            item.workingSetBytes = r.readU64();
+            item.name = r.readString();
+            out.processes.push_back(std::move(item));
+        }
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
 
 } // namespace cppdesk

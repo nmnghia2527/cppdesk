@@ -1875,12 +1875,23 @@ void CppDeskWindow::drawRemoteSessionView(const UiRect& bounds, float alpha) {
                    }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
         rx = shotBtn.left - 6.0f;
 
-        UiRect taskBtn = { rx - 72.0f, hudBar.top + 8.0f, rx, hudBar.bottom - 8.0f };
+        bool diagOpen = (showFileDrawer_ && drawerTab_ == DrawerTab::Diagnostics);
+        UiRect taskBtn = { rx - 74.0f, hudBar.top + 8.0f, rx, hudBar.bottom - 8.0f };
         drawButton("sess_taskmgr", taskBtn, "Task Mgr",
-                   COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 7.5f, [this]() {
-                       network_.sendSystemAction(SystemActionType::TaskManager);
-                       showToast("Opened Task Manager");
-                   }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
+                   diagOpen ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
+                   diagOpen ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
+                   diagOpen ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
+                   7.5f, [this, diagOpen]() {
+                       if (diagOpen) {
+                           network_.setDiagnosticsActive(false);
+                           showFileDrawer_ = false;
+                       } else {
+                           showFileDrawer_ = true;
+                           drawerTab_ = DrawerTab::Diagnostics;
+                           network_.setDiagnosticsActive(true);
+                       }
+                   }, fmtSmall_, !diagOpen, COL_BORDER,
+                   diagOpen ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
         rx = taskBtn.left - 6.0f;
 
         std::string scaleLabel = (scaleMode_ == ScaleMode::FitAspect) ? "Scale: Fit" :
@@ -2561,20 +2572,25 @@ void CppDeskWindow::drawFileTransferDrawer(const UiRect& bounds, float slideProg
     float rx = r.right - 20.0f;
     float y = r.top + 16.0f;
 
-    float tabW = (rx - x - 38.0f - 12.0f) / 3.0f;
+    float tabW = (rx - x - 34.0f - 18.0f) / 4.0f;
     UiRect tabFiles = { x, y, x + tabW, y + 32.0f };
     UiRect tabChat  = { tabFiles.right + 6.0f, y, tabFiles.right + 6.0f + tabW, y + 32.0f };
     UiRect tabTerm  = { tabChat.right + 6.0f, y, tabChat.right + 6.0f + tabW, y + 32.0f };
+    UiRect tabDiag  = { tabTerm.right + 6.0f, y, tabTerm.right + 6.0f + tabW, y + 32.0f };
 
     bool onFiles = (drawerTab_ == DrawerTab::FilesAndClip);
     bool onChat  = (drawerTab_ == DrawerTab::LiveChat);
     bool onTerm  = (drawerTab_ == DrawerTab::RemoteTerminal);
+    bool onDiag  = (drawerTab_ == DrawerTab::Diagnostics);
 
     drawButton("drawer_tab_files", tabFiles, "Files",
                onFiles ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
                onFiles ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
                onFiles ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
-               8.0f, [this]() { drawerTab_ = DrawerTab::FilesAndClip; }, fmtSmall_);
+               8.0f, [this]() {
+                   if (drawerTab_ == DrawerTab::Diagnostics) network_.setDiagnosticsActive(false);
+                   drawerTab_ = DrawerTab::FilesAndClip;
+               }, fmtSmall_);
 
     uint32_t unread = network_.unreadChatCount();
     std::string chatTabLbl = unread > 0 ? ("Chat (" + std::to_string(unread) + ")") : "Chat";
@@ -2583,6 +2599,7 @@ void CppDeskWindow::drawFileTransferDrawer(const UiRect& bounds, float slideProg
                onChat ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
                onChat ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
                8.0f, [this]() {
+                   if (drawerTab_ == DrawerTab::Diagnostics) network_.setDiagnosticsActive(false);
                    drawerTab_ = DrawerTab::LiveChat;
                    network_.markChatRead();
                }, fmtSmall_);
@@ -2592,12 +2609,27 @@ void CppDeskWindow::drawFileTransferDrawer(const UiRect& bounds, float slideProg
                onTerm ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
                onTerm ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
                8.0f, [this]() {
+                   if (drawerTab_ == DrawerTab::Diagnostics) network_.setDiagnosticsActive(false);
                    drawerTab_ = DrawerTab::RemoteTerminal;
                    focusedField_ = FocusedField::TerminalInput;
                }, fmtSmall_);
 
-    UiRect closeBtn = { rx - 30.0f, y + 1.0f, rx, y + 31.0f };
+    drawButton("drawer_tab_diag", tabDiag, "TaskMgr",
+               onDiag ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
+               onDiag ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
+               onDiag ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
+               8.0f, [this]() {
+                   if (drawerTab_ != DrawerTab::Diagnostics) {
+                       drawerTab_ = DrawerTab::Diagnostics;
+                       network_.setDiagnosticsActive(true);
+                   }
+               }, fmtSmall_);
+
+    UiRect closeBtn = { rx - 28.0f, y + 1.0f, rx, y + 31.0f };
     drawButton("drawer_close", closeBtn, "", COL_SEC_BTN_BG, COL_DANGER, COL_TEXT_SECONDARY, 7.5f, [this]() {
+        if (drawerTab_ == DrawerTab::Diagnostics) {
+            network_.setDiagnosticsActive(false);
+        }
         showFileDrawer_ = false;
     }, fmtSmall_, false, D2D1::ColorF(0, 0, 0, 0), COL_TEXT_ON_ACCENT);
     float closeHover = std::clamp(widgetAnims_["drawer_close"].hoverT, 0.0f, 1.0f);
@@ -2805,6 +2837,128 @@ void CppDeskWindow::drawFileTransferDrawer(const UiRect& bounds, float slideProg
                    COL_PRIMARY_ACCENT, COL_PRIMARY_ACCENT_HV, COL_TEXT_ON_ACCENT, 8.5f, [this]() {
                        sendTerminalFromInput();
                    }, fmtSmall_);
+    } else if (drawerTab_ == DrawerTab::Diagnostics) {
+        drawText("Live Hardware & Process Telemetry",
+                 { x, y, rx, y + 18.0f }, fmtSmall_, COL_TEXT_SECONDARY);
+        y += 24.0f;
+
+        auto diag = network_.latestDiagnostics();
+
+        // 1. Hardware Metrics Card (CPU, RAM, Disk)
+        UiRect metricsBox = { x, y, rx, y + 104.0f };
+        fillRoundRect(metricsBox, 11.0f, COL_BG_SUBTLE);
+        strokeRoundRect(metricsBox, 11.0f, COL_BORDER);
+
+        float mx = metricsBox.left + 14.0f;
+        float mrx = metricsBox.right - 14.0f;
+        float my = metricsBox.top + 10.0f;
+        float mBarW = mrx - mx;
+
+        // CPU Metric
+        float cpu = std::clamp(diag.cpuUsagePercent, 0.0f, 100.0f);
+        char cpuStr[64];
+        std::snprintf(cpuStr, sizeof(cpuStr), "CPU: %.1f%%", cpu);
+        drawText(cpuStr, { mx, my, mrx, my + 16.0f }, fmtBodyBold_, COL_TEXT_PRIMARY);
+        UiRect cpuBarBg = { mx, my + 17.0f, mrx, my + 23.0f };
+        fillRoundRect(cpuBarBg, 3.0f, rgba(255, 255, 255, 0.08f));
+        UiRect cpuBarFill = { mx, my + 17.0f, mx + mBarW * (cpu / 100.0f), my + 23.0f };
+        D2D1_COLOR_F cpuCol = (cpu < 60.0f) ? COL_SUCCESS : (cpu < 85.0f) ? rgba(250, 173, 20, 1.0f) : COL_DANGER;
+        fillRoundRect(cpuBarFill, 3.0f, cpuCol);
+        my += 29.0f;
+
+        // RAM Metric
+        double ramUsedGb = diag.ramUsedBytes / (1024.0 * 1024.0 * 1024.0);
+        double ramTotalGb = diag.ramTotalBytes / (1024.0 * 1024.0 * 1024.0);
+        float ramPct = (diag.ramTotalBytes > 0)
+            ? static_cast<float>(diag.ramUsedBytes * 100.0 / diag.ramTotalBytes)
+            : 0.0f;
+        ramPct = std::clamp(ramPct, 0.0f, 100.0f);
+        char ramStr[64];
+        std::snprintf(ramStr, sizeof(ramStr), "RAM: %.1f / %.1f GB (%.0f%%)", ramUsedGb, ramTotalGb, ramPct);
+        drawText(ramStr, { mx, my, mrx, my + 16.0f }, fmtBodyBold_, COL_TEXT_PRIMARY);
+
+        UiRect ramBarBg = { mx, my + 17.0f, mrx, my + 23.0f };
+        fillRoundRect(ramBarBg, 3.0f, rgba(255, 255, 255, 0.08f));
+        UiRect ramBarFill = { mx, my + 17.0f, mx + mBarW * (ramPct / 100.0f), my + 23.0f };
+        D2D1_COLOR_F ramCol = (ramPct < 70.0f) ? COL_PRIMARY_ACCENT : (ramPct < 88.0f) ? rgba(250, 173, 20, 1.0f) : COL_DANGER;
+        fillRoundRect(ramBarFill, 3.0f, ramCol);
+        my += 29.0f;
+
+        // Disk Metric (C:)
+        double diskUsedGb = diag.diskUsedBytes / (1024.0 * 1024.0 * 1024.0);
+        double diskTotalGb = diag.diskTotalBytes / (1024.0 * 1024.0 * 1024.0);
+        float diskPct = (diag.diskTotalBytes > 0)
+            ? static_cast<float>(diag.diskUsedBytes * 100.0 / diag.diskTotalBytes)
+            : 0.0f;
+        diskPct = std::clamp(diskPct, 0.0f, 100.0f);
+        char diskStr[64];
+        std::snprintf(diskStr, sizeof(diskStr), "Disk (C:): %.0f / %.0f GB (%.0f%%)", diskUsedGb, diskTotalGb, diskPct);
+        drawText(diskStr, { mx, my, mrx, my + 16.0f }, fmtBodyBold_, COL_TEXT_PRIMARY);
+
+        UiRect diskBarBg = { mx, my + 17.0f, mrx, my + 23.0f };
+        fillRoundRect(diskBarBg, 3.0f, rgba(255, 255, 255, 0.08f));
+        UiRect diskBarFill = { mx, my + 17.0f, mx + mBarW * (diskPct / 100.0f), my + 23.0f };
+        D2D1_COLOR_F diskCol = (diskPct < 75.0f) ? rgba(52, 199, 89, 1.0f) : (diskPct < 90.0f) ? rgba(250, 173, 20, 1.0f) : COL_DANGER;
+        fillRoundRect(diskBarFill, 3.0f, diskCol);
+
+        y = metricsBox.bottom + 14.0f;
+
+        // 2. Process Table Header
+        drawText("TOP PROCESSES (MEMORY FOOTPRINT)",
+                 { x, y, rx, y + 16.0f }, fmtSmall_, COL_TEXT_ACCENT);
+        y += 20.0f;
+
+        UiRect tableBox = { x, y, rx, r.bottom - 16.0f };
+        fillRoundRect(tableBox, 11.0f, rgba(12, 16, 24, 0.95f));
+        strokeRoundRect(tableBox, 11.0f, COL_BORDER);
+
+        if (diag.processes.empty()) {
+            drawText("Sampling host processes...",
+                     { tableBox.left + 14.0f, tableBox.centerY() - 12.0f, tableBox.right - 14.0f, tableBox.centerY() + 12.0f },
+                     fmtSmall_, COL_TEXT_MUTED, DWRITE_TEXT_ALIGNMENT_CENTER);
+        } else {
+            float rowH = 34.0f;
+            int maxVisible = std::max(1, static_cast<int>((tableBox.height() - 8.0f) / rowH));
+            int totalProcs = static_cast<int>(diag.processes.size());
+            int maxScroll = std::max(0, totalProcs - maxVisible);
+            int scroll = std::clamp(static_cast<int>(diagnosticsScrollOffset_), 0, maxScroll);
+
+            float py = tableBox.top + 6.0f;
+            for (int i = scroll; i < totalProcs && (i - scroll) < maxVisible; ++i) {
+                const auto& proc = diag.processes[i];
+                UiRect rowRect = { tableBox.left + 8.0f, py, tableBox.right - 8.0f, py + rowH - 4.0f };
+
+                if ((i % 2) == 1) {
+                    fillRoundRect(rowRect, 6.0f, rgba(255, 255, 255, 0.03f));
+                }
+
+                // Process Name & PID
+                std::string procLine = proc.name;
+                drawText(procLine, { rowRect.left + 8.0f, rowRect.top + 2.0f, rowRect.right - 140.0f, rowRect.bottom },
+                         fmtBodyBold_, COL_TEXT_PRIMARY, DWRITE_TEXT_ALIGNMENT_LEADING);
+
+                // Memory in MB
+                double memMb = proc.workingSetBytes / (1024.0 * 1024.0);
+                char memBuf[32];
+                std::snprintf(memBuf, sizeof(memBuf), "%.0f MB", memMb);
+                drawText(memBuf, { rowRect.right - 145.0f, rowRect.top + 2.0f, rowRect.right - 68.0f, rowRect.bottom },
+                         fmtSmall_, COL_TEXT_SECONDARY, DWRITE_TEXT_ALIGNMENT_TRAILING);
+
+                // "End Task" action button
+                UiRect killBtn = { rowRect.right - 62.0f, rowRect.top + 2.0f, rowRect.right - 4.0f, rowRect.bottom - 2.0f };
+                std::string kBtnId = "proc_kill_" + std::to_string(proc.pid);
+                uint32_t targetPid = proc.pid;
+                std::string targetName = proc.name;
+
+                drawButton(kBtnId, killBtn, "End", COL_SEC_BTN_BG, COL_DANGER, COL_TEXT_SECONDARY, 5.0f,
+                           [this, targetPid, targetName]() {
+                               network_.sendProcessKill(targetPid);
+                               showToast("Terminating " + targetName + " (PID " + std::to_string(targetPid) + ")...");
+                           }, fmtSmall_, false, D2D1::ColorF(0, 0, 0, 0), COL_TEXT_ON_ACCENT);
+
+                py += rowH;
+            }
+        }
     }
 }
 
@@ -4048,6 +4202,14 @@ void CppDeskWindow::onMouseWheel(int delta) {
             if (drawerTab_ == DrawerTab::LiveChat) {
                 chatScrollOffset_ += (delta > 0 ? 1 : -1);
                 if (chatScrollOffset_ < 0) chatScrollOffset_ = 0;
+                InvalidateRect(hwnd_, nullptr, FALSE);
+            } else if (drawerTab_ == DrawerTab::RemoteTerminal) {
+                terminalScrollOffset_ += (delta > 0 ? -1.0f : 1.0f);
+                if (terminalScrollOffset_ < 0.0f) terminalScrollOffset_ = 0.0f;
+                InvalidateRect(hwnd_, nullptr, FALSE);
+            } else if (drawerTab_ == DrawerTab::Diagnostics) {
+                diagnosticsScrollOffset_ += (delta > 0 ? -1.0f : 1.0f);
+                if (diagnosticsScrollOffset_ < 0.0f) diagnosticsScrollOffset_ = 0.0f;
                 InvalidateRect(hwnd_, nullptr, FALSE);
             }
             return;
