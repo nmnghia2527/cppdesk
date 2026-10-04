@@ -90,6 +90,12 @@ enum class SystemActionType : uint8_t {
     EmergencyReboot = 5
 };
 
+enum class FileOfferTarget : uint8_t {
+    DefaultDownloads = 0,
+    Desktop          = 1,
+    Custom           = 2
+};
+
 enum FrameFlags : uint8_t {
     FLAG_NONE      = 0x00,
     FLAG_ENCRYPTED = 0x01,

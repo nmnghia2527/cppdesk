@@ -327,6 +327,12 @@ private:
     // Remote Hardware Diagnostics & Process Telemetry UI state (Feature 1)
     float                   diagnosticsScrollOffset_ = 0.0f;
 
+    // Direct Canvas Drag-and-Drop File Drop UI state (Feature 2)
+    bool                    canvasDropEffectActive_ = false;
+    D2D1_POINT_2F           canvasDropPos_{ 0.0f, 0.0f };
+    uint64_t                canvasDropTick_ = 0;
+    int                     canvasDropCount_ = 0;
+
     // TCP Port Forwarding modal state (v2.1.0)
     bool                    showPortForwardModal_ = false;
     float                   portForwardModalAnimT_ = 0.0f;

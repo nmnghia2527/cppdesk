@@ -1646,7 +1646,16 @@ void NetworkEngine::runHostSession(uintptr_t clientSock, std::string clientIp) {
                                 uint32_t tid = r.readU32();
                                 uint64_t fsz = r.readU64();
                                 std::string fname = r.readString();
-                                fileManager_.handleFileOffer(tid, fsz, fname);
+                                FileOfferTarget targetHint = FileOfferTarget::DefaultDownloads;
+                                float dropNx = 0.0f, dropNy = 0.0f;
+                                if (r.hasRemaining(1)) {
+                                    targetHint = static_cast<FileOfferTarget>(r.readU8());
+                                }
+                                if (r.hasRemaining(8)) {
+                                    dropNx = r.readF32();
+                                    dropNy = r.readF32();
+                                }
+                                fileManager_.handleFileOffer(tid, fsz, fname, targetHint, dropNx, dropNy);
                             }
                             break;
                         }
@@ -2649,7 +2658,16 @@ void NetworkEngine::runViewerSession(std::string targetInput, std::string passwo
                             uint32_t tid = r.readU32();
                             uint64_t fsz = r.readU64();
                             std::string fname = r.readString();
-                            fileManager_.handleFileOffer(tid, fsz, fname);
+                            FileOfferTarget targetHint = FileOfferTarget::DefaultDownloads;
+                            float dropNx = 0.0f, dropNy = 0.0f;
+                            if (r.hasRemaining(1)) {
+                                targetHint = static_cast<FileOfferTarget>(r.readU8());
+                            }
+                            if (r.hasRemaining(8)) {
+                                dropNx = r.readF32();
+                                dropNy = r.readF32();
+                            }
+                            fileManager_.handleFileOffer(tid, fsz, fname, targetHint, dropNx, dropNy);
                             break;
                         }
                         case PacketType::FILE_CHUNK: {
@@ -2957,18 +2975,34 @@ void NetworkEngine::updateQualitySettings(QualityPreset preset, uint8_t targetFp
     sendViewerEncryptedPacket(PacketType::QUALITY_UPDATE, 0, w.buffer().data(), w.buffer().size());
 }
 
-uint32_t NetworkEngine::sendFile(const std::string& filePath) {
+uint32_t NetworkEngine::sendFile(const std::string& filePath, FileOfferTarget targetHint, float dropNx, float dropNy) {
     uintptr_t vSock = viewerSock_.load();
     uintptr_t hSock = activeHostClientSock_.load();
 
     if (vSock != ~uintptr_t(0)) {
         return fileManager_.startOutgoingFile(filePath, [this](PacketType pt, const std::vector<uint8_t>& buf) {
             return sendViewerEncryptedPacket(pt, 0, buf.data(), buf.size());
-        });
+        }, targetHint, dropNx, dropNy);
     } else if (hSock != ~uintptr_t(0)) {
         return fileManager_.startOutgoingFile(filePath, [this](PacketType pt, const std::vector<uint8_t>& buf) {
             return sendHostEncryptedPacket(pt, 0, buf.data(), buf.size());
-        });
+        }, targetHint, dropNx, dropNy);
+    }
+    return 0;
+}
+
+int NetworkEngine::sendDropPath(const std::string& path, FileOfferTarget targetHint, float dropNx, float dropNy) {
+    uintptr_t vSock = viewerSock_.load();
+    uintptr_t hSock = activeHostClientSock_.load();
+
+    if (vSock != ~uintptr_t(0)) {
+        return fileManager_.startOutgoingPath(path, [this](PacketType pt, const std::vector<uint8_t>& buf) {
+            return sendViewerEncryptedPacket(pt, 0, buf.data(), buf.size());
+        }, targetHint, dropNx, dropNy);
+    } else if (hSock != ~uintptr_t(0)) {
+        return fileManager_.startOutgoingPath(path, [this](PacketType pt, const std::vector<uint8_t>& buf) {
+            return sendHostEncryptedPacket(pt, 0, buf.data(), buf.size());
+        }, targetHint, dropNx, dropNy);
     }
     return 0;
 }

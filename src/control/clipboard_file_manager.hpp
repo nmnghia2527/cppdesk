@@ -66,7 +66,14 @@ public:
     void openReceiveDirectoryInExplorer() const;
 
     // Queue a local file to be sent to the connected peer
-    uint32_t startOutgoingFile(const std::string& filePath, const SendPacketFn& sendPacket);
+    uint32_t startOutgoingFile(const std::string& filePath, const SendPacketFn& sendPacket,
+                               FileOfferTarget targetHint = FileOfferTarget::DefaultDownloads,
+                               float dropNx = 0.0f, float dropNy = 0.0f);
+
+    // Recursively queue a file or directory tree for transfer
+    int startOutgoingPath(const std::string& path, const SendPacketFn& sendPacket,
+                          FileOfferTarget targetHint = FileOfferTarget::DefaultDownloads,
+                          float dropNx = 0.0f, float dropNy = 0.0f);
 
     // Pump up to maxChunks outgoing chunks (called periodically by session worker)
     bool pumpOutgoingChunks(const SendPacketFn& sendPacket, int maxChunks = 4);
@@ -78,13 +85,16 @@ public:
     void abortActiveTransfers();
 
     // Handle incoming file transfer packets from remote peer
-    void handleFileOffer(uint32_t transferId, uint64_t totalBytes, const std::string& fileName);
+    void handleFileOffer(uint32_t transferId, uint64_t totalBytes, const std::string& fileName,
+                         FileOfferTarget targetHint = FileOfferTarget::DefaultDownloads,
+                         float dropNx = 0.0f, float dropNy = 0.0f);
     void handleFileChunk(uint32_t transferId, uint64_t offset, const uint8_t* chunkData, size_t chunkLen);
     void handleFileComplete(uint32_t transferId, const std::string& sha256Hex);
     void handleFileCancel(uint32_t transferId);
 
     void clearCompleted();
     std::vector<FileTransferItem> snapshotTransfers() const;
+    bool hasActiveTransfers() const;
 
 private:
     struct IncrementalSha256;

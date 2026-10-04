@@ -2072,6 +2072,80 @@ void CppDeskWindow::drawRemoteSessionView(const UiRect& bounds, float alpha) {
 
         // Draw Whiteboard overlay annotations and floating tool palette
         drawWhiteboardOverlay(renderedCanvasRect_);
+
+        // Direct Canvas Drag-and-Drop Confirmation Ripple Effect (Feature 2)
+        if (canvasDropEffectActive_) {
+            uint64_t elapsed = GetTickCount64() - canvasDropTick_;
+            if (elapsed < 1400) {
+                float t = static_cast<float>(elapsed) / 1400.0f;
+                float ripRadius = 16.0f + 64.0f * std::sin(t * 1.57079f);
+                float ripAlpha = (1.0f - t) * alpha;
+
+                solidBrush_->SetColor(withAlpha(COL_PRIMARY_ACCENT, ripAlpha * 0.7f));
+                renderTarget_->DrawEllipse(D2D1::Ellipse(canvasDropPos_, ripRadius, ripRadius), solidBrush_, 2.4f);
+
+                solidBrush_->SetColor(withAlpha(COL_PRIMARY_ACCENT, ripAlpha * 0.35f));
+                renderTarget_->FillEllipse(D2D1::Ellipse(canvasDropPos_, 12.0f * (1.0f - t), 12.0f * (1.0f - t)), solidBrush_);
+
+                UiRect badge = { canvasDropPos_.x - 85.0f, canvasDropPos_.y + ripRadius + 6.0f,
+                                 canvasDropPos_.x + 85.0f, canvasDropPos_.y + ripRadius + 28.0f };
+                fillRoundRect(badge, 6.0f, rgba(15, 23, 42, ripAlpha * 0.92f));
+                strokeRoundRect(badge, 6.0f, withAlpha(COL_PRIMARY_ACCENT, ripAlpha * 0.5f));
+                drawText("Dropped " + std::to_string(canvasDropCount_) + " file(s)", badge, fmtSmall_,
+                         withAlpha(COL_TEXT_PRIMARY, ripAlpha), DWRITE_TEXT_ALIGNMENT_CENTER);
+            } else {
+                canvasDropEffectActive_ = false;
+            }
+        }
+
+        // Floating In-Canvas File Transfer Progress HUD Pill (Feature 2)
+        auto transfers = network_.fileTransferManager().snapshotTransfers();
+        const FileTransferItem* activeItem = nullptr;
+        for (const auto& item : transfers) {
+            if (item.status == TransferStatus::InProgress) {
+                activeItem = &item;
+                break;
+            }
+        }
+
+        if (activeItem && !showFileDrawer_) {
+            float pillW = 280.0f;
+            float pillH = 46.0f;
+            UiRect hudPill = { renderedCanvasRect_.right - pillW - 16.0f,
+                               renderedCanvasRect_.bottom - pillH - 16.0f,
+                               renderedCanvasRect_.right - 16.0f,
+                               renderedCanvasRect_.bottom - 16.0f };
+
+            fillRoundRect(hudPill, 9.0f, rgba(12, 16, 24, 0.94f));
+            strokeRoundRect(hudPill, 9.0f, COL_BORDER_ALT);
+
+            float pct = (activeItem->totalBytes > 0)
+                ? std::clamp(static_cast<float>(activeItem->transferredBytes) / static_cast<float>(activeItem->totalBytes), 0.0f, 1.0f)
+                : 0.0f;
+
+            char pctBuf[32];
+            std::snprintf(pctBuf, sizeof(pctBuf), "%.0f%%", pct * 100.0f);
+
+            std::string dirIcon = activeItem->isOutgoing ? "^" : "v";
+            drawText(dirIcon, { hudPill.left + 10.0f, hudPill.top + 6.0f, hudPill.left + 24.0f, hudPill.top + 22.0f },
+                     fmtBodyBold_, COL_PRIMARY_ACCENT);
+
+            drawText(activeItem->fileName, { hudPill.left + 26.0f, hudPill.top + 6.0f, hudPill.right - 50.0f, hudPill.top + 22.0f },
+                     fmtSmall_, COL_TEXT_PRIMARY);
+
+            drawText(pctBuf, { hudPill.right - 48.0f, hudPill.top + 6.0f, hudPill.right - 10.0f, hudPill.top + 22.0f },
+                     fmtSmall_, COL_TEXT_ACCENT, DWRITE_TEXT_ALIGNMENT_TRAILING);
+
+            UiRect barBg = { hudPill.left + 10.0f, hudPill.bottom - 14.0f, hudPill.right - 10.0f, hudPill.bottom - 8.0f };
+            fillRoundRect(barBg, 3.0f, rgba(255, 255, 255, 0.08f));
+            UiRect barFill = { barBg.left, barBg.top, barBg.left + barBg.width() * pct, barBg.bottom };
+            fillRoundRect(barFill, 3.0f, COL_PRIMARY_ACCENT);
+
+            clickRegions_.push_back({ hudPill, "canvas_transfer_hud", [this]() {
+                drawerTab_ = DrawerTab::FilesAndClip;
+                showFileDrawer_ = true;
+            }, false });
+        }
     } else {
         renderedCanvasRect_ = {};
         drawText(stats.statusMessage, stageRect, fmtSubheading_, COL_TEXT_SECONDARY, DWRITE_TEXT_ALIGNMENT_CENTER);
@@ -4363,22 +4437,41 @@ void CppDeskWindow::onKeyEvent(uint16_t vk, uint16_t scan, bool isDown, bool isE
 }
 
 void CppDeskWindow::onDropFiles(HDROP hDrop) {
+    POINT pt{};
+    DragQueryPoint(hDrop, &pt);
+
+    float nx = 0.0f, ny = 0.0f;
+    bool droppedOnCanvas = (activeTab_ == ActiveTab::RemoteSession &&
+                            renderedCanvasRect_.contains(static_cast<float>(pt.x), static_cast<float>(pt.y)) &&
+                            mapCanvasPointToNormalized(static_cast<float>(pt.x), static_cast<float>(pt.y), nx, ny));
+
+    FileOfferTarget targetHint = droppedOnCanvas ? FileOfferTarget::Desktop : FileOfferTarget::DefaultDownloads;
+
     UINT count = DragQueryFileA(hDrop, 0xFFFFFFFF, nullptr, 0);
     int sentCount = 0;
     for (UINT i = 0; i < count; ++i) {
         char filePath[MAX_PATH] = {};
         if (DragQueryFileA(hDrop, i, filePath, MAX_PATH) > 0) {
-            if (network_.sendFile(filePath) > 0) {
-                ++sentCount;
-            }
+            sentCount += network_.sendDropPath(filePath, targetHint, nx, ny);
         }
     }
     DragFinish(hDrop);
 
     if (sentCount > 0) {
-        drawerTab_ = DrawerTab::FilesAndClip;
-        showFileDrawer_ = true;
-        showToast("Sending " + std::to_string(sentCount) + " file(s)");
+        if (droppedOnCanvas) {
+            canvasDropEffectActive_ = true;
+            canvasDropPos_ = { static_cast<float>(pt.x), static_cast<float>(pt.y) };
+            canvasDropTick_ = GetTickCount64();
+            canvasDropCount_ = sentCount;
+            showToast("Dropped " + std::to_string(sentCount) + " file(s) onto Remote Desktop");
+            if (hwnd_) {
+                InvalidateRect(hwnd_, nullptr, FALSE);
+            }
+        } else {
+            drawerTab_ = DrawerTab::FilesAndClip;
+            showFileDrawer_ = true;
+            showToast("Sending " + std::to_string(sentCount) + " file(s) to Downloads");
+        }
     } else {
         showToast("Connect to a remote desk first", true);
     }

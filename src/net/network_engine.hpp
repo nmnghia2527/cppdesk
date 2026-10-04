@@ -211,7 +211,12 @@ public:
     void setClipboardSyncEnabled(bool enabled) { clipboardSyncEnabled_.store(enabled); }
 
     // File transfer, clipboard & live encrypted chat
-    uint32_t sendFile(const std::string& filePath);
+    uint32_t sendFile(const std::string& filePath,
+                      FileOfferTarget targetHint = FileOfferTarget::DefaultDownloads,
+                      float dropNx = 0.0f, float dropNy = 0.0f);
+    int sendDropPath(const std::string& path,
+                     FileOfferTarget targetHint = FileOfferTarget::DefaultDownloads,
+                     float dropNx = 0.0f, float dropNy = 0.0f);
     bool cancelFileTransfer(uint32_t transferId);
     void pushLocalClipboardNow();
     bool sendChatMessage(const std::string& text);

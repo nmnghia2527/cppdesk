@@ -1266,6 +1266,126 @@ void testHardwareDiagnosticsAndProcessManager() {
     }
 }
 
+void testDirectCanvasDragAndDropFileTransfer() {
+    std::cout << "[TEST 14] Drag-and-Drop Direct Canvas File Drop & Recursive Directory Expansion...\n" << std::flush;
+
+    // 1. Packet encoding/decoding with targetHint and drop coordinates
+    {
+        ByteWriter w;
+        uint32_t tid = 42;
+        uint64_t fsz = 1048576ULL;
+        std::string fname = "blueprint.cad";
+        w.writeU32(tid);
+        w.writeU64(fsz);
+        w.writeString(fname);
+        w.writeU8(static_cast<uint8_t>(FileOfferTarget::Desktop));
+        w.writeF32(0.45f);
+        w.writeF32(0.72f);
+
+        ByteReader r(w.buffer().data(), w.buffer().size());
+        uint32_t decTid = r.readU32();
+        uint64_t decFsz = r.readU64();
+        std::string decName = r.readString();
+        FileOfferTarget decTarget = FileOfferTarget::DefaultDownloads;
+        float decX = 0.0f, decY = 0.0f;
+        if (r.hasRemaining(1)) {
+            decTarget = static_cast<FileOfferTarget>(r.readU8());
+        }
+        if (r.hasRemaining(8)) {
+            decX = r.readF32();
+            decY = r.readF32();
+        }
+
+        TEST_ASSERT(decTid == 42);
+        TEST_ASSERT(decFsz == 1048576ULL);
+        TEST_ASSERT(decName == "blueprint.cad");
+        TEST_ASSERT(decTarget == FileOfferTarget::Desktop);
+        TEST_ASSERT(std::abs(decX - 0.45f) < 0.001f);
+        TEST_ASSERT(std::abs(decY - 0.72f) < 0.001f);
+    }
+
+    // 2. Legacy Packet Backward-Compatibility (No target hint or coordinates)
+    {
+        ByteWriter w;
+        w.writeU32(101);
+        w.writeU64(2048);
+        w.writeString("legacy.txt");
+
+        ByteReader r(w.buffer().data(), w.buffer().size());
+        uint32_t decTid = r.readU32();
+        uint64_t decFsz = r.readU64();
+        std::string decName = r.readString();
+        FileOfferTarget decTarget = FileOfferTarget::DefaultDownloads;
+        float decX = 0.0f, decY = 0.0f;
+        if (r.hasRemaining(1)) {
+            decTarget = static_cast<FileOfferTarget>(r.readU8());
+        }
+        if (r.hasRemaining(8)) {
+            decX = r.readF32();
+            decY = r.readF32();
+        }
+
+        TEST_ASSERT(decTid == 101);
+        TEST_ASSERT(decFsz == 2048);
+        TEST_ASSERT(decName == "legacy.txt");
+        TEST_ASSERT(decTarget == FileOfferTarget::DefaultDownloads);
+        TEST_ASSERT(decX == 0.0f && decY == 0.0f);
+    }
+
+    // 3. Recursive Directory Expansion & Queueing
+    {
+        std::filesystem::path tempDir = std::filesystem::temp_directory_path() / "cppdesk_tdd_drop_test";
+        std::error_code ec;
+        std::filesystem::remove_all(tempDir, ec);
+        std::filesystem::create_directories(tempDir / "nested", ec);
+
+        std::ofstream f1(tempDir / "fileA.txt");
+        f1 << "Sample file A contents for TDD test";
+        f1.close();
+
+        std::ofstream f2(tempDir / "nested" / "fileB.txt");
+        f2 << "Sample file B nested contents";
+        f2.close();
+
+        FileTransferManager ftm;
+        std::vector<PacketType> queuedPackets;
+        int queuedCount = ftm.startOutgoingPath(tempDir.string(), [&](PacketType pt, const std::vector<uint8_t>&) {
+            queuedPackets.push_back(pt);
+            return true;
+        }, FileOfferTarget::Desktop, 0.5f, 0.5f);
+
+        TEST_ASSERT(queuedCount == 2);
+        TEST_ASSERT(queuedPackets.size() == 2);
+        TEST_ASSERT(queuedPackets[0] == PacketType::FILE_OFFER);
+        TEST_ASSERT(queuedPackets[1] == PacketType::FILE_OFFER);
+
+        auto transfers = ftm.snapshotTransfers();
+        TEST_ASSERT(transfers.size() == 2);
+
+        std::filesystem::remove_all(tempDir, ec);
+    }
+
+    // 4. Canvas Hit-Test Normalization
+    {
+        struct TestRect {
+            float left, top, right, bottom;
+            bool contains(float x, float y) const { return x >= left && x <= right && y >= top && y <= bottom; }
+            float width() const { return right - left; }
+            float height() const { return bottom - top; }
+        };
+        TestRect canvasRect = { 100.0f, 50.0f, 1100.0f, 850.0f }; // width = 1000, height = 800
+        float px = 600.0f, py = 450.0f;
+        TEST_ASSERT(canvasRect.contains(px, py));
+        float nx = (px - canvasRect.left) / canvasRect.width();
+        float ny = (py - canvasRect.top) / canvasRect.height();
+        TEST_ASSERT(std::abs(nx - 0.5f) < 0.001f);
+        TEST_ASSERT(std::abs(ny - 0.5f) < 0.001f);
+
+        float outX = 50.0f, outY = 20.0f;
+        TEST_ASSERT(!canvasRect.contains(outX, outY));
+    }
+}
+
 } // namespace
 
 int main() {
@@ -1289,6 +1409,7 @@ int main() {
         testV210PowerFeaturesInheritance(); std::cout << "Test 11 done\n" << std::flush;
         testAutoUpdaterAndProtocolV3(); std::cout << "Test 12 done\n" << std::flush;
         testHardwareDiagnosticsAndProcessManager(); std::cout << "Test 13 done\n" << std::flush;
+        testDirectCanvasDragAndDropFileTransfer(); std::cout << "Test 14 done\n" << std::flush;
 
         std::cout << "---------------------------------------------------------\n";
         std::cout << "Assertions Passed: " << g_passed << " | Failed: " << g_failed << "\n";

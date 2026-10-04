@@ -211,7 +211,8 @@ void FileTransferManager::openReceiveDirectoryInExplorer() const {
     ShellExecuteA(nullptr, "open", dir.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
 }
 
-uint32_t FileTransferManager::startOutgoingFile(const std::string& filePath, const SendPacketFn& sendPacket) {
+uint32_t FileTransferManager::startOutgoingFile(const std::string& filePath, const SendPacketFn& sendPacket,
+                                               FileOfferTarget targetHint, float dropNx, float dropNy) {
     std::filesystem::path p(filePath);
     std::error_code ec;
     if (!std::filesystem::exists(p, ec) || !std::filesystem::is_regular_file(p, ec)) {
@@ -264,9 +265,39 @@ uint32_t FileTransferManager::startOutgoingFile(const std::string& filePath, con
         w.writeU32(tid);
         w.writeU64(fsize);
         w.writeString(fname);
+        w.writeU8(static_cast<uint8_t>(targetHint));
+        w.writeF32(dropNx);
+        w.writeF32(dropNy);
         sendPacket(PacketType::FILE_OFFER, w.buffer());
     }
     return tid;
+}
+
+int FileTransferManager::startOutgoingPath(const std::string& path, const SendPacketFn& sendPacket,
+                                          FileOfferTarget targetHint, float dropNx, float dropNy) {
+    std::filesystem::path p(path);
+    std::error_code ec;
+    if (!std::filesystem::exists(p, ec)) {
+        return 0;
+    }
+
+    if (std::filesystem::is_directory(p, ec)) {
+        int queued = 0;
+        for (const auto& entry : std::filesystem::recursive_directory_iterator(p, std::filesystem::directory_options::skip_permission_denied, ec)) {
+            if (entry.is_regular_file(ec)) {
+                if (startOutgoingFile(entry.path().string(), sendPacket, targetHint, dropNx, dropNy) > 0) {
+                    ++queued;
+                }
+            }
+        }
+        return queued;
+    }
+
+    if (std::filesystem::is_regular_file(p, ec)) {
+        return (startOutgoingFile(path, sendPacket, targetHint, dropNx, dropNy) > 0) ? 1 : 0;
+    }
+
+    return 0;
 }
 
 bool FileTransferManager::pumpOutgoingChunks(const SendPacketFn& sendPacket, int maxChunks) {
@@ -419,19 +450,32 @@ void FileTransferManager::abortActiveTransfers() {
     }
 }
 
-void FileTransferManager::handleFileOffer(uint32_t transferId, uint64_t totalBytes, const std::string& fileName) {
+void FileTransferManager::handleFileOffer(uint32_t transferId, uint64_t totalBytes, const std::string& fileName,
+                                         FileOfferTarget targetHint, float dropNx, float dropNy) {
+    (void)dropNx;
+    (void)dropNy;
     std::lock_guard<std::mutex> lock(mutex_);
     std::error_code ec;
-    std::filesystem::create_directories(receiveDir_, ec);
+
+    std::string baseDir = receiveDir_;
+    if (targetHint == FileOfferTarget::Desktop) {
+        PWSTR pDesk = nullptr;
+        if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Desktop, 0, nullptr, &pDesk)) && pDesk) {
+            std::filesystem::path deskPath(pDesk);
+            CoTaskMemFree(pDesk);
+            baseDir = deskPath.string();
+        }
+    }
+    std::filesystem::create_directories(baseDir, ec);
 
     std::string cleanName = sanitizeFilename(fileName);
-    std::filesystem::path targetPath = std::filesystem::path(receiveDir_) / cleanName;
+    std::filesystem::path targetPath = std::filesystem::path(baseDir) / cleanName;
 
     // Verify file size limit and available disk space
     bool spaceOk = (totalBytes <= MAX_TRANSFER_FILE_BYTES);
     if (spaceOk) {
         ULARGE_INTEGER freeBytesAvailable{};
-        if (GetDiskFreeSpaceExA(receiveDir_.c_str(), &freeBytesAvailable, nullptr, nullptr)) {
+        if (GetDiskFreeSpaceExA(baseDir.c_str(), &freeBytesAvailable, nullptr, nullptr)) {
             if (freeBytesAvailable.QuadPart > 0 && totalBytes + (16ULL * 1024 * 1024) > freeBytesAvailable.QuadPart) {
                 spaceOk = false;
             }
@@ -467,7 +511,7 @@ void FileTransferManager::handleFileOffer(uint32_t transferId, uint64_t totalByt
         std::string stem = targetPath.stem().string();
         std::string ext = targetPath.extension().string();
         for (int n = 1; n < 1000; ++n) {
-            auto candidate = std::filesystem::path(receiveDir_) / (stem + " (" + std::to_string(n) + ")" + ext);
+            auto candidate = std::filesystem::path(baseDir) / (stem + " (" + std::to_string(n) + ")" + ext);
             if (!std::filesystem::exists(candidate, ec)) {
                 targetPath = candidate;
                 break;
@@ -622,6 +666,16 @@ void FileTransferManager::clearCompleted() {
 std::vector<FileTransferItem> FileTransferManager::snapshotTransfers() const {
     std::lock_guard<std::mutex> lock(mutex_);
     return items_;
+}
+
+bool FileTransferManager::hasActiveTransfers() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (const auto& it : items_) {
+        if (it.status == TransferStatus::InProgress) {
+            return true;
+        }
+    }
+    return !outgoingQueue_.empty() || !incomingStreams_.empty();
 }
 
 } // namespace cppdesk
