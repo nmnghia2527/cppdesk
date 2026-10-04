@@ -6,14 +6,14 @@
   <a href="#quick-start">Quick Start</a> •
   <a href="#how-to-build-from-source">Build</a> •
   <a href="#project-structure">Structure</a> •
-  <a href="https://github.com/oocs07/Remote-Desktop/releases">Releases</a>
+  <a href="https://github.com/oocs07/cppdesk/releases">Releases</a>
 </p>
 
 <p align="center">
-  <a href="https://github.com/oocs07/Remote-Desktop/releases/latest">
-    <img src="https://img.shields.io/github/v/release/oocs07/Remote-Desktop?style=for-the-badge&color=2563EB&label=DOWNLOAD%20CPPDESK" alt="Download CppDesk">
+  <a href="https://github.com/oocs07/cppdesk/releases/latest">
+    <img src="https://img.shields.io/github/v/release/oocs07/cppdesk?style=for-the-badge&color=2563EB&label=DOWNLOAD%20CPPDESK" alt="Download CppDesk">
   </a>
-  <a href="https://github.com/oocs07/Remote-Desktop/blob/main/LICENSE">
+  <a href="https://github.com/oocs07/cppdesk/blob/main/LICENSE">
     <img src="https://img.shields.io/badge/License-MIT-blue.svg?style=for-the-badge" alt="License: MIT">
   </a>
   <img src="https://img.shields.io/badge/Platform-Windows%2010%20%2F%2011-0078D6?style=for-the-badge&logo=windows" alt="Platform: Windows">
@@ -48,7 +48,7 @@ Connect across networks using a **9-Digit Desk ID** (`XXX XXX XXX`) with a perma
 ## Quick Start
 
 ### 1. Download & Run
-Download **[`CppDesk.exe`](https://github.com/oocs07/Remote-Desktop/releases/latest)** (no installation required). Double-click to launch.
+Download **[`CppDesk.exe`](https://github.com/oocs07/cppdesk/releases/latest)** (no installation required). Double-click to launch.
 
 ```powershell
 .\CppDesk.exe

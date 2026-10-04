@@ -1151,7 +1151,7 @@ void testAutoUpdaterAndProtocolV3() {
     // 4. Lightweight JSON Key Extraction
     std::string sampleJson = "{\n"
                              "    \"tag_name\": \"v3.0.1\",\n"
-                             "    \"html_url\": \"https://github.com/oocs07/Remote-Desktop/releases/tag/v3.0.1\",\n"
+                             "    \"html_url\": \"https://github.com/oocs07/cppdesk/releases/tag/v3.0.1\",\n"
                              "    \"body\": \"Fixed multi-monitor scaling on 4K displays.\\r\\nAdded performance optimizations.\"\n"
                              "}";
 
@@ -1160,7 +1160,7 @@ void testAutoUpdaterAndProtocolV3() {
     std::string body = AutoUpdater::extractJsonString(sampleJson, "body");
 
     TEST_ASSERT(tag == "v3.0.1");
-    TEST_ASSERT(url == "https://github.com/oocs07/Remote-Desktop/releases/tag/v3.0.1");
+    TEST_ASSERT(url == "https://github.com/oocs07/cppdesk/releases/tag/v3.0.1");
     TEST_ASSERT(body.find("Fixed multi-monitor scaling") != std::string::npos);
 
     // Extraction with escaped quotes

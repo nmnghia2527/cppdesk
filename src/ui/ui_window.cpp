@@ -2507,7 +2507,7 @@ void CppDeskWindow::drawSettingsView(const UiRect& bounds, float alpha) {
     drawButton("sett_view_release_top", relBtn, "Release Notes",
                COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY,
                8.0f, [this]() {
-                   ShellExecuteA(nullptr, "open", "https://github.com/oocs07/Remote-Desktop/releases/latest", nullptr, nullptr, SW_SHOWNORMAL);
+                   ShellExecuteA(nullptr, "open", "https://github.com/oocs07/cppdesk/releases/latest", nullptr, nullptr, SW_SHOWNORMAL);
                }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
 
     // ---------------- TWO-COLUMN SETTINGS BODY ----------------
@@ -2754,14 +2754,14 @@ void CppDeskWindow::drawSettingsView(const UiRect& bounds, float alpha) {
         UiRect licBtn = { btnRight - btnW, btnY, btnRight, btnY + btnH };
         drawButton("sett_about_license", licBtn, "License",
                    COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 6.0f, []() {
-                       ShellExecuteA(nullptr, "open", "https://github.com/oocs07/Remote-Desktop/blob/main/LICENSE", nullptr, nullptr, SW_SHOWNORMAL);
+                       ShellExecuteA(nullptr, "open", "https://github.com/oocs07/cppdesk/blob/main/LICENSE", nullptr, nullptr, SW_SHOWNORMAL);
                    }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
 
         // Interactive "GitHub" Pill Button
         UiRect ghBtn = { licBtn.left - 8.0f - btnW, btnY, licBtn.left - 8.0f, btnY + btnH };
         drawButton("sett_about_github", ghBtn, "GitHub",
                    COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 6.0f, []() {
-                       ShellExecuteA(nullptr, "open", "https://github.com/oocs07/Remote-Desktop", nullptr, nullptr, SW_SHOWNORMAL);
+                       ShellExecuteA(nullptr, "open", "https://github.com/oocs07/cppdesk", nullptr, nullptr, SW_SHOWNORMAL);
                    }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
 
         // App Title & Value Summary
@@ -4146,7 +4146,7 @@ void CppDeskWindow::drawUpdateRequiredModal(float width, float height, float mod
     drawButton("update_modal_download", dlBtn, "Download & Update Now",
                COL_PRIMARY_ACCENT, COL_PRIMARY_ACCENT_HV, COL_TEXT_ON_ACCENT, 9.0f, [this]() {
                    std::string targetUrl = latestUpdateInfo_.releaseUrl.empty()
-                       ? "https://github.com/oocs07/Remote-Desktop/releases/latest"
+                       ? "https://github.com/oocs07/cppdesk/releases/latest"
                        : latestUpdateInfo_.releaseUrl;
                    ShellExecuteA(nullptr, "open", targetUrl.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
                }, fmtSmall_);
@@ -4162,7 +4162,7 @@ void CppDeskWindow::triggerUpdateCheck(bool manual) {
         showToast("Checking GitHub for updates...");
     }
 
-    AutoUpdater::checkForUpdatesAsync("oocs07", "Remote-Desktop", CPP_DESK_VERSION, [this, manual](const UpdateInfo& info) {
+    AutoUpdater::checkForUpdatesAsync("oocs07", "cppdesk", CPP_DESK_VERSION, [this, manual](const UpdateInfo& info) {
         latestUpdateInfo_ = info;
         isCheckingUpdates_ = false;
 
