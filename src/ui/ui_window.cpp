@@ -2472,10 +2472,10 @@ void CppDeskWindow::drawSettingsView(const UiRect& bounds, float alpha) {
     fillRoundRect(iconBadge, 10.0f, COL_PRIMARY_ACCENT);
     drawText("CD", iconBadge, fmtSubheading_, COL_TEXT_ON_ACCENT, DWRITE_TEXT_ALIGNMENT_CENTER);
 
-    // App Name & Architecture
+    // App Name & Product Value Proposition
     float infoX = iconBadge.right + 14.0f;
     UiRect titleRect = { infoX, updateBanner.top + 12.0f, updateBanner.right - 340.0f, updateBanner.top + 34.0f };
-    drawText("CppDesk v" + std::string(CPP_DESK_VERSION) + "  •  C++20 & AVX2 Native Architecture",
+    drawText("CppDesk v" + std::string(CPP_DESK_VERSION) + "  •  Fast, secure remote desktop for Windows",
              titleRect, fmtSubheading_, COL_TEXT_PRIMARY, DWRITE_TEXT_ALIGNMENT_LEADING);
 
     // Status Indicator Dot & Live Text
@@ -2734,19 +2734,40 @@ void CppDeskWindow::drawSettingsView(const UiRect& bounds, float alpha) {
 
     ly = ovBox.bottom + 10.0f;
 
-    // 5. About & Credits (draw if at least 36px remaining)
-    if (leftCard.bottom - 10.0f > ly + 36.0f) {
+    // 5. About CppDesk (draw if at least 40px remaining)
+    if (leftCard.bottom - 10.0f > ly + 40.0f) {
         UiRect aboutBox = { lx, ly, lrx, leftCard.bottom - 16.0f };
         fillRoundRect(aboutBox, 12.0f, COL_BG_SUBTLE);
         strokeRoundRect(aboutBox, 12.0f, COL_BORDER);
 
-        drawText("ABOUT & CREDITS",
-                 { aboutBox.left + 16.0f, aboutBox.top + 8.0f, aboutBox.right - 16.0f, aboutBox.top + 22.0f },
+        float aPad = 16.0f;
+        drawText("ABOUT CPPDESK",
+                 { aboutBox.left + aPad, aboutBox.top + 8.0f, aboutBox.right - aPad, aboutBox.top + 22.0f },
                  fmtSmall_, COL_TEXT_ACCENT);
 
-        drawText("CppDesk v" + std::string(CPP_DESK_VERSION) + " • Inspired by RustDesk (Open Source)\nClean-room native C++20 & x86-64 AVX2 Assembly implementation.",
-                 { aboutBox.left + 16.0f, aboutBox.top + 24.0f, aboutBox.right - 16.0f, aboutBox.bottom - 6.0f },
-                 fmtSmall_, COL_TEXT_SECONDARY);
+        float btnW = 68.0f;
+        float btnH = 26.0f;
+        float btnRight = aboutBox.right - aPad;
+        float btnY = aboutBox.top + 15.0f;
+
+        // Interactive "License" Pill Button
+        UiRect licBtn = { btnRight - btnW, btnY, btnRight, btnY + btnH };
+        drawButton("sett_about_license", licBtn, "License",
+                   COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 6.0f, []() {
+                       ShellExecuteA(nullptr, "open", "https://github.com/oocs07/Remote-Desktop/blob/main/LICENSE", nullptr, nullptr, SW_SHOWNORMAL);
+                   }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
+
+        // Interactive "GitHub" Pill Button
+        UiRect ghBtn = { licBtn.left - 8.0f - btnW, btnY, licBtn.left - 8.0f, btnY + btnH };
+        drawButton("sett_about_github", ghBtn, "GitHub",
+                   COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 6.0f, []() {
+                       ShellExecuteA(nullptr, "open", "https://github.com/oocs07/Remote-Desktop", nullptr, nullptr, SW_SHOWNORMAL);
+                   }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
+
+        // App Title & Value Summary
+        UiRect textRect = { aboutBox.left + aPad, aboutBox.top + 24.0f, ghBtn.left - 12.0f, aboutBox.bottom - 6.0f };
+        drawText("CppDesk v" + std::string(CPP_DESK_VERSION) + " • Free & Open Source\nZero-install, high-speed remote access with end-to-end encryption.",
+                 textRect, fmtSmall_, COL_TEXT_SECONDARY);
     }
 
     // ==================== RIGHT COLUMN: ACCESS & NETWORK ====================
@@ -3667,11 +3688,11 @@ void CppDeskWindow::drawDynamicIslandToolbar(float width, float /*height*/) {
         dy += itemH;
 
         UiRect r3 = { dropRect.left + 8.0f, dy, dropRect.right - 8.0f, dy + 28.0f };
-        drawButton("drop_adm_sas", r3, "Task Manager / SAS",
+        drawButton("drop_adm_sas", r3, "Task Manager (Ctrl+Alt+Del)",
                    COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 6.0f, [this]() {
                        network_.sendSystemAction(SystemActionType::SendCtrlAltDel);
                        showAdminMenu_ = false;
-                       showToast("Remote TaskMgr / SAS triggered");
+                       showToast("Sent Ctrl+Alt+Del to remote PC");
                    }, fmtSmall_, true, COL_BORDER);
         dy += itemH;
 
@@ -3788,7 +3809,7 @@ void CppDeskWindow::drawShortcutsModal(float width, float height, float modalPro
         { "Ctrl + Alt + [1-9]", "Switch Remote Display Monitor instantly" },
         { "Ctrl + Alt + L", "Lock Remote Workstation" },
         { "Ctrl + Alt + D", "Show Desktop (Minimize all remote windows)" },
-        { "Ctrl + Alt + Del", "Send Task Manager / Security Desktop (SAS)" },
+        { "Ctrl + Alt + Del", "Open Task Manager / Lock Screen" },
         { "Esc", "Dismiss open menus, modals, or exit fullscreen" }
     };
 
@@ -3844,7 +3865,7 @@ void CppDeskWindow::drawPortForwardModal(float width, float height, float modalP
                [this]() { showPortForwardModal_ = false; }, fmtHeading_);
     my += 34.0f;
 
-    drawText("Tunnel local ports over AES-256-GCM encrypted link directly to services on the remote host.",
+    drawText("Forward local network ports securely to services on the remote PC.",
              { mx, my, mrx, my + 20.0f }, fmtSmall_, COL_TEXT_SECONDARY);
     my += 26.0f;
 
@@ -4730,7 +4751,7 @@ void CppDeskWindow::onKeyEvent(uint16_t vk, uint16_t scan, bool isDown, bool isE
             }
             if (vk == VK_DELETE) {
                 network_.sendSystemAction(SystemActionType::SendCtrlAltDel);
-                showToast("Remote TaskMgr / SAS sent");
+                showToast("Sent Ctrl+Alt+Del to remote PC");
                 return;
             }
         }
