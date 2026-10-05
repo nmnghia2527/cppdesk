@@ -14,8 +14,8 @@ struct UpdateInfo {
     bool updateRequired = false;
     std::string currentVersion = CPP_DESK_VERSION;
     std::string latestVersion;
-    std::string downloadUrl = "https://github.com/oocs07/cppdesk/releases/latest";
-    std::string releaseUrl = "https://github.com/oocs07/cppdesk/releases/latest"; // Compatibility alias
+    std::string downloadUrl = "https://github.com/nmnghia2527/cppdesk/releases/latest";
+    std::string releaseUrl = "https://github.com/nmnghia2527/cppdesk/releases/latest"; // Compatibility alias
     std::string releaseNotes;
     std::string errorMessage;
 };
@@ -30,14 +30,14 @@ public:
 
     // Synchronous query using WinHTTP hitting GitHub Releases API
     static UpdateInfo queryLatestReleaseSync(
-        const std::string& repoOwner = "oocs07",
+        const std::string& repoOwner = "nmnghia2527",
         const std::string& repoName = "cppdesk",
         const std::string& currentVersion = CPP_DESK_VERSION);
 
     // Asynchronous background query (calls onComplete on background thread)
     static void checkForUpdatesAsync(
         std::function<void(const UpdateInfo&)> onComplete,
-        const std::string& repoOwner = "oocs07",
+        const std::string& repoOwner = "nmnghia2527",
         const std::string& repoName = "cppdesk",
         const std::string& currentVersion = CPP_DESK_VERSION);
 
