@@ -11,7 +11,7 @@
 
 <p align="center">
   <a href="https://github.com/nmnghia2527/cppdesk/releases/latest">
-    <img src="https://img.shields.io/github/v/release/nmnghia2527/cppdesk?style=for-the-badge&color=2563EB&label=DOWNLOAD%20CPPDESK" alt="Download CppDesk">
+    <img src="https://img.shields.io/github/v/release/nmnghia2527/cppdesk?style=for-the-badge&color=2563EB&label=DOWNLOAD%20CPPDESK&sort=semver" alt="Download CppDesk">
   </a>
   <a href="https://github.com/nmnghia2527/cppdesk/blob/main/LICENSE">
     <img src="https://img.shields.io/badge/License-MIT-blue.svg?style=for-the-badge" alt="License: MIT">
