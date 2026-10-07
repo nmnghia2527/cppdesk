@@ -90,6 +90,7 @@ struct ViewerSessionStats {
     uint64_t              connectedSinceTickMs = 0;
     uint8_t               grantedPermissions = PERM_ALL;
     QualityPreset         qualityPreset = QualityPreset::Balanced;
+    ConnectionProfile     connectionProfile = ConnectionProfile::Balanced;
     uint8_t               targetFps = 30;
     uint8_t               effectiveFpsCap = 30;
     bool                  adaptiveFps = true;
@@ -242,6 +243,7 @@ public:
     void setSessionFpsConfig(uint8_t targetFps, bool adaptiveFps);
     void selectRemoteMonitor(int monitorIndex);
     void updateQualitySettings(QualityPreset preset, uint8_t targetFps, bool adaptiveFps);
+    void applyConnectionProfile(ConnectionProfile profile);
     bool isClipboardSyncEnabled() const { return clipboardSyncEnabled_.load(); }
     void setClipboardSyncEnabled(bool enabled) { clipboardSyncEnabled_.store(enabled); }
     ClipboardHistoryManager& clipboardHistory() { return clipboardManager_.history(); }
@@ -269,17 +271,20 @@ public:
     ClipboardManager& clipboardManager() { return clipboardManager_; }
     const ClipboardManager& clipboardManager() const { return clipboardManager_; }
 
-    // Audio streaming controls (v2.1.0)
+    // Audio streaming controls (v2.1.0 & Phase 16)
     void setAudioVolume(int percent);
     int audioVolume() const;
     void setAudioMuted(bool muted);
     bool isAudioMuted() const;
+    void syncAudioControl();
+    bool isHostAudioSuspended() const;
 
-    // Privacy screen controls (v2.1.0)
+    // Privacy screen controls (v2.1.0 & v3.2.0 Phase 18)
     void requestTogglePrivacyMode();
     bool isPrivacyModeEngaged() const;
     bool isHostPrivacyModeActive() const;
-    void setHostPrivacyMode(bool enable);
+    void setHostPrivacyMode(bool enable, const std::string& notice = "", const std::string& brand = "", bool showId = true);
+    void configurePrivacyCurtain(const std::string& notice, const std::string& brand, bool showId);
 
     // TCP Port Forwarding & Tunneling Manager (v2.1.0)
     uint32_t addPortForwardRule(uint16_t localPort, uint16_t targetPort, const std::string& desc, bool startActive = true);
@@ -471,11 +476,15 @@ private:
     mutable std::mutex      audioPlaybackMutex_;
     std::atomic<int>        audioVolumePercent_{100};
     std::atomic<bool>       audioMuted_{false};
+    std::atomic<bool>       hostAudioSuspended_{false};
 
     // Privacy Mode state
     std::atomic<bool>       hostPrivacyModeActive_{false};
     HWND                    hwndPrivacyCurtain_ = nullptr;
     std::atomic<bool>       viewerPrivacyModeActive_{false};
+    std::string             privacyCurtainNotice_;
+    std::string             privacyCurtainBrand_;
+    bool                    privacyCurtainShowId_ = true;
 
     // Host Terminal Process & Anonymous Pipes
     void startHostTerminal(bool usePowerShell = false);

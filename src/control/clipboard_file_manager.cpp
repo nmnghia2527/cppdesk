@@ -13,10 +13,18 @@
 #include <filesystem>
 #include <algorithm>
 #include <cstring>
+#include <chrono>
+#include <cmath>
 
 namespace cppdesk {
 
 namespace {
+
+inline uint64_t currentTimeMs() {
+    return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()
+    ).count());
+}
 
 constexpr uint64_t MAX_TRANSFER_FILE_BYTES = 2ULL * 1024ULL * 1024ULL * 1024ULL; // 2 GB cap
 
@@ -47,6 +55,36 @@ std::string formatBytesSize(uint64_t bytes) {
 }
 
 } // namespace
+
+std::string FileTransferItem::formatSpeed(double bytesPerSec) {
+    if (!std::isfinite(bytesPerSec) || bytesPerSec <= 0.0) {
+        return "0 KB/s";
+    }
+    char buf[64];
+    if (bytesPerSec >= 1024.0 * 1024.0) {
+        std::snprintf(buf, sizeof(buf), "%.1f MB/s", bytesPerSec / (1024.0 * 1024.0));
+    } else if (bytesPerSec >= 1024.0) {
+        std::snprintf(buf, sizeof(buf), "%.0f KB/s", bytesPerSec / 1024.0);
+    } else {
+        std::snprintf(buf, sizeof(buf), "%.0f B/s", bytesPerSec);
+    }
+    return std::string(buf);
+}
+
+std::string FileTransferItem::formatEta(double etaSec) {
+    if (!std::isfinite(etaSec) || etaSec < 0.0) return "";
+    if (etaSec >= 3600.0) return "ETA > 1h";
+    int s = static_cast<int>(etaSec + 0.5);
+    if (s >= 3600) {
+        return "ETA > 1h";
+    }
+    if (s < 60) {
+        return "ETA " + std::to_string(s) + "s";
+    }
+    int m = s / 60;
+    int remS = s % 60;
+    return "ETA " + std::to_string(m) + "m " + std::to_string(remS) + "s";
+}
 
 struct FileTransferManager::IncrementalSha256 {
     BCRYPT_ALG_HANDLE  hAlg = nullptr;
@@ -452,6 +490,10 @@ uint32_t FileTransferManager::startOutgoingFile(const std::string& filePath, con
     out->fileName = sanitizeFilename(p.filename().string());
     out->totalBytes = fsize;
     out->offset = 0;
+    out->startTimeMs = currentTimeMs();
+    out->lastSampleTimeMs = out->startTimeMs;
+    out->lastSampleBytes = 0;
+    out->emaSpeedBps = 0.0;
     out->hasher = std::make_unique<IncrementalSha256>();
     out->stream.open(p, std::ios::binary);
     if (!out->stream.is_open()) {
@@ -475,6 +517,9 @@ uint32_t FileTransferManager::startOutgoingFile(const std::string& filePath, con
         item.isOutgoing = true;
         item.status = TransferStatus::InProgress;
         item.statusText = "Sending (0%)";
+        item.startTimeMs = out->startTimeMs;
+        item.speedBps = 0.0;
+        item.etaSeconds = -1.0;
         items_.insert(items_.begin(), item);
         if (items_.size() > 150) {
             items_.pop_back();
@@ -570,16 +615,44 @@ bool FileTransferManager::pumpOutgoingChunks(const SendPacketFn& sendPacket, int
                 finalShaHex = active->hasher->finishHex();
             }
 
+            uint64_t nowMs = currentTimeMs();
+            uint64_t elapsedSampleMs = nowMs - active->lastSampleTimeMs;
+            if (elapsedSampleMs >= 200) {
+                double dt = static_cast<double>(elapsedSampleMs) / 1000.0;
+                double instantSpeed = static_cast<double>(active->offset - active->lastSampleBytes) / dt;
+                active->emaSpeedBps = (active->emaSpeedBps <= 0.0)
+                    ? instantSpeed
+                    : (0.25 * instantSpeed + 0.75 * active->emaSpeedBps);
+                active->lastSampleTimeMs = nowMs;
+                active->lastSampleBytes = active->offset;
+            }
+
             for (auto& item : items_) {
                 if (item.transferId == tid && item.isOutgoing) {
                     item.transferredBytes = active->offset;
+                    item.speedBps = active->emaSpeedBps;
+                    if (active->emaSpeedBps > 1024.0 && item.totalBytes > item.transferredBytes) {
+                        item.etaSeconds = static_cast<double>(item.totalBytes - item.transferredBytes) / active->emaSpeedBps;
+                    } else {
+                        item.etaSeconds = -1.0;
+                    }
                     if (finished) {
                         item.status = TransferStatus::Completed;
                         item.sha256Hex = finalShaHex;
-                        item.statusText = "Sent (" + formatBytesSize(item.totalBytes) + ")";
+                        item.speedBps = 0.0;
+                        item.etaSeconds = -1.0;
+                        uint64_t totalElapsedMs = nowMs - item.startTimeMs;
+                        if (totalElapsedMs > 0) {
+                            item.avgSpeedBps = (static_cast<double>(item.totalBytes) * 1000.0) / static_cast<double>(totalElapsedMs);
+                        }
+                        item.statusText = "Sent (" + formatBytesSize(item.totalBytes) + ") • " + FileTransferItem::formatSpeed(item.avgSpeedBps);
                     } else {
                         int pct = static_cast<int>(item.progressFraction() * 100.0f);
-                        item.statusText = "Sending (" + std::to_string(pct) + "%)";
+                        std::string st = "Sending (" + std::to_string(pct) + "%) • " + FileTransferItem::formatSpeed(item.speedBps);
+                        if (item.etaSeconds >= 0.0) {
+                            st += " • " + FileTransferItem::formatEta(item.etaSeconds);
+                        }
+                        item.statusText = st;
                     }
                     break;
                 }
@@ -638,6 +711,8 @@ bool FileTransferManager::cancelTransfer(uint32_t transferId, const SendPacketFn
             if (item.transferId == transferId && item.status == TransferStatus::InProgress) {
                 item.status = TransferStatus::Cancelled;
                 item.statusText = "Cancelled";
+                item.speedBps = 0.0;
+                item.etaSeconds = -1.0;
                 found = true;
                 break;
             }
@@ -669,6 +744,8 @@ void FileTransferManager::abortActiveTransfers() {
         if (item.status == TransferStatus::InProgress) {
             item.status = TransferStatus::Cancelled;
             item.statusText = "Interrupted";
+            item.speedBps = 0.0;
+            item.etaSeconds = -1.0;
         }
     }
 }
@@ -750,6 +827,10 @@ void FileTransferManager::handleFileOffer(uint32_t transferId, uint64_t totalByt
     inc->savePath = targetPath.string();
     inc->totalBytes = totalBytes;
     inc->receivedBytes = 0;
+    inc->startTimeMs = currentTimeMs();
+    inc->lastSampleTimeMs = inc->startTimeMs;
+    inc->lastSampleBytes = 0;
+    inc->emaSpeedBps = 0.0;
     inc->hasher = std::make_unique<IncrementalSha256>();
     inc->stream.open(partPathStr, std::ios::binary | std::ios::trunc);
 
@@ -760,6 +841,9 @@ void FileTransferManager::handleFileOffer(uint32_t transferId, uint64_t totalByt
     item.totalBytes = totalBytes;
     item.transferredBytes = 0;
     item.isOutgoing = false;
+    item.startTimeMs = inc->startTimeMs;
+    item.speedBps = 0.0;
+    item.etaSeconds = -1.0;
     if (inc->stream.is_open()) {
         item.status = TransferStatus::InProgress;
         item.statusText = (totalBytes == 0) ? "Receiving (0 B)" : "Receiving (0%)";
@@ -787,11 +871,34 @@ void FileTransferManager::handleFileChunk(uint32_t transferId, uint64_t /*offset
                     inc->receivedBytes += chunkLen;
                 }
             }
+
+            uint64_t nowMs = currentTimeMs();
+            uint64_t elapsedSampleMs = nowMs - inc->lastSampleTimeMs;
+            if (elapsedSampleMs >= 200) {
+                double dt = static_cast<double>(elapsedSampleMs) / 1000.0;
+                double instantSpeed = static_cast<double>(inc->receivedBytes - inc->lastSampleBytes) / dt;
+                inc->emaSpeedBps = (inc->emaSpeedBps <= 0.0)
+                    ? instantSpeed
+                    : (0.25 * instantSpeed + 0.75 * inc->emaSpeedBps);
+                inc->lastSampleTimeMs = nowMs;
+                inc->lastSampleBytes = inc->receivedBytes;
+            }
+
             for (auto& item : items_) {
                 if (item.transferId == transferId && !item.isOutgoing) {
                     item.transferredBytes = inc->receivedBytes;
+                    item.speedBps = inc->emaSpeedBps;
+                    if (inc->emaSpeedBps > 1024.0 && item.totalBytes > item.transferredBytes) {
+                        item.etaSeconds = static_cast<double>(item.totalBytes - item.transferredBytes) / inc->emaSpeedBps;
+                    } else {
+                        item.etaSeconds = -1.0;
+                    }
                     int pct = static_cast<int>(item.progressFraction() * 100.0f);
-                    item.statusText = "Receiving (" + std::to_string(pct) + "%)";
+                    std::string st = "Receiving (" + std::to_string(pct) + "%) • " + FileTransferItem::formatSpeed(item.speedBps);
+                    if (item.etaSeconds >= 0.0) {
+                        st += " • " + FileTransferItem::formatEta(item.etaSeconds);
+                    }
+                    item.statusText = st;
                     break;
                 }
             }
@@ -833,13 +940,20 @@ void FileTransferManager::handleFileComplete(uint32_t transferId, const std::str
         }
     }
 
+    uint64_t nowMs = currentTimeMs();
     for (auto& item : items_) {
         if (item.transferId == transferId && !item.isOutgoing) {
+            item.speedBps = 0.0;
+            item.etaSeconds = -1.0;
             if (hashValid) {
                 item.transferredBytes = item.totalBytes;
                 item.status = TransferStatus::Completed;
                 item.sha256Hex = computedSha;
-                item.statusText = "Verified (" + formatBytesSize(item.totalBytes) + ")";
+                uint64_t totalElapsedMs = nowMs - item.startTimeMs;
+                if (totalElapsedMs > 0) {
+                    item.avgSpeedBps = (static_cast<double>(item.totalBytes) * 1000.0) / static_cast<double>(totalElapsedMs);
+                }
+                item.statusText = "Verified (" + formatBytesSize(item.totalBytes) + ") • " + FileTransferItem::formatSpeed(item.avgSpeedBps);
             } else {
                 item.status = TransferStatus::Failed;
                 item.statusText = "Failed (SHA-256 Mismatch)";
@@ -871,6 +985,8 @@ void FileTransferManager::handleFileCancel(uint32_t transferId) {
         if (item.transferId == transferId) {
             item.status = TransferStatus::Cancelled;
             item.statusText = "Cancelled";
+            item.speedBps = 0.0;
+            item.etaSeconds = -1.0;
             break;
         }
     }
@@ -899,6 +1015,17 @@ bool FileTransferManager::hasActiveTransfers() const {
         }
     }
     return !outgoingQueue_.empty() || !incomingStreams_.empty();
+}
+
+double FileTransferManager::aggregateActiveBandwidthBps() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    double totalBps = 0.0;
+    for (const auto& it : items_) {
+        if (it.status == TransferStatus::InProgress && it.speedBps > 0.0) {
+            totalBps += it.speedBps;
+        }
+    }
+    return totalBps;
 }
 
 // ---------------- ClipboardFileTransferManager ----------------
@@ -1238,7 +1365,8 @@ std::string ClipboardFileTransferManager::activeFileName() const {
 float ClipboardFileTransferManager::activeProgressFraction() const {
     std::lock_guard<std::mutex> lock(mutex_);
     if (incoming_.totalBytes == 0) return 0.0f;
-    return static_cast<float>(static_cast<double>(incoming_.transferredBytes) / static_cast<double>(incoming_.totalBytes));
+    float frac = static_cast<float>(static_cast<double>(incoming_.transferredBytes) / static_cast<double>(incoming_.totalBytes));
+    return std::clamp(frac, 0.0f, 1.0f);
 }
 
 float ClipboardFileTransferManager::activeTransferRateMBs() const {

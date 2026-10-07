@@ -10,6 +10,7 @@
 #include <fstream>
 #include <memory>
 #include <functional>
+#include <algorithm>
 #include "shell_clipboard.hpp"
 
 namespace cppdesk {
@@ -31,11 +32,19 @@ struct FileTransferItem {
     TransferStatus status = TransferStatus::InProgress;
     std::string    statusText;
     std::string    sha256Hex;
+    double         speedBps = 0.0;
+    double         etaSeconds = -1.0;
+    double         avgSpeedBps = 0.0;
+    uint64_t       startTimeMs = 0;
 
     float progressFraction() const {
         if (totalBytes == 0) return status == TransferStatus::Completed ? 1.0f : 0.0f;
-        return static_cast<float>(static_cast<double>(transferredBytes) / static_cast<double>(totalBytes));
+        float frac = static_cast<float>(static_cast<double>(transferredBytes) / static_cast<double>(totalBytes));
+        return std::clamp(frac, 0.0f, 1.0f);
     }
+
+    static std::string formatSpeed(double bytesPerSec);
+    static std::string formatEta(double etaSec);
 };
 
 struct ClipboardHistoryItem {
@@ -130,6 +139,7 @@ public:
     void clearCompleted();
     std::vector<FileTransferItem> snapshotTransfers() const;
     bool hasActiveTransfers() const;
+    double aggregateActiveBandwidthBps() const;
 
 private:
     struct IncrementalSha256;
@@ -140,6 +150,10 @@ private:
         std::string                        fileName;
         uint64_t                           totalBytes = 0;
         uint64_t                           offset = 0;
+        uint64_t                           startTimeMs = 0;
+        uint64_t                           lastSampleTimeMs = 0;
+        uint64_t                           lastSampleBytes = 0;
+        double                             emaSpeedBps = 0.0;
         std::ifstream                      stream;
         std::unique_ptr<IncrementalSha256> hasher;
     };
@@ -151,6 +165,10 @@ private:
         std::string                        savePath;
         uint64_t                           totalBytes = 0;
         uint64_t                           receivedBytes = 0;
+        uint64_t                           startTimeMs = 0;
+        uint64_t                           lastSampleTimeMs = 0;
+        uint64_t                           lastSampleBytes = 0;
+        double                             emaSpeedBps = 0.0;
         std::ofstream                      stream;
         std::unique_ptr<IncrementalSha256> hasher;
     };

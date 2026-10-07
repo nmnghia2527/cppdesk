@@ -64,6 +64,7 @@ enum class PacketType : uint8_t {
     VOICE_INTERCOM_CHUNK= 0x29, // Bidirectional: VoIP microphone audio stream chunk
     RESOLUTION_CHANGE_REQ=0x2A, // Viewer -> Host: Request host resolution change or aspect fit
     PERFORMANCE_HUD_METRICS=0x2B, // Host -> Viewer: Real-time capture & encode latency telemetry
+    AUDIO_CONTROL          = 0x2C, // Viewer -> Host: Mute state & volume percentage sync
 
     // Clipboard, File Transfer & Live Chat
     CLIPBOARD_TEXT      = 0x30,
@@ -132,6 +133,59 @@ inline uint8_t clampTargetFps(uint8_t fps) {
     if (fps <= 45) return 30;
     return 60;
 }
+
+// Phase 20: One-Click Connection Quality Profiles
+enum class ConnectionProfile : uint8_t {
+    LowBandwidth = 0, // 15 FPS, LowBandwidth preset (JPEG Q50), Adaptive FPS ON
+    Balanced     = 1, // 30 FPS, Balanced preset (JPEG Q75/Zstd), Adaptive FPS ON
+    UltraLAN     = 2, // 60 FPS, Ultra preset (JPEG Q90/lossless UI), Adaptive FPS OFF
+    Custom       = 3  // User-defined combination of FPS and Quality
+};
+
+inline const char* connectionProfileName(ConnectionProfile profile) {
+    switch (profile) {
+        case ConnectionProfile::LowBandwidth: return "Low Bandwidth";
+        case ConnectionProfile::Balanced:     return "Balanced";
+        case ConnectionProfile::UltraLAN:     return "Ultra LAN";
+        case ConnectionProfile::Custom:       return "Custom";
+        default:                              return "Balanced";
+    }
+}
+
+inline void getProfileSettings(ConnectionProfile profile, QualityPreset& outQp, uint8_t& outFps, bool& outAdaptive) {
+    switch (profile) {
+        case ConnectionProfile::LowBandwidth:
+            outQp = QualityPreset::LowBandwidth;
+            outFps = 15;
+            outAdaptive = true;
+            break;
+        case ConnectionProfile::UltraLAN:
+            outQp = QualityPreset::Ultra;
+            outFps = 60;
+            outAdaptive = false;
+            break;
+        case ConnectionProfile::Balanced:
+        default:
+            outQp = QualityPreset::Balanced;
+            outFps = 30;
+            outAdaptive = true;
+            break;
+    }
+}
+
+inline ConnectionProfile inferConnectionProfile(QualityPreset qp, uint8_t fps, bool adaptive) {
+    if (qp == QualityPreset::LowBandwidth && fps <= 20 && adaptive) {
+        return ConnectionProfile::LowBandwidth;
+    }
+    if (qp == QualityPreset::Balanced && fps > 20 && fps <= 45 && adaptive) {
+        return ConnectionProfile::Balanced;
+    }
+    if (qp == QualityPreset::Ultra && fps > 45 && !adaptive) {
+        return ConnectionProfile::UltraLAN;
+    }
+    return ConnectionProfile::Custom;
+}
+
 
 enum class ScaleMode : uint8_t {
     FitAspect  = 0,
@@ -217,6 +271,14 @@ struct AudioChunkHeader {
     uint32_t sampleFrames;   // number of sample frames in this chunk
 };
 
+#pragma pack(push, 1)
+struct AudioControlPayload {
+    uint8_t isMuted;       // 1 = muted, 0 = unmuted
+    uint8_t volumePercent; // 0 - 100
+    uint8_t reserved[2];
+};
+#pragma pack(pop)
+
 struct VoiceChunkHeader {
     uint32_t sampleRate;     // Target sample rate (e.g. 48000 or 16000)
     uint8_t  channels;       // 1 (mono) or 2 (stereo)
@@ -228,6 +290,15 @@ struct VoiceChunkHeader {
 struct PrivacyModePayload {
     uint8_t enable;          // 1 = engage, 0 = disengage
     uint8_t acknowledge;     // 0 = request, 1 = ACK confirmation
+};
+
+struct PrivacyModeConfigPayload {
+    uint8_t enable;          // 1 = engage, 0 = disengage
+    uint8_t acknowledge;     // 0 = request, 1 = ACK confirmation
+    uint8_t showDeskId;      // 1 = show, 0 = hide
+    uint8_t reserved;        // alignment padding
+    char    customNotice[128]; // null-terminated UTF-8 notice text
+    char    brandName[64];     // null-terminated UTF-8 branding name
 };
 
 struct ResolutionChangePayload {
@@ -488,6 +559,13 @@ struct SystemDiagnosticsPayload {
     uint64_t diskUsedBytes = 0;
     uint64_t diskTotalBytes = 0;
     std::vector<ProcessTelemetryItem> processes;
+
+    // Phase 19 Extended Host Hardware Specs & Health Info
+    std::string cpuModel;          // e.g. "Intel(R) Core(TM) i7-12700H" or "AMD Ryzen 7 5800X"
+    std::string gpuModel;          // e.g. "NVIDIA GeForce RTX 4070 Laptop GPU"
+    std::string osVersion;         // e.g. "Windows 11 (Build 22631)"
+    uint32_t    cpuCores = 0;      // Number of logical processor cores
+    uint64_t    uptimeSeconds = 0;  // System uptime in seconds
 };
 
 inline void serializeSystemDiagnostics(const SystemDiagnosticsPayload& payload, std::vector<uint8_t>& out) {
@@ -505,6 +583,12 @@ inline void serializeSystemDiagnostics(const SystemDiagnosticsPayload& payload, 
         w.writeU64(p.workingSetBytes);
         w.writeString(p.name);
     }
+    // Phase 19 Extended Hardware Specs
+    w.writeString(payload.cpuModel);
+    w.writeString(payload.gpuModel);
+    w.writeString(payload.osVersion);
+    w.writeU32(payload.cpuCores);
+    w.writeU64(payload.uptimeSeconds);
     out = w.takeBuffer();
 }
 
@@ -526,6 +610,20 @@ inline bool deserializeSystemDiagnostics(const uint8_t* data, size_t size, Syste
             item.workingSetBytes = r.readU64();
             item.name = r.readString();
             out.processes.push_back(std::move(item));
+        }
+        // Phase 19 Extended Hardware Specs (backward-compatible check)
+        if (r.remaining() > 0) {
+            out.cpuModel = r.readString();
+            out.gpuModel = r.readString();
+            out.osVersion = r.readString();
+            out.cpuCores = r.readU32();
+            out.uptimeSeconds = r.readU64();
+        } else {
+            out.cpuModel.clear();
+            out.gpuModel.clear();
+            out.osVersion.clear();
+            out.cpuCores = 0;
+            out.uptimeSeconds = 0;
         }
         return true;
     } catch (...) {

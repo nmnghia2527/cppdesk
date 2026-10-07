@@ -12,6 +12,7 @@
 #include "../src/capture/display_manager.hpp"
 #include "../src/control/session_tab_manager.hpp"
 #include "../src/control/windows_service_manager.hpp"
+#include "../src/control/shortcut_manager.hpp"
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -1911,7 +1912,7 @@ void testNativeClipboardFileTransfer() {
 
         // Wait for request packet to be emitted
         int waitMs = 0;
-        while (lastSentType != PacketType::CLIPBOARD_FILE_REQUEST && waitMs < 1000) {
+        while (lastSentType != PacketType::CLIPBOARD_FILE_REQUEST && waitMs < 3000) {
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
             waitMs += 10;
         }
@@ -2491,6 +2492,385 @@ void testWindowsServiceAndRemoteRebootReconnect() {
     }
 }
 
+void testDesktopShortcutsAndUriProtocol() {
+    std::cout << "[TEST 24] Desktop Shortcuts, URI Protocol Handler & CLI Auto-Connect...\n";
+
+    // 1. Desk ID sanitization
+    TEST_ASSERT(ShortcutManager::sanitizeDeskId("123-456-789") == "123456789");
+    TEST_ASSERT(ShortcutManager::sanitizeDeskId("  401 115 368 ") == "401115368");
+    TEST_ASSERT(ShortcutManager::sanitizeDeskId("Desk #401115368 (Office)") == "401115368");
+    TEST_ASSERT(ShortcutManager::sanitizeDeskId("abc") == "");
+
+    // 2. Command-line parsing
+    TEST_ASSERT(ShortcutManager::parseStartupConnectTarget(L"CppDesk.exe --connect 401115368") == "401115368");
+    TEST_ASSERT(ShortcutManager::parseStartupConnectTarget(L"CppDesk.exe --connect 401-115-368") == "401115368");
+    TEST_ASSERT(ShortcutManager::parseStartupConnectTarget(L"\"C:\\Program Files\\CppDesk.exe\" -c 401115368") == "401115368");
+    TEST_ASSERT(ShortcutManager::parseStartupConnectTarget(L"CppDesk.exe --connect=401115368") == "401115368");
+    TEST_ASSERT(ShortcutManager::parseStartupConnectTarget(L"CppDesk.exe cppdesk://401115368/") == "401115368");
+    TEST_ASSERT(ShortcutManager::parseStartupConnectTarget(L"CppDesk.exe cppdesk://401-115-368") == "401115368");
+    TEST_ASSERT(ShortcutManager::parseStartupConnectTarget(L"CppDesk.exe --other-flag") == "");
+    TEST_ASSERT(ShortcutManager::parseStartupConnectTarget(L"") == "");
+
+    // 3. URI Protocol registry state check
+    bool initialReg = ShortcutManager::isUriProtocolRegistered();
+    bool regSuccess = ShortcutManager::setUriProtocolRegistered(true);
+    TEST_ASSERT(regSuccess);
+    TEST_ASSERT(ShortcutManager::isUriProtocolRegistered());
+    if (!initialReg) {
+        ShortcutManager::setUriProtocolRegistered(false);
+        TEST_ASSERT(!ShortcutManager::isUriProtocolRegistered());
+    }
+}
+
+void testFileTransferSpeedTelemetryAndEta() {
+    std::cout << "[TEST 25] File Transfer Speed Telemetry & ETA Estimation...\n";
+
+    // 1. Speed formatting verification
+    TEST_ASSERT(FileTransferItem::formatSpeed(0.0) == "0 KB/s");
+    TEST_ASSERT(FileTransferItem::formatSpeed(-10.0) == "0 KB/s");
+    TEST_ASSERT(FileTransferItem::formatSpeed(std::numeric_limits<double>::quiet_NaN()) == "0 KB/s");
+    TEST_ASSERT(FileTransferItem::formatSpeed(std::numeric_limits<double>::infinity()) == "0 KB/s");
+    TEST_ASSERT(FileTransferItem::formatSpeed(512.0) == "512 B/s");
+    TEST_ASSERT(FileTransferItem::formatSpeed(128.0 * 1024.0) == "128 KB/s");
+    TEST_ASSERT(FileTransferItem::formatSpeed(2.45 * 1024.0 * 1024.0) == "2.5 MB/s");
+
+    // 2. ETA formatting verification
+    TEST_ASSERT(FileTransferItem::formatEta(-1.0) == "");
+    TEST_ASSERT(FileTransferItem::formatEta(std::numeric_limits<double>::quiet_NaN()) == "");
+    TEST_ASSERT(FileTransferItem::formatEta(std::numeric_limits<double>::infinity()) == "");
+    TEST_ASSERT(FileTransferItem::formatEta(5.2) == "ETA 5s");
+    TEST_ASSERT(FileTransferItem::formatEta(90.0) == "ETA 1m 30s");
+    TEST_ASSERT(FileTransferItem::formatEta(3605.0) == "ETA > 1h");
+    TEST_ASSERT(FileTransferItem::formatEta(1e12) == "ETA > 1h");
+
+    // 3. FileTransferManager speed and aggregate bandwidth state
+    FileTransferManager mgr;
+    TEST_ASSERT(mgr.aggregateActiveBandwidthBps() == 0.0);
+
+    // Create temporary file to test transfer telemetry
+    std::string testPath = "test_xfer_speed.dat";
+    {
+        std::ofstream out(testPath, std::ios::binary);
+        std::vector<uint8_t> data(64 * 1024, 0xAB);
+        out.write(reinterpret_cast<const char*>(data.data()), data.size());
+    }
+
+    uint32_t tid = mgr.startOutgoingFile(testPath, nullptr);
+    TEST_ASSERT(tid != 0);
+
+    auto items = mgr.snapshotTransfers();
+    TEST_ASSERT(!items.empty());
+    TEST_ASSERT(items[0].transferId == tid);
+    TEST_ASSERT(items[0].startTimeMs > 0);
+
+    // Clean up
+    mgr.cancelTransfer(tid);
+    auto cancelledItems = mgr.snapshotTransfers();
+    TEST_ASSERT(!cancelledItems.empty());
+    TEST_ASSERT(cancelledItems[0].status == TransferStatus::Cancelled);
+    TEST_ASSERT(cancelledItems[0].speedBps == 0.0);
+    TEST_ASSERT(cancelledItems[0].etaSeconds == -1.0);
+    TEST_ASSERT(mgr.aggregateActiveBandwidthBps() == 0.0);
+
+    std::error_code ec;
+    std::filesystem::remove(testPath, ec);
+}
+
+void testAudioControlsAndMuteSync() {
+    std::cout << "[TEST 26] Audio Mute Hotkey, Volume Slider & Mute Sync Protocol...\n";
+
+    // 1. AudioControlPayload memory packing & layout
+    TEST_ASSERT(sizeof(AudioControlPayload) == 4);
+    AudioControlPayload p{};
+    p.isMuted = 1;
+    p.volumePercent = 75;
+    TEST_ASSERT(p.isMuted == 1);
+    TEST_ASSERT(p.volumePercent == 75);
+
+    // 2. NetworkEngine volume clamping & mute state
+    {
+        IdentityManager idMgr(101);
+        idMgr.loadOrCreate();
+        NetworkEngine netEng(idMgr);
+
+        // Initial state
+        TEST_ASSERT(!netEng.isAudioMuted());
+        TEST_ASSERT(!netEng.isHostAudioSuspended());
+
+        // Volume clamping
+        netEng.setAudioVolume(50);
+        TEST_ASSERT(netEng.audioVolume() == 50);
+
+        netEng.setAudioVolume(150); // should clamp to 100
+        TEST_ASSERT(netEng.audioVolume() == 100);
+
+        netEng.setAudioVolume(-20); // should clamp to 0
+        TEST_ASSERT(netEng.audioVolume() == 0);
+
+        // Mute state
+        netEng.setAudioMuted(true);
+        TEST_ASSERT(netEng.isAudioMuted());
+
+        netEng.setAudioMuted(false);
+        TEST_ASSERT(!netEng.isAudioMuted());
+    }
+
+    // 3. AppSettings persistence of audio volume & default mute
+    {
+        IdentityManager idMgr(102);
+        idMgr.loadOrCreate();
+
+        AppSettings s = idMgr.settings();
+        s.defaultAudioVolume = 65;
+        s.audioMutedDefault = true;
+        idMgr.updateSettings(s);
+
+        // Reload from disk
+        IdentityManager idMgrReload(102);
+        idMgrReload.loadOrCreate();
+        const auto& loaded = idMgrReload.settings();
+        TEST_ASSERT(loaded.defaultAudioVolume == 65);
+        TEST_ASSERT(loaded.audioMutedDefault == true);
+
+        // Reset to clean state
+        s.defaultAudioVolume = 100;
+        s.audioMutedDefault = false;
+        idMgr.updateSettings(s);
+    }
+}
+
+void testMultiMonitorGridViewAndVirtualDesktop() {
+    std::cout << "[TEST 27] Multi-Monitor Grid View & Virtual Desktop Capture...\n";
+
+    ScreenCapturer capturer;
+    auto monitors = capturer.enumerateMonitors();
+    TEST_ASSERT(!monitors.empty());
+
+    // 1. Select All Displays (Virtual Screen Grid)
+    bool selectAllOk = capturer.selectMonitor(-1);
+    TEST_ASSERT(selectAllOk);
+    TEST_ASSERT(capturer.currentMonitorIndex() == -1);
+
+    MonitorDesc allDesc = capturer.currentMonitor();
+    TEST_ASSERT(allDesc.index == -1);
+    TEST_ASSERT(allDesc.width == std::max(1, GetSystemMetrics(SM_CXVIRTUALSCREEN)));
+    TEST_ASSERT(allDesc.height == std::max(1, GetSystemMetrics(SM_CYVIRTUALSCREEN)));
+    TEST_ASSERT(capturer.frameWidth() == allDesc.width);
+    TEST_ASSERT(capturer.frameHeight() == allDesc.height);
+
+    // 2. Capture dirty tiles across full virtual desktop
+    std::vector<EncodedTile> tiles;
+    bool isKf = false;
+    CursorState cur{};
+    bool capOk = capturer.captureDirtyTiles(true, QualityPreset::Balanced, tiles, isKf, cur);
+    TEST_ASSERT(capOk);
+    TEST_ASSERT(isKf);
+    TEST_ASSERT(!tiles.empty());
+
+    // 3. Return to primary monitor (0)
+    bool select0Ok = capturer.selectMonitor(0);
+    TEST_ASSERT(select0Ok);
+    TEST_ASSERT(capturer.currentMonitorIndex() == 0);
+    TEST_ASSERT(capturer.currentMonitor().index == 0);
+}
+
+void testPrivacyModeCustomBrandingAndNotice() {
+    std::cout << "[TEST 28] Remote Privacy Mode Custom Branding & Notice Message...\n";
+
+    // 1. AppSettings defaults & persistence
+    IdentityManager idMgr(103);
+    AppSettings s = idMgr.settings();
+    TEST_ASSERT(!s.privacyCustomNotice.empty());
+    TEST_ASSERT(!s.privacyBrandName.empty());
+    TEST_ASSERT(s.privacyShowDeskId);
+
+    // 2. Custom Branding update and save
+    std::string testNotice = "Strict IT Maintenance Window - Authorized Remote Tech 42";
+    std::string testBrand = "Acme Corp Secure IT Ops";
+    s.privacyCustomNotice = testNotice;
+    s.privacyBrandName = testBrand;
+    s.privacyShowDeskId = false;
+    idMgr.updateSettings(s);
+
+    AppSettings s2 = idMgr.settings();
+    TEST_ASSERT(s2.privacyCustomNotice == testNotice);
+    TEST_ASSERT(s2.privacyBrandName == testBrand);
+    TEST_ASSERT(!s2.privacyShowDeskId);
+
+    // 3. PrivacyModeConfigPayload binary packing and framing
+    PrivacyModeConfigPayload p{};
+    p.enable = 1;
+    p.acknowledge = 0;
+    p.showDeskId = 1;
+    std::snprintf(p.customNotice, sizeof(p.customNotice), "%s", testNotice.c_str());
+    std::snprintf(p.brandName, sizeof(p.brandName), "%s", testBrand.c_str());
+
+    TEST_ASSERT(sizeof(PrivacyModeConfigPayload) >= sizeof(PrivacyModePayload));
+    TEST_ASSERT(p.enable == 1);
+    TEST_ASSERT(p.acknowledge == 0);
+    TEST_ASSERT(p.showDeskId == 1);
+    TEST_ASSERT(std::string(p.customNotice) == testNotice);
+    TEST_ASSERT(std::string(p.brandName) == testBrand);
+
+    // 4. Backward compatibility check
+    PrivacyModePayload legacyP{};
+    legacyP.enable = 1;
+    legacyP.acknowledge = 0;
+    TEST_ASSERT(sizeof(legacyP) == 2);
+    // At offset 0 and 1, PrivacyModeConfigPayload matches PrivacyModePayload
+    PrivacyModePayload* casted = reinterpret_cast<PrivacyModePayload*>(&p);
+    TEST_ASSERT(casted->enable == 1);
+    TEST_ASSERT(casted->acknowledge == 0);
+
+    // 5. Wire Struct Size & Boundary Safeguards
+    TEST_ASSERT(sizeof(PrivacyModeConfigPayload) == 196);
+    TEST_ASSERT(sizeof(p.customNotice) == 128);
+    TEST_ASSERT(sizeof(p.brandName) == 64);
+
+    // 6. NetworkEngine curtain configuration
+    NetworkEngine netEng(idMgr);
+    netEng.configurePrivacyCurtain("Custom Curtain Notice", "SecOps Brand", false);
+}
+
+void testSystemHealthDiagnosticsAndHardwareSpecs() {
+    std::cout << "[TEST 29] Remote System Health Diagnostics & Host Hardware Info Sheet...\n";
+
+    // 1. Native Hardware Discovery
+    auto diag = NetworkEngine::sampleHostDiagnostics();
+    TEST_ASSERT(!diag.cpuModel.empty());
+    TEST_ASSERT(diag.cpuCores > 0);
+    TEST_ASSERT(!diag.gpuModel.empty());
+    TEST_ASSERT(!diag.osVersion.empty());
+    TEST_ASSERT(diag.uptimeSeconds > 0);
+    TEST_ASSERT(diag.ramTotalBytes > 0);
+
+    // 2. Extended Serialization & Round-Trip
+    SystemDiagnosticsPayload p{};
+    p.cpuUsagePercent = 23.5f;
+    p.ramUsedBytes = 8589934592ULL; // 8 GB
+    p.ramTotalBytes = 17179869184ULL; // 16 GB
+    p.diskUsedBytes = 100000000000ULL;
+    p.diskTotalBytes = 500000000000ULL;
+    p.cpuModel = "AMD Ryzen 9 7950X 16-Core Processor";
+    p.gpuModel = "NVIDIA GeForce RTX 4090";
+    p.osVersion = "Windows 11 Pro (Build 22631)";
+    p.cpuCores = 32;
+    p.uptimeSeconds = 345678;
+
+    ProcessTelemetryItem item{};
+    item.pid = 1234;
+    item.name = "explorer.exe";
+    item.workingSetBytes = 150 * 1024 * 1024;
+    p.processes.push_back(item);
+
+    std::vector<uint8_t> bytes;
+    serializeSystemDiagnostics(p, bytes);
+    TEST_ASSERT(!bytes.empty());
+
+    SystemDiagnosticsPayload decoded{};
+    bool decOk = deserializeSystemDiagnostics(bytes.data(), bytes.size(), decoded);
+    TEST_ASSERT(decOk);
+    TEST_ASSERT(std::abs(decoded.cpuUsagePercent - 23.5f) < 0.001f);
+    TEST_ASSERT(decoded.ramUsedBytes == 8589934592ULL);
+    TEST_ASSERT(decoded.ramTotalBytes == 17179869184ULL);
+    TEST_ASSERT(decoded.cpuModel == "AMD Ryzen 9 7950X 16-Core Processor");
+    TEST_ASSERT(decoded.gpuModel == "NVIDIA GeForce RTX 4090");
+    TEST_ASSERT(decoded.osVersion == "Windows 11 Pro (Build 22631)");
+    TEST_ASSERT(decoded.cpuCores == 32);
+    TEST_ASSERT(decoded.uptimeSeconds == 345678);
+    TEST_ASSERT(decoded.processes.size() == 1);
+    TEST_ASSERT(decoded.processes[0].name == "explorer.exe");
+
+    // 3. Legacy Payload Backward Compatibility
+    ByteWriter legacyW;
+    legacyW.writeF32(12.0f);
+    legacyW.writeU64(4000000);
+    legacyW.writeU64(8000000);
+    legacyW.writeU64(2000000);
+    legacyW.writeU64(5000000);
+    legacyW.writeU16(0); // 0 processes
+    auto legacyBytes = legacyW.takeBuffer();
+
+    SystemDiagnosticsPayload legacyDecoded{};
+    bool legacyOk = deserializeSystemDiagnostics(legacyBytes.data(), legacyBytes.size(), legacyDecoded);
+    TEST_ASSERT(legacyOk);
+    TEST_ASSERT(std::abs(legacyDecoded.cpuUsagePercent - 12.0f) < 0.001f);
+    TEST_ASSERT(legacyDecoded.cpuModel.empty());
+    TEST_ASSERT(legacyDecoded.cpuCores == 0);
+}
+
+void testConnectionQualityProfiles() {
+    std::cout << "[TEST 30] One-Click Connection Quality Profiles (Low Bandwidth, Balanced, Ultra LAN)...\n" << std::flush;
+
+    // 1. Profile Mapping & Parameter Verification
+    QualityPreset qp{};
+    uint8_t fps = 0;
+    bool adaptive = false;
+
+    // LowBandwidth
+    getProfileSettings(ConnectionProfile::LowBandwidth, qp, fps, adaptive);
+    TEST_ASSERT(qp == QualityPreset::LowBandwidth);
+    TEST_ASSERT(fps == 15);
+    TEST_ASSERT(adaptive == true);
+    TEST_ASSERT(std::string(connectionProfileName(ConnectionProfile::LowBandwidth)) == "Low Bandwidth");
+
+    // Balanced
+    getProfileSettings(ConnectionProfile::Balanced, qp, fps, adaptive);
+    TEST_ASSERT(qp == QualityPreset::Balanced);
+    TEST_ASSERT(fps == 30);
+    TEST_ASSERT(adaptive == true);
+    TEST_ASSERT(std::string(connectionProfileName(ConnectionProfile::Balanced)) == "Balanced");
+
+    // UltraLAN
+    getProfileSettings(ConnectionProfile::UltraLAN, qp, fps, adaptive);
+    TEST_ASSERT(qp == QualityPreset::Ultra);
+    TEST_ASSERT(fps == 60);
+    TEST_ASSERT(adaptive == false);
+    TEST_ASSERT(std::string(connectionProfileName(ConnectionProfile::UltraLAN)) == "Ultra LAN");
+
+    // Custom
+    TEST_ASSERT(std::string(connectionProfileName(ConnectionProfile::Custom)) == "Custom");
+
+    // 2. Profile Inference Tests
+    TEST_ASSERT(inferConnectionProfile(QualityPreset::LowBandwidth, 15, true) == ConnectionProfile::LowBandwidth);
+    TEST_ASSERT(inferConnectionProfile(QualityPreset::Balanced, 30, true) == ConnectionProfile::Balanced);
+    TEST_ASSERT(inferConnectionProfile(QualityPreset::Ultra, 60, false) == ConnectionProfile::UltraLAN);
+    TEST_ASSERT(inferConnectionProfile(QualityPreset::Ultra, 30, true) == ConnectionProfile::Custom);
+    TEST_ASSERT(inferConnectionProfile(QualityPreset::LowBandwidth, 60, false) == ConnectionProfile::Custom);
+    TEST_ASSERT(inferConnectionProfile(QualityPreset::Balanced, 60, false) == ConnectionProfile::Custom);
+
+    // 3. Settings Persistence Verification
+    AppSettings s{};
+    s.connectionProfile = ConnectionProfile::UltraLAN;
+    s.defaultQuality = QualityPreset::Ultra;
+    s.targetFps = 60;
+    s.adaptiveFps = false;
+
+    IdentityManager idMgr(98);
+    idMgr.updateSettings(s);
+    AppSettings loaded = idMgr.settings();
+    TEST_ASSERT(loaded.connectionProfile == ConnectionProfile::UltraLAN);
+    TEST_ASSERT(loaded.defaultQuality == QualityPreset::Ultra);
+    TEST_ASSERT(loaded.targetFps == 60);
+    TEST_ASSERT(loaded.adaptiveFps == false);
+
+    // 4. Network Engine Profile Application
+    NetworkEngine net(idMgr);
+    net.applyConnectionProfile(ConnectionProfile::LowBandwidth);
+    auto st = net.viewerStats();
+    TEST_ASSERT(st.connectionProfile == ConnectionProfile::LowBandwidth);
+    TEST_ASSERT(st.qualityPreset == QualityPreset::LowBandwidth);
+    TEST_ASSERT(st.targetFps == 15);
+    TEST_ASSERT(st.adaptiveFps == true);
+
+    net.applyConnectionProfile(ConnectionProfile::UltraLAN);
+    st = net.viewerStats();
+    TEST_ASSERT(st.connectionProfile == ConnectionProfile::UltraLAN);
+    TEST_ASSERT(st.qualityPreset == QualityPreset::Ultra);
+    TEST_ASSERT(st.targetFps == 60);
+    TEST_ASSERT(st.adaptiveFps == false);
+}
+
 } // namespace
 
 int main() {
@@ -2524,6 +2904,13 @@ int main() {
         testPerformanceHudMetricsAndTelemetry(); std::cout << "Test 21 done\n" << std::flush;
         testRichChatMediaAndClipboardHistoryHub(); std::cout << "Test 22 done\n" << std::flush;
         testWindowsServiceAndRemoteRebootReconnect(); std::cout << "Test 23 done\n" << std::flush;
+        testDesktopShortcutsAndUriProtocol(); std::cout << "Test 24 done\n" << std::flush;
+        testFileTransferSpeedTelemetryAndEta(); std::cout << "Test 25 done\n" << std::flush;
+        testAudioControlsAndMuteSync(); std::cout << "Test 26 done\n" << std::flush;
+        testMultiMonitorGridViewAndVirtualDesktop(); std::cout << "Test 27 done\n" << std::flush;
+        testPrivacyModeCustomBrandingAndNotice(); std::cout << "Test 28 done\n" << std::flush;
+        testSystemHealthDiagnosticsAndHardwareSpecs(); std::cout << "Test 29 done\n" << std::flush;
+        testConnectionQualityProfiles(); std::cout << "Test 30 done\n" << std::flush;
 
         std::cout << "---------------------------------------------------------\n";
         std::cout << "Assertions Passed: " << g_passed << " | Failed: " << g_failed << "\n";

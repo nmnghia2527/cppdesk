@@ -435,6 +435,11 @@ bool IdentityManager::loadOrCreate() {
                     int q = std::clamp(std::stoi(val), 0, 2);
                     settings_.defaultQuality = static_cast<QualityPreset>(q);
                 } catch (...) {}
+            } else if (key == "connection_profile") {
+                try {
+                    int cp = std::clamp(std::stoi(val), 0, 3);
+                    settings_.connectionProfile = static_cast<ConnectionProfile>(cp);
+                } catch (...) {}
             } else if (key == "default_scale") {
                 try {
                     settings_.defaultScaleMode = static_cast<uint8_t>(std::clamp(std::stoi(val), 0, 2));
@@ -461,6 +466,19 @@ bool IdentityManager::loadOrCreate() {
                 settings_.minimizeToTray = (val == "1" || val == "true");
             } else if (key == "hardware_acceleration") {
                 settings_.hardwareAcceleration = (val == "1" || val == "true");
+            } else if (key == "default_audio_volume") {
+                try {
+                    int v = std::stoi(val);
+                    settings_.defaultAudioVolume = static_cast<uint8_t>(std::clamp(v, 0, 100));
+                } catch (...) {}
+            } else if (key == "audio_muted_default") {
+                settings_.audioMutedDefault = (val == "1" || val == "true");
+            } else if (key == "privacy_notice") {
+                settings_.privacyCustomNotice = val;
+            } else if (key == "privacy_brand") {
+                settings_.privacyBrandName = val;
+            } else if (key == "privacy_show_id") {
+                settings_.privacyShowDeskId = (val == "1" || val == "true");
             } else if (key == "recent") {
                 // Backward-compatible pipe format:
                 // 3 fields: deskId|hostname|address
@@ -544,6 +562,7 @@ bool IdentityManager::save() const {
     out << "target_fps=" << static_cast<int>(clampTargetFps(settings_.targetFps)) << "\n";
     out << "adaptive_fps=" << (settings_.adaptiveFps ? "1" : "0") << "\n";
     out << "default_quality=" << static_cast<int>(settings_.defaultQuality) << "\n";
+    out << "connection_profile=" << static_cast<int>(settings_.connectionProfile) << "\n";
     out << "default_scale=" << static_cast<int>(settings_.defaultScaleMode) << "\n";
     out << "show_remote_cursor=" << (settings_.showRemoteCursor ? "1" : "0") << "\n";
     out << "show_session_hud=" << (settings_.showSessionHud ? "1" : "0") << "\n";
@@ -555,6 +574,8 @@ bool IdentityManager::save() const {
     out << "notification_sound=" << (settings_.enableNotificationSounds ? "1" : "0") << "\n";
     out << "minimize_to_tray=" << (settings_.minimizeToTray ? "1" : "0") << "\n";
     out << "hardware_acceleration=" << (settings_.hardwareAcceleration ? "1" : "0") << "\n";
+    out << "default_audio_volume=" << static_cast<int>(settings_.defaultAudioVolume) << "\n";
+    out << "audio_muted_default=" << (settings_.audioMutedDefault ? "1" : "0") << "\n";
     auto sanitizeIniValue = [](const std::string& in) -> std::string {
         std::string out;
         out.reserve(in.size());
@@ -567,6 +588,10 @@ bool IdentityManager::save() const {
         }
         return out;
     };
+
+    out << "privacy_notice=" << sanitizeIniValue(settings_.privacyCustomNotice) << "\n";
+    out << "privacy_brand=" << sanitizeIniValue(settings_.privacyBrandName) << "\n";
+    out << "privacy_show_id=" << (settings_.privacyShowDeskId ? "1" : "0") << "\n";
 
     for (const auto& r : recentSessions_) {
         out << "recent=" << r.deskId << "|" << sanitizeIniValue(r.hostname) << "|" << sanitizeIniValue(r.address) << "|" << (r.isFavorite ? "1" : "0")

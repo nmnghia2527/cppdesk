@@ -472,6 +472,28 @@ std::vector<MonitorDesc> ScreenCapturer::enumerateMonitors() {
 
 bool ScreenCapturer::selectMonitor(int monitorIndex) {
     if (monitors_.empty()) enumerateMonitors();
+
+    if (monitorIndex == -1) {
+        activeMonitorIdx_ = -1;
+        activeMonitor_.index = -1;
+        activeMonitor_.x = GetSystemMetrics(SM_XVIRTUALSCREEN);
+        activeMonitor_.y = GetSystemMetrics(SM_YVIRTUALSCREEN);
+        activeMonitor_.width = std::max(1, GetSystemMetrics(SM_CXVIRTUALSCREEN));
+        activeMonitor_.height = std::max(1, GetSystemMetrics(SM_CYVIRTUALSCREEN));
+        activeMonitor_.isPrimary = false;
+        activeMonitor_.name = "All Displays (Grid View)";
+
+        frameW_ = activeMonitor_.width;
+        frameH_ = activeMonitor_.height;
+        currentFrame_.assign(static_cast<size_t>(frameW_) * frameH_ * 4, 0);
+        prevTileHashes_.clear();
+        hasValidFrame_ = false;
+        dxgiRecoveryState_ = DxgiRecoveryState::Disabled;
+        lastDxgiAttemptTick_ = 0;
+        releaseDxgi();
+        return true;
+    }
+
     if (monitorIndex < 0 || monitorIndex >= static_cast<int>(monitors_.size())) {
         monitorIndex = 0;
     }
@@ -774,7 +796,7 @@ bool ScreenCapturer::captureDirtyTiles(
     bool captured = false;
 
     // Check if background recovery from FallbackGdi should be attempted (500ms cooldown)
-    if (dxgiRecoveryState_ == DxgiRecoveryState::FallbackGdi) {
+    if (dxgiRecoveryState_ == DxgiRecoveryState::FallbackGdi && activeMonitorIdx_ >= 0) {
         uint64_t now = GetTickCount64();
         if (now - lastDxgiAttemptTick_ >= 500) {
             lastDxgiAttemptTick_ = now;

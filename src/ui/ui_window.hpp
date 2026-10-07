@@ -5,6 +5,7 @@
 #include "../net/network_engine.hpp"
 #include "../media/session_recorder.hpp"
 #include "../control/session_tab_manager.hpp"
+#include "../control/shortcut_manager.hpp"
 #include "notification_manager.hpp"
 
 #ifndef WIN32_LEAN_AND_MEAN
@@ -50,7 +51,9 @@ enum class FocusedField : uint8_t {
     EditNotes       = 14,
     RelayAuthKey    = 15,
     StunServer      = 16,
-    ClipboardSearch = 17
+    ClipboardSearch = 17,
+    PrivacyBrand    = 18,
+    PrivacyNotice   = 19
 };
 
 enum class DrawerTab : uint8_t {
@@ -109,7 +112,7 @@ struct WidgetAnimState {
 
 class CppDeskWindow {
 public:
-    CppDeskWindow(IdentityManager& identity, NetworkEngine& network);
+    CppDeskWindow(IdentityManager& identity, NetworkEngine& network, const std::string& autoConnectTarget = "");
     ~CppDeskWindow();
 
     bool create(HINSTANCE hInstance, int nCmdShow);
@@ -148,6 +151,7 @@ private:
     void drawUpdateRequiredModal(float width, float height, float modalProgress);
     void drawRebootConfirmModal(float width, float height, float modalProgress);
     void drawHwAccelRestartModal(float width, float height, float modalProgress);
+    void drawAudioVolumePopup(float anchorX, float anchorY);
     void drawToastBanner(float width, float height, float toastProgress);
     void triggerUpdateCheck(bool manual);
 
@@ -234,6 +238,7 @@ private:
     bool                    isFullscreen_ = false;
     WINDOWPLACEMENT         savedWindowPlacement_{};
 
+    std::string             autoConnectTarget_;
     std::string             remoteIdInput_;
     std::string             remotePasswordInput_;
     std::string             localPasswordEdit_;
@@ -241,6 +246,8 @@ private:
     std::string             relayAuthKeyEdit_;
     std::string             stunServerEdit_;
     uint8_t                 relayModeEdit_ = 0;
+    std::string             privacyBrandEdit_;
+    std::string             privacyNoticeEdit_;
     bool                    relayDiagnosticRunning_ = false;
     std::string             relayDiagnosticStatus_;
     int                     relayDiagnosticLatency_ = -1;
@@ -345,6 +352,9 @@ private:
     bool                    showPerformanceHud_ = false;
     float                   hudAnimT_ = 0.0f;
     float                   hudAnimVel_ = 0.0f;
+
+    // Master Volume Popup state (Phase 16)
+    bool                    showAudioVolumePopup_ = false;
 
     // Remote Terminal UI state (v2.1.0)
     std::string             terminalInputText_;

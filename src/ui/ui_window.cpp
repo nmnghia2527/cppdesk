@@ -165,17 +165,23 @@ std::wstring utf8ToWide(const std::string& str) {
 
 } // namespace
 
-CppDeskWindow::CppDeskWindow(IdentityManager& identity, NetworkEngine& network)
+CppDeskWindow::CppDeskWindow(IdentityManager& identity, NetworkEngine& network, const std::string& autoConnectTarget)
     : identity_(identity)
     , network_(network)
+    , autoConnectTarget_(autoConnectTarget)
 {
     const auto& s = identity_.settings();
     relayServerEdit_ = s.relayServer.empty() ? identity_.relayServerAddress() : s.relayServer;
     relayAuthKeyEdit_ = s.relayAuthKey;
     stunServerEdit_ = s.stunServer;
     relayModeEdit_ = s.relayMode;
+    privacyBrandEdit_ = s.privacyBrandName;
+    privacyNoticeEdit_ = s.privacyCustomNotice;
     themeAnimT_ = s.darkTheme ? 1.0f : 0.0f;
     scaleMode_ = static_cast<ScaleMode>(std::clamp<int>(s.defaultScaleMode, 0, 3));
+    network_.setAudioVolume(s.defaultAudioVolume);
+    network_.setAudioMuted(s.audioMutedDefault);
+    network_.configurePrivacyCurtain(s.privacyCustomNotice, s.privacyBrandName, s.privacyShowDeskId);
     updateActivePalette(themeAnimT_);
 
     LARGE_INTEGER freq{}, now{};
@@ -289,6 +295,11 @@ bool CppDeskWindow::create(HINSTANCE hInstance, int nCmdShow) {
     UpdateWindow(hwnd_);
 
     SetTimer(hwnd_, 1, 32, nullptr);
+
+    if (!autoConnectTarget_.empty()) {
+        remoteIdInput_ = autoConnectTarget_;
+        initiateConnection();
+    }
     return true;
 }
 
@@ -487,7 +498,7 @@ bool CppDeskWindow::stepAnimations(float dt) {
     float winW = static_cast<float>(std::max<LONG>(1, rcCl.right - rcCl.left));
     float pillHalfW = 355.0f;
     bool islandHovered = (mouseInsideClient_ && (mouseY_ <= 42.0f || (mouseY_ <= floatingToolbarY_ + 54.0f && std::fabs(mouseX_ - winW * 0.5f) <= pillHalfW + 24.0f)));
-    bool islandDropdownOpen = (showDisplayMenu_ || showAdminMenu_ || showQualityMenu_);
+    bool islandDropdownOpen = (showDisplayMenu_ || showAdminMenu_ || showQualityMenu_ || showAudioVolumePopup_);
     float targetToolbarY = (isFullscreen_ && activeTab_ == ActiveTab::RemoteSession)
         ? ((floatingToolbarPinned_ || islandHovered || islandDropdownOpen) ? 14.0f : -64.0f)
         : -64.0f;
@@ -1922,6 +1933,21 @@ void CppDeskWindow::drawDashboardView(const UiRect& bounds, float alpha) {
             std::string peerHost = cardItems[i].hostname;
             std::string peerEp = cardItems[i].endpoint;
 
+            // Desktop Shortcut (.lnk) Button
+            if (peerId > 0) {
+                UiRect lnkBtn = { cardR.right - 120.0f, cardR.top + 7.0f, cardR.right - 96.0f, cardR.top + 27.0f };
+                drawButton("peer_lnk_" + std::to_string(i), lnkBtn, "↗",
+                           COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_SECONDARY,
+                           6.0f, [this, peerId, item = cardItems[i]]() {
+                               std::string idStr = std::to_string(peerId);
+                               if (ShortcutManager::createDesktopShortcut(idStr, item.alias)) {
+                                   showToast("Desktop shortcut created: " + (item.alias.empty() ? CryptoUtils::formatDeskId(peerId) : item.alias));
+                               } else {
+                                   showToast("Failed to create desktop shortcut", true);
+                               }
+                           }, fmtSmall_, true, COL_BORDER, COL_PRIMARY_ACCENT);
+            }
+
             // Edit Alias / Tag / Notes Button
             if (peerId > 0) {
                 UiRect editBtn = { cardR.right - 92.0f, cardR.top + 7.0f, cardR.right - 68.0f, cardR.top + 27.0f };
@@ -1965,7 +1991,7 @@ void CppDeskWindow::drawDashboardView(const UiRect& bounds, float alpha) {
 
             std::string idFormatted = (peerId > 0) ? CryptoUtils::formatDeskId(peerId) : peerEp;
             std::string mainTitle = !cardItems[i].alias.empty() ? cardItems[i].alias : idFormatted;
-            drawText(mainTitle, { cardR.left + 14.0f, cardR.top + 28.0f, cardR.right - 108.0f, cardR.top + 54.0f },
+            drawText(mainTitle, { cardR.left + 14.0f, cardR.top + 28.0f, cardR.right - 128.0f, cardR.top + 54.0f },
                      fmtSubheading_, lerpColor(COL_TEXT_PRIMARY, COL_PRIMARY_ACCENT, std::clamp(cardHover, 0.0f, 1.0f) * 0.7f));
 
             std::string subInfo;
@@ -1974,7 +2000,7 @@ void CppDeskWindow::drawDashboardView(const UiRect& bounds, float alpha) {
             } else {
                 subInfo = peerHost.empty() ? peerEp : peerHost;
             }
-            drawText(subInfo, { cardR.left + 14.0f, cardR.top + 54.0f, cardR.right - 108.0f, cardR.bottom - 10.0f },
+            drawText(subInfo, { cardR.left + 14.0f, cardR.top + 54.0f, cardR.right - 128.0f, cardR.bottom - 10.0f },
                      fmtSmall_, COL_TEXT_SECONDARY);
 
             std::string targetStr = (peerId > 0) ? CryptoUtils::formatDeskId(peerId) : peerEp;
@@ -2257,26 +2283,57 @@ void CppDeskWindow::drawRemoteSessionView(const UiRect& bounds, float alpha) {
                    }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
         rx = matchBtn.left - 6.0f;
 
-        std::string qualLabel = (stats.qualityPreset == QualityPreset::Ultra) ? "Quality: High" :
-                                (stats.qualityPreset == QualityPreset::Balanced) ? "Quality: Bal" : "Quality: Fast";
-        UiRect qualBtn = { rx - 94.0f, hudBar.top + 8.0f, rx, hudBar.bottom - 8.0f };
-        drawButton("sess_quality", qualBtn, qualLabel,
-                   COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 7.5f, [this, stats]() {
-                       QualityPreset nextQ = (stats.qualityPreset == QualityPreset::Ultra) ? QualityPreset::Balanced :
-                                             (stats.qualityPreset == QualityPreset::Balanced) ? QualityPreset::LowBandwidth :
-                                             QualityPreset::Ultra;
-                       network_.requestVideoSettings(nextQ, stats.activeMonitorIndex, true, stats.targetFps, stats.adaptiveFps ? 1 : 0);
-                   }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
-        rx = qualBtn.left - 6.0f;
+        ConnectionProfile curProf = stats.connectionProfile;
+        std::string profLabel;
+        if (curProf == ConnectionProfile::LowBandwidth) profLabel = "Profile: Low BW";
+        else if (curProf == ConnectionProfile::UltraLAN) profLabel = "Profile: Ultra LAN";
+        else if (curProf == ConnectionProfile::Balanced) profLabel = "Profile: Balanced";
+        else profLabel = "Profile: Custom";
+
+        UiRect profBtn = { rx - 116.0f, hudBar.top + 8.0f, rx, hudBar.bottom - 8.0f };
+        drawButton("sess_profile", profBtn, profLabel,
+                   (curProf == ConnectionProfile::UltraLAN) ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
+                   (curProf == ConnectionProfile::UltraLAN) ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
+                   (curProf == ConnectionProfile::UltraLAN) ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
+                   7.5f, [this, curProf]() {
+                       ConnectionProfile nextProf;
+                       if (curProf == ConnectionProfile::UltraLAN) nextProf = ConnectionProfile::Balanced;
+                       else if (curProf == ConnectionProfile::Balanced) nextProf = ConnectionProfile::LowBandwidth;
+                       else nextProf = ConnectionProfile::UltraLAN;
+                       network_.applyConnectionProfile(nextProf);
+                       AppSettings ns = identity_.settings();
+                       ns.connectionProfile = nextProf;
+                       QualityPreset qp; uint8_t fps; bool adap;
+                       getProfileSettings(nextProf, qp, fps, adap);
+                       ns.defaultQuality = qp;
+                       ns.targetFps = fps;
+                       ns.adaptiveFps = adap;
+                       identity_.updateSettings(ns);
+                       showToast(std::string("Switched Profile: ") + connectionProfileName(nextProf));
+                   }, fmtSmall_, curProf != ConnectionProfile::UltraLAN, COL_BORDER,
+                   (curProf == ConnectionProfile::UltraLAN) ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
+        rx = profBtn.left - 6.0f;
 
         if (stats.monitorCount > 1) {
-            std::string monLabel = "Display " + std::to_string(stats.activeMonitorIndex + 1);
-            UiRect monBtn = { rx - 78.0f, hudBar.top + 8.0f, rx, hudBar.bottom - 8.0f };
+            std::string monLabel = (stats.activeMonitorIndex == -1) ? "All Displays" : ("Display " + std::to_string(stats.activeMonitorIndex + 1));
+            UiRect monBtn = { rx - 88.0f, hudBar.top + 8.0f, rx, hudBar.bottom - 8.0f };
             drawButton("sess_monitor", monBtn, monLabel,
-                       COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 7.5f, [this, stats]() {
-                           int nextMon = (stats.activeMonitorIndex + 1) % std::max(1, stats.monitorCount);
-                           network_.requestVideoSettings(stats.qualityPreset, nextMon, true, stats.targetFps, stats.adaptiveFps ? 1 : 0);
-                       }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
+                       stats.activeMonitorIndex == -1 ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
+                       stats.activeMonitorIndex == -1 ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
+                       stats.activeMonitorIndex == -1 ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
+                       7.5f, [this, stats]() {
+                           int nextMon = 0;
+                           if (stats.activeMonitorIndex >= 0 && stats.activeMonitorIndex + 1 < stats.monitorCount) {
+                               nextMon = stats.activeMonitorIndex + 1;
+                           } else if (stats.activeMonitorIndex >= 0) {
+                               nextMon = -1;
+                           } else {
+                               nextMon = 0;
+                           }
+                           network_.selectRemoteMonitor(nextMon);
+                           showToast(nextMon == -1 ? "Switched to All Displays (Grid View)" : ("Switched to Display " + std::to_string(nextMon + 1)));
+                       }, fmtSmall_, stats.activeMonitorIndex != -1, COL_BORDER,
+                       stats.activeMonitorIndex == -1 ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
             rx = monBtn.left - 6.0f;
         }
 
@@ -2310,9 +2367,8 @@ void CppDeskWindow::drawRemoteSessionView(const UiRect& bounds, float alpha) {
                    isMuted ? COL_SEC_BTN_BG : COL_PRIMARY_ACCENT,
                    isMuted ? COL_SEC_BTN_HV : COL_PRIMARY_ACCENT_HV,
                    isMuted ? COL_TEXT_PRIMARY : COL_TEXT_ON_ACCENT,
-                   7.5f, [this, isMuted]() {
-                       network_.setAudioMuted(!isMuted);
-                       showToast(!isMuted ? "Audio muted" : "Audio unmuted");
+                   7.5f, [this]() {
+                       showAudioVolumePopup_ = !showAudioVolumePopup_;
                    }, fmtSmall_, isMuted, COL_BORDER,
                    isMuted ? COL_TEXT_ACCENT : COL_TEXT_ON_ACCENT);
         rx = audioBtn.left - 6.0f;
@@ -2452,6 +2508,55 @@ void CppDeskWindow::drawRemoteSessionView(const UiRect& bounds, float alpha) {
             renderTarget_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(curX, curY), 5.0f, 5.0f), solidBrush_);
             solidBrush_->SetColor(rgba(255, 255, 255, 0.98f));
             renderTarget_->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(curX, curY), 6.0f, 6.0f), solidBrush_, 1.6f);
+        }
+
+        // Multi-Monitor Grid Partition Overlays & Badges (Phase 17)
+        if (stats.activeMonitorIndex == -1 && stats.monitors.size() > 1) {
+            int minX = 0, minY = 0, maxX = 0, maxY = 0;
+            bool hasBounds = false;
+            for (const auto& m : stats.monitors) {
+                if (!hasBounds) {
+                    minX = m.x; minY = m.y;
+                    maxX = m.x + m.width; maxY = m.y + m.height;
+                    hasBounds = true;
+                } else {
+                    minX = std::min(minX, m.x);
+                    minY = std::min(minY, m.y);
+                    maxX = std::max(maxX, m.x + m.width);
+                    maxY = std::max(maxY, m.y + m.height);
+                }
+            }
+            float totalW = static_cast<float>(std::max(1, maxX - minX));
+            float totalH = static_cast<float>(std::max(1, maxY - minY));
+
+            for (size_t i = 0; i < stats.monitors.size(); ++i) {
+                const auto& m = stats.monitors[i];
+                float relX = (m.x - minX) / totalW;
+                float relY = (m.y - minY) / totalH;
+                float relW = m.width / totalW;
+                float relH = m.height / totalH;
+                UiRect subRect = {
+                    renderedCanvasRect_.left + relX * renderedCanvasRect_.width(),
+                    renderedCanvasRect_.top + relY * renderedCanvasRect_.height(),
+                    renderedCanvasRect_.left + (relX + relW) * renderedCanvasRect_.width(),
+                    renderedCanvasRect_.top + (relY + relH) * renderedCanvasRect_.height()
+                };
+
+                // Subtle hairline border around each monitor partition
+                strokeRoundRect(subRect, 0.0f, withAlpha(COL_PRIMARY_ACCENT, 0.40f * alpha), 1.0f);
+
+                // Sleek clickable badge at the top-left of each monitor
+                float badgeW = 126.0f;
+                float badgeH = 22.0f;
+                UiRect badgeRect = { subRect.left + 8.0f, subRect.top + 8.0f, subRect.left + 8.0f + badgeW, subRect.top + 8.0f + badgeH };
+                std::string badgeLabel = "Disp " + std::to_string(m.index + 1) + " (" + std::to_string(m.width) + "x" + std::to_string(m.height) + ")";
+                drawButton("grid_mon_badge_" + std::to_string(i), badgeRect, badgeLabel,
+                           rgba(20, 24, 32, 0.75f), rgba(30, 42, 60, 0.90f),
+                           COL_TEXT_ON_ACCENT, 5.0f, [this, m]() {
+                               network_.selectRemoteMonitor(m.index);
+                               showToast("Focused Display " + std::to_string(m.index + 1));
+                           }, fmtSmall_, true, withAlpha(COL_PRIMARY_ACCENT, 0.6f));
+            }
         }
 
         // Draw Whiteboard overlay annotations and floating tool palette
@@ -2621,6 +2726,11 @@ void CppDeskWindow::drawRemoteSessionView(const UiRect& bounds, float alpha) {
 
     // Real-Time Performance & Diagnostics HUD Overlay (Phase 10)
     drawPerformanceHud(stageRect_, alpha);
+
+    // Master Volume Popup (Phase 16)
+    if (showAudioVolumePopup_ && !isFullscreen_) {
+        drawAudioVolumePopup(stageRect_.right - 140.0f, stageRect_.top + 8.0f);
+    }
 }
 
 // ---------------- macOS System Settings View ----------------
@@ -2750,7 +2860,62 @@ void CppDeskWindow::drawSettingsView(const UiRect& bounds, float alpha) {
 
     ly = themeBox.bottom + 10.0f;
 
-    // 2. Frame Rate
+    // 2. Connection Quality Profiles (Phase 20)
+    UiRect profBox = { lx, ly, lrx, ly + 68.0f };
+    fillRoundRect(profBox, 12.0f, COL_BG_SUBTLE);
+    strokeRoundRect(profBox, 12.0f, COL_BORDER);
+
+    ConnectionProfile curProf = inferConnectionProfile(s.defaultQuality, s.targetFps, s.adaptiveFps);
+    std::string profHeader = "QUALITY PRESET PROFILE: " + std::string(connectionProfileName(curProf));
+    drawText(profHeader,
+             { profBox.left + 16.0f, profBox.top + 8.0f, profBox.right - 16.0f, profBox.top + 22.0f },
+             fmtSmall_, (curProf == ConnectionProfile::Custom) ? COL_WARNING : COL_TEXT_ACCENT);
+
+    float thirdW = (innerW - 32.0f - 16.0f) / 3.0f;
+    UiRect pLowBtn   = { profBox.left + 16.0f, profBox.top + 26.0f, profBox.left + 16.0f + thirdW, profBox.top + 58.0f };
+    UiRect pBalBtn   = { pLowBtn.right + 8.0f, profBox.top + 26.0f, pLowBtn.right + 8.0f + thirdW, profBox.top + 58.0f };
+    UiRect pUltraBtn = { pBalBtn.right + 8.0f, profBox.top + 26.0f, profBox.right - 16.0f, profBox.top + 58.0f };
+
+    auto applyProfUi = [this](ConnectionProfile cp) {
+        AppSettings ns = identity_.settings();
+        ns.connectionProfile = cp;
+        QualityPreset qp; uint8_t fps; bool adap;
+        getProfileSettings(cp, qp, fps, adap);
+        ns.defaultQuality = qp;
+        ns.targetFps = fps;
+        ns.adaptiveFps = adap;
+        identity_.updateSettings(ns);
+        network_.applyConnectionProfile(cp);
+        showToast(std::string("Applied ") + connectionProfileName(cp) + " profile");
+    };
+
+    drawButton("sett_prof_low", pLowBtn, "Low Bandwidth",
+               (curProf == ConnectionProfile::LowBandwidth) ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
+               (curProf == ConnectionProfile::LowBandwidth) ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
+               (curProf == ConnectionProfile::LowBandwidth) ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
+               8.0f, [applyProfUi]() { applyProfUi(ConnectionProfile::LowBandwidth); }, fmtSmall_,
+               curProf != ConnectionProfile::LowBandwidth, COL_BORDER,
+               (curProf == ConnectionProfile::LowBandwidth) ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
+
+    drawButton("sett_prof_bal", pBalBtn, "Balanced",
+               (curProf == ConnectionProfile::Balanced) ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
+               (curProf == ConnectionProfile::Balanced) ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
+               (curProf == ConnectionProfile::Balanced) ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
+               8.0f, [applyProfUi]() { applyProfUi(ConnectionProfile::Balanced); }, fmtSmall_,
+               curProf != ConnectionProfile::Balanced, COL_BORDER,
+               (curProf == ConnectionProfile::Balanced) ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
+
+    drawButton("sett_prof_ultra", pUltraBtn, "Ultra LAN",
+               (curProf == ConnectionProfile::UltraLAN) ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
+               (curProf == ConnectionProfile::UltraLAN) ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
+               (curProf == ConnectionProfile::UltraLAN) ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
+               8.0f, [applyProfUi]() { applyProfUi(ConnectionProfile::UltraLAN); }, fmtSmall_,
+               curProf != ConnectionProfile::UltraLAN, COL_BORDER,
+               (curProf == ConnectionProfile::UltraLAN) ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
+
+    ly = profBox.bottom + 10.0f;
+
+    // 3. Frame Rate
     UiRect fpsBox = { lx, ly, lrx, ly + 106.0f };
     fillRoundRect(fpsBox, 12.0f, COL_BG_SUBTLE);
     strokeRoundRect(fpsBox, 12.0f, COL_BORDER);
@@ -2759,7 +2924,6 @@ void CppDeskWindow::drawSettingsView(const UiRect& bounds, float alpha) {
              { fpsBox.left + 16.0f, fpsBox.top + 8.0f, fpsBox.right - 16.0f, fpsBox.top + 22.0f },
              fmtSmall_, COL_TEXT_ACCENT);
 
-    float thirdW = (innerW - 32.0f - 16.0f) / 3.0f;
     uint8_t curFps = clampTargetFps(s.targetFps);
     UiRect fps15Btn = { fpsBox.left + 16.0f, fpsBox.top + 26.0f, fpsBox.left + 16.0f + thirdW, fpsBox.top + 58.0f };
     UiRect fps30Btn = { fps15Btn.right + 8.0f, fpsBox.top + 26.0f, fps15Btn.right + 8.0f + thirdW, fpsBox.top + 58.0f };
@@ -2924,7 +3088,53 @@ void CppDeskWindow::drawSettingsView(const UiRect& bounds, float alpha) {
 
     ly = ovBox.bottom + 10.0f;
 
-    // 5. About CppDesk (draw if at least 40px remaining)
+    // 5. Curtain Screen & Privacy Branding (v3.2.0 Phase 18)
+    UiRect privBox = { lx, ly, lrx, ly + 128.0f };
+    fillRoundRect(privBox, 12.0f, COL_BG_SUBTLE);
+    strokeRoundRect(privBox, 12.0f, COL_BORDER);
+
+    drawText("CURTAIN SCREEN & PRIVACY BRANDING",
+             { privBox.left + 16.0f, privBox.top + 8.0f, privBox.right - 16.0f, privBox.top + 22.0f },
+             fmtSmall_, COL_TEXT_ACCENT);
+
+    // Row 1: Brand / Organization Title (Left) & Save Button (Right)
+    float py1 = privBox.top + 25.0f;
+    float pSaveW = 68.0f;
+    UiRect brandField = { privBox.left + 16.0f, py1, privBox.right - 16.0f - pSaveW - 8.0f, py1 + 28.0f };
+    UiRect privSaveBtn = { privBox.right - 16.0f - pSaveW, py1, privBox.right - 16.0f, py1 + 28.0f };
+
+    drawTextField("field_priv_brand", FocusedField::PrivacyBrand, brandField,
+                  privacyBrandEdit_, "Organization / Brand Name...", false);
+
+    drawButton("sett_priv_save", privSaveBtn, "Save",
+               COL_PRIMARY_ACCENT, COL_PRIMARY_ACCENT_HV, COL_TEXT_ON_ACCENT, 6.0f, [this]() {
+                   AppSettings ns = identity_.settings();
+                   ns.privacyBrandName = privacyBrandEdit_.empty() ? "CppDesk Enterprise Security" : privacyBrandEdit_;
+                   ns.privacyCustomNotice = privacyNoticeEdit_.empty() ? "Screen output hidden and local physical inputs secured for authorized administration." : privacyNoticeEdit_;
+                   identity_.updateSettings(ns);
+                   network_.configurePrivacyCurtain(ns.privacyCustomNotice, ns.privacyBrandName, ns.privacyShowDeskId);
+                   showToast("Privacy screen branding updated");
+               }, fmtSmall_);
+
+    // Row 2: Custom Notice Message
+    float py2 = py1 + 32.0f;
+    UiRect noticeField = { privBox.left + 16.0f, py2, privBox.right - 16.0f, py2 + 28.0f };
+    drawTextField("field_priv_notice", FocusedField::PrivacyNotice, noticeField,
+                  privacyNoticeEdit_, "Custom Security Notice Text...", false);
+
+    // Row 3: Show Desk ID toggle
+    float py3 = py2 + 32.0f;
+    UiRect showIdToggle = { privBox.left + 16.0f, py3, privBox.right - 16.0f, py3 + 24.0f };
+    drawToggleSwitch("sett_priv_show_id", showIdToggle, s.privacyShowDeskId, "Display Workstation Desk ID on Curtain Screen", [this]() {
+        AppSettings ns = identity_.settings();
+        ns.privacyShowDeskId = !ns.privacyShowDeskId;
+        identity_.updateSettings(ns);
+        network_.configurePrivacyCurtain(ns.privacyCustomNotice, ns.privacyBrandName, ns.privacyShowDeskId);
+    });
+
+    ly = privBox.bottom + 10.0f;
+
+    // 6. About CppDesk (draw if at least 40px remaining)
     if (leftCard.bottom - 10.0f > ly + 40.0f) {
         UiRect aboutBox = { lx, ly, lrx, leftCard.bottom - 16.0f };
         fillRoundRect(aboutBox, 12.0f, COL_BG_SUBTLE);
@@ -3028,12 +3238,12 @@ void CppDeskWindow::drawSettingsView(const UiRect& bounds, float alpha) {
 
     ry = permBox.bottom + 10.0f;
 
-    // 2. Notifications & System Tray
-    UiRect notifBox = { rx, ry, rrx, ry + 132.0f };
+    // 2. Notifications & System Integration
+    UiRect notifBox = { rx, ry, rrx, ry + 158.0f };
     fillRoundRect(notifBox, 12.0f, COL_BG_SUBTLE);
     strokeRoundRect(notifBox, 12.0f, COL_BORDER);
 
-    drawText("NOTIFICATIONS & TRAY",
+    drawText("SYSTEM & NOTIFICATIONS",
              { notifBox.left + 16.0f, notifBox.top + 8.0f, notifBox.right - 16.0f, notifBox.top + 22.0f },
              fmtSmall_, COL_TEXT_ACCENT);
 
@@ -3067,6 +3277,14 @@ void CppDeskWindow::drawSettingsView(const UiRect& bounds, float alpha) {
                          AppSettings ns = identity_.settings();
                          ns.minimizeToTray = !ns.minimizeToTray;
                          identity_.updateSettings(ns);
+                     });
+    ny += 25.0f;
+
+    bool isUriReg = ShortcutManager::isUriProtocolRegistered();
+    drawToggleSwitch("sett_reg_uri", { notifBox.left + 16.0f, ny, notifBox.right - 16.0f, ny + 24.0f },
+                     isUriReg, "Register cppdesk:// URL Protocol Handler", [this, isUriReg]() {
+                         ShortcutManager::setUriProtocolRegistered(!isUriReg);
+                         showToast(!isUriReg ? "Registered cppdesk:// URL protocol" : "Unregistered cppdesk:// URL protocol");
                      });
 
     ry = notifBox.bottom + 10.0f;
@@ -3456,9 +3674,12 @@ void CppDeskWindow::drawFileTransferDrawer(const UiRect& bounds, float slideProg
                        network_.pushLocalClipboardNow();
                        showToast("Clipboard synced");
                    }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
-        y += 42.0f;
-
-        drawText("TRANSFERS", { x, y, rx - 60.0f, y + 18.0f }, fmtSmall_, COL_TEXT_MUTED);
+        double activeBw = network_.fileTransferManager().aggregateActiveBandwidthBps();
+        std::string xferHeader = "TRANSFERS";
+        if (activeBw > 0.0) {
+            xferHeader += " • " + FileTransferItem::formatSpeed(activeBw);
+        }
+        drawText(xferHeader, { x, y, rx - 60.0f, y + 18.0f }, fmtSmall_, activeBw > 0.0 ? COL_PRIMARY_ACCENT : COL_TEXT_MUTED);
         UiRect clrBtn = { rx - 56.0f, y - 2.0f, rx, y + 20.0f };
         drawButton("drawer_clear_done", clrBtn, "Clear", COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_SECONDARY, 6.0f, [this]() {
             network_.fileTransferManager().clearCompleted();
@@ -3670,7 +3891,44 @@ void CppDeskWindow::drawFileTransferDrawer(const UiRect& bounds, float slideProg
 
         auto diag = network_.latestDiagnostics();
 
-        // 1. Hardware Metrics Card (CPU, RAM, Disk)
+        // 1. Host Hardware Info Sheet Card (Phase 19)
+        UiRect hwBox = { x, y, rx, y + 96.0f };
+        fillRoundRect(hwBox, 11.0f, COL_BG_SUBTLE);
+        strokeRoundRect(hwBox, 11.0f, COL_BORDER);
+
+        float hwx = hwBox.left + 14.0f;
+        float hwrx = hwBox.right - 14.0f;
+        float hwy = hwBox.top + 8.0f;
+
+        drawText("HARDWARE SPECIFICATIONS",
+                 { hwx, hwy, hwrx, hwy + 15.0f }, fmtSmall_, COL_TEXT_ACCENT);
+        hwy += 18.0f;
+
+        // CPU & Cores
+        std::string cpuText = (diag.cpuModel.empty() ? "x86_64 Processor" : diag.cpuModel);
+        if (diag.cpuCores > 0) cpuText += " (" + std::to_string(diag.cpuCores) + " Cores)";
+        drawText("CPU: " + cpuText, { hwx, hwy, hwrx, hwy + 16.0f }, fmtSmall_, COL_TEXT_PRIMARY);
+        hwy += 18.0f;
+
+        // GPU Model
+        std::string gpuText = (diag.gpuModel.empty() ? "Display Adapter" : diag.gpuModel);
+        drawText("GPU: " + gpuText, { hwx, hwy, hwrx, hwy + 16.0f }, fmtSmall_, COL_TEXT_PRIMARY);
+        hwy += 18.0f;
+
+        // OS & Uptime
+        std::string osText = (diag.osVersion.empty() ? "Windows" : diag.osVersion);
+        uint64_t upSec = diag.uptimeSeconds;
+        uint64_t days = upSec / 86400;
+        uint64_t hrs = (upSec % 86400) / 3600;
+        uint64_t mins = (upSec % 3600) / 60;
+        char upBuf[64];
+        if (days > 0) std::snprintf(upBuf, sizeof(upBuf), " • Uptime: %llud %lluh %llum", (unsigned long long)days, (unsigned long long)hrs, (unsigned long long)mins);
+        else std::snprintf(upBuf, sizeof(upBuf), " • Uptime: %lluh %llum", (unsigned long long)hrs, (unsigned long long)mins);
+        drawText("OS: " + osText + upBuf, { hwx, hwy, hwrx, hwy + 16.0f }, fmtSmall_, COL_TEXT_SECONDARY);
+
+        y = hwBox.bottom + 10.0f;
+
+        // 2. Hardware Metrics Card (CPU, RAM, Disk)
         UiRect metricsBox = { x, y, rx, y + 104.0f };
         fillRoundRect(metricsBox, 11.0f, COL_BG_SUBTLE);
         strokeRoundRect(metricsBox, 11.0f, COL_BORDER);
@@ -3980,7 +4238,7 @@ void CppDeskWindow::drawDynamicIslandToolbar(float width, float /*height*/) {
     curX += 136.0f;
 
     // 1. Display Switcher
-    std::string monLabel = "Disp " + std::to_string(stats.activeMonitorIndex + 1) + " ▾";
+    std::string monLabel = (stats.activeMonitorIndex == -1) ? "All Disp ▾" : ("Disp " + std::to_string(stats.activeMonitorIndex + 1) + " ▾");
     UiRect monBtn = { curX, pillTop + 6.0f, curX + 78.0f, pillBottom - 6.0f };
     drawButton("island_mon_btn", monBtn, monLabel,
                showDisplayMenu_ ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
@@ -4035,17 +4293,20 @@ void CppDeskWindow::drawDynamicIslandToolbar(float width, float /*height*/) {
                }, fmtSmall_, !clipOn, COL_BORDER);
     curX = clipBtn.right + 6.0f;
 
-    // Audio Mute Button
+    // Audio Mute / Volume Button
     bool islandAudioMuted = network_.isAudioMuted();
-    std::string islandAudioLabel = islandAudioMuted ? "Muted" : "Vol: 100%";
+    int islandVol = network_.audioVolume();
+    std::string islandAudioLabel = islandAudioMuted ? "Muted" : ("Vol: " + std::to_string(islandVol) + "%");
     UiRect islandAudioBtn = { curX, pillTop + 6.0f, curX + 76.0f, pillBottom - 6.0f };
     drawButton("island_audio_btn", islandAudioBtn, islandAudioLabel,
                islandAudioMuted ? COL_SEC_BTN_BG : COL_PRIMARY_ACCENT,
                islandAudioMuted ? COL_SEC_BTN_HV : COL_PRIMARY_ACCENT_HV,
                islandAudioMuted ? COL_TEXT_PRIMARY : COL_TEXT_ON_ACCENT,
-               8.0f, [this, islandAudioMuted]() {
-                   network_.setAudioMuted(!islandAudioMuted);
-                   showToast(!islandAudioMuted ? "Audio muted" : "Audio unmuted");
+               8.0f, [this]() {
+                   showAudioVolumePopup_ = !showAudioVolumePopup_;
+                   showDisplayMenu_ = false;
+                   showAdminMenu_ = false;
+                   showQualityMenu_ = false;
                }, fmtSmall_, islandAudioMuted, COL_BORDER);
     curX = islandAudioBtn.right + 6.0f;
 
@@ -4150,7 +4411,7 @@ void CppDeskWindow::drawDynamicIslandToolbar(float width, float /*height*/) {
     // Dropdown 1: Display Switcher Menu
     if (showDisplayMenu_) {
         float itemH = 32.0f;
-        int count = std::max(1, static_cast<int>(stats.monitors.size()));
+        int count = stats.monitors.empty() ? 1 : (static_cast<int>(stats.monitors.size()) + (stats.monitors.size() > 1 ? 1 : 0));
         float dropH = count * itemH + 16.0f;
         UiRect dropRect = { monBtn.left - 20.0f, pillBottom + 6.0f, monBtn.left + 230.0f, pillBottom + 6.0f + dropH };
         drawCardShadow(dropRect, 14.0f, 0.95f);
@@ -4164,6 +4425,20 @@ void CppDeskWindow::drawDynamicIslandToolbar(float width, float /*height*/) {
                        COL_PRIMARY_ACCENT, COL_PRIMARY_ACCENT_HV, COL_TEXT_ON_ACCENT, 6.0f,
                        [this]() { showDisplayMenu_ = false; }, fmtSmall_);
         } else {
+            if (stats.monitors.size() > 1) {
+                bool isAll = (stats.activeMonitorIndex == -1);
+                UiRect allItemR = { dropRect.left + 8.0f, dy, dropRect.right - 8.0f, dy + 28.0f };
+                drawButton("drop_mon_all", allItemR, "All Displays (Grid View)",
+                           isAll ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
+                           isAll ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
+                           isAll ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
+                           6.0f, [this]() {
+                               network_.selectRemoteMonitor(-1);
+                               showDisplayMenu_ = false;
+                               showToast("Switched to All Displays (Grid View)");
+                           }, fmtSmall_, !isAll, COL_BORDER);
+                dy += itemH;
+            }
             for (size_t i = 0; i < stats.monitors.size(); ++i) {
                 const auto& m = stats.monitors[i];
                 bool isCur = (m.index == stats.activeMonitorIndex);
@@ -4289,6 +4564,10 @@ void CppDeskWindow::drawDynamicIslandToolbar(float width, float /*height*/) {
         addFpsItem("drop_fps_30", "FPS Cap: 30 FPS", 30);
         addFpsItem("drop_fps_15", "FPS Cap: 15 FPS", 15);
     }
+
+    if (showAudioVolumePopup_) {
+        drawAudioVolumePopup(islandAudioBtn.centerX(), pillBottom + 6.0f);
+    }
 }
 
 // ---------------- Dynamic Island Clipboard File Transfer Progress Pill ----------------
@@ -4382,7 +4661,7 @@ void CppDeskWindow::drawShortcutsModal(float width, float height, float modalPro
     }, false });
 
     float mw = 560.0f;
-    float mh = 440.0f;
+    float mh = 500.0f;
     UiRect modal = { (width - mw) * 0.5f, (height - mh) * 0.5f, (width + mw) * 0.5f, (height + mh) * 0.5f };
 
     float scale = 0.90f + 0.10f * modalProgress;
@@ -4417,10 +4696,12 @@ void CppDeskWindow::drawShortcutsModal(float width, float height, float modalPro
         { "F1  or  ?", "Open / Close this Shortcuts Cheat Sheet" },
         { "F8", "Toggle Remote Input Control (View-Only vs Control)" },
         { "Ctrl + Alt + [1-9]", "Switch Remote Display Monitor instantly" },
+        { "Ctrl + Alt + 0", "Switch to All Displays (Grid View)" },
         { "Ctrl + Alt + L", "Lock Remote Workstation" },
         { "Ctrl + Alt + D", "Show Desktop (Minimize all remote windows)" },
         { "Ctrl + Alt + Del", "Open Task Manager / Lock Screen" },
         { "Ctrl + Shift + O", "Toggle Real-Time Performance & Diagnostics HUD" },
+        { "Ctrl + Shift + M", "Toggle Remote Audio Mute / Unmute" },
         { "Esc", "Dismiss open menus, modals, or exit fullscreen" }
     };
 
@@ -5229,6 +5510,115 @@ void CppDeskWindow::drawToastBanner(float width, float height, float toastProgre
              fmtBodyBold_, withAlpha(COL_TEXT_PRIMARY, alpha), DWRITE_TEXT_ALIGNMENT_CENTER);
 }
 
+// ---------------- Master Volume Popup (Phase 16) ----------------
+
+void CppDeskWindow::drawAudioVolumePopup(float anchorX, float anchorY) {
+    if (!showAudioVolumePopup_) return;
+
+    RECT rcCl{};
+    GetClientRect(hwnd_, &rcCl);
+    float winW = static_cast<float>(std::max<LONG>(1, rcCl.right - rcCl.left));
+    float winH = static_cast<float>(std::max<LONG>(1, rcCl.bottom - rcCl.top));
+
+    bool isMuted = network_.isAudioMuted();
+    int curVol = network_.audioVolume();
+
+    float pw = 240.0f;
+    float ph = 126.0f;
+    float px = std::clamp(anchorX - pw * 0.5f, 20.0f, winW - pw - 20.0f);
+    float py = std::min(anchorY, winH - ph - 20.0f);
+    UiRect popRect = { px, py, px + pw, py + ph };
+
+    // Scrim/click outside to dismiss
+    clickRegions_.push_back(ClickRegion{ UiRect{ 0.0f, 0.0f, winW, winH }, "audio_pop_scrim", [this]() {
+        showAudioVolumePopup_ = false;
+    }, false });
+
+    drawCardShadow(popRect, 14.0f, 0.95f);
+    fillRoundRect(popRect, 14.0f, withAlpha(COL_BG_CARD, 0.98f));
+    strokeRoundRect(popRect, 14.0f, COL_BORDER, 1.0f);
+
+    float tx = popRect.left + 16.0f;
+    float ty = popRect.top + 14.0f;
+    float tr = popRect.right - 16.0f;
+
+    // Header: "Remote Audio" and Close button
+    drawText("Remote Audio", { tx, ty, tr - 28.0f, ty + 20.0f }, fmtSubheading_, COL_TEXT_PRIMARY);
+
+    UiRect closeBtn = { tr - 22.0f, ty - 2.0f, tr, ty + 20.0f };
+    drawButton("audio_pop_close", closeBtn, "x",
+               COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 10.0f,
+               [this]() { showAudioVolumePopup_ = false; }, fmtSmall_);
+
+    ty += 24.0f;
+    std::string volStatus = isMuted ? "Status: Muted (Ctrl+Shift+M)" : ("Volume: " + std::to_string(curVol) + "% (Ctrl+Shift+M)");
+    drawText(volStatus, { tx, ty, tr, ty + 16.0f }, fmtSmall_, isMuted ? COL_TEXT_SECONDARY : COL_PRIMARY_ACCENT);
+
+    ty += 22.0f;
+    // Slider Track
+    float trackH = 8.0f;
+    UiRect trackRect = { tx, ty, tr, ty + trackH };
+    fillRoundRect(trackRect, 4.0f, COL_STAGE_BG);
+    strokeRoundRect(trackRect, 4.0f, COL_BORDER, 1.0f);
+
+    float fillWidth = isMuted ? 0.0f : (trackRect.width() * (curVol / 100.0f));
+    if (fillWidth > 0.0f) {
+        UiRect fillRect = { trackRect.left, trackRect.top, trackRect.left + fillWidth, trackRect.bottom };
+        fillRoundRect(fillRect, 4.0f, COL_PRIMARY_ACCENT);
+    }
+    // Slider thumb
+    float thumbX = isMuted ? trackRect.left : (trackRect.left + fillWidth);
+    solidBrush_->SetColor(COL_PRIMARY_ACCENT);
+    renderTarget_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(thumbX, trackRect.centerY()), 6.0f, 6.0f), solidBrush_);
+    solidBrush_->SetColor(rgba(255, 255, 255, 0.8f));
+    renderTarget_->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(thumbX, trackRect.centerY()), 6.0f, 6.0f), solidBrush_, 1.5f);
+
+    // Click anywhere on track to set volume
+    UiRect trackClickZone = trackRect.inflate(0.0f, 6.0f);
+    clickRegions_.push_back(ClickRegion{ trackClickZone, "audio_pop_slider", [this, trackRect]() {
+        if (trackRect.width() > 1.0f) {
+            float frac = (mouseX_ - trackRect.left) / trackRect.width();
+            int newVol = std::clamp(static_cast<int>(frac * 100.0f + 0.5f), 0, 100);
+            network_.setAudioVolume(newVol);
+            if (network_.isAudioMuted() && newVol > 0) {
+                network_.setAudioMuted(false);
+            }
+        }
+    }, false });
+
+    ty += 18.0f;
+    // Action Buttons: Mute/Unmute Toggle & Presets
+    float btnW = 54.0f;
+    float btnH = 22.0f;
+    UiRect muteBtn = { tx, ty, tx + btnW + 10.0f, ty + btnH };
+    drawButton("audio_pop_mute_btn", muteBtn, isMuted ? "Unmute" : "Mute",
+               isMuted ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
+               isMuted ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
+               isMuted ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
+               6.0f, [this, isMuted]() {
+                   network_.setAudioMuted(!isMuted);
+                   showToast(!isMuted ? "Audio muted (Ctrl+Shift+M)" : "Audio unmuted (Ctrl+Shift+M)");
+               }, fmtSmall_, !isMuted, COL_BORDER);
+
+    float pxPreset = muteBtn.right + 8.0f;
+    auto addPreset = [&](const std::string& id, const std::string& lbl, int pVol) {
+        UiRect pr = { pxPreset, ty, pxPreset + 38.0f, ty + btnH };
+        bool isCurrent = (!isMuted && curVol == pVol);
+        drawButton(id, pr, lbl,
+                   isCurrent ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
+                   isCurrent ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
+                   isCurrent ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
+                   6.0f, [this, pVol]() {
+                       network_.setAudioVolume(pVol);
+                       network_.setAudioMuted(false);
+                   }, fmtSmall_, !isCurrent, COL_BORDER);
+        pxPreset = pr.right + 4.0f;
+    };
+    addPreset("audio_pop_p30", "30%", 30);
+    addPreset("audio_pop_p60", "60%", 60);
+    addPreset("audio_pop_p100", "100%", 100);
+}
+
 // ---------------- Input & Interaction Handlers ----------------
 
 bool CppDeskWindow::mapCanvasPointToNormalized(float x, float y, float& outNormX, float& outNormY) const {
@@ -5286,6 +5676,8 @@ std::string* CppDeskWindow::activeFocusedTextBuffer() {
     if (focusedField_ == FocusedField::EditTag) return &editTagInput_;
     if (focusedField_ == FocusedField::EditNotes) return &editNotesInput_;
     if (focusedField_ == FocusedField::ClipboardSearch) return &clipSearchQuery_;
+    if (focusedField_ == FocusedField::PrivacyBrand) return &privacyBrandEdit_;
+    if (focusedField_ == FocusedField::PrivacyNotice) return &privacyNoticeEdit_;
     return nullptr;
 }
 
@@ -5502,7 +5894,14 @@ void CppDeskWindow::onCharInput(wchar_t ch) {
     std::string* target = activeFocusedTextBuffer();
     if (!target) return;
 
-    size_t maxLen = (focusedField_ == FocusedField::ChatInput) ? 240 : 64;
+    size_t maxLen = 64;
+    if (focusedField_ == FocusedField::ChatInput || focusedField_ == FocusedField::TerminalInput || focusedField_ == FocusedField::EditNotes) {
+        maxLen = 240;
+    } else if (focusedField_ == FocusedField::PrivacyNotice) {
+        maxLen = 127;
+    } else if (focusedField_ == FocusedField::PrivacyBrand) {
+        maxLen = 63;
+    }
 
     if (ch == L'\b') {
         if (!target->empty()) target->pop_back();
@@ -5526,11 +5925,20 @@ void CppDeskWindow::onCharInput(wchar_t ch) {
             sendChatFromInput();
         } else if (focusedField_ == FocusedField::TerminalInput) {
             sendTerminalFromInput();
+        } else if (focusedField_ == FocusedField::PrivacyBrand || focusedField_ == FocusedField::PrivacyNotice) {
+            AppSettings ns = identity_.settings();
+            ns.privacyBrandName = privacyBrandEdit_.empty() ? "CppDesk Enterprise Security" : privacyBrandEdit_;
+            ns.privacyCustomNotice = privacyNoticeEdit_.empty() ? "Screen output hidden and local physical inputs secured for authorized administration." : privacyNoticeEdit_;
+            identity_.updateSettings(ns);
+            network_.configurePrivacyCurtain(ns.privacyCustomNotice, ns.privacyBrandName, ns.privacyShowDeskId);
+            showToast("Privacy screen branding updated");
         }
     } else if (ch == L'\t') {
         if (focusedField_ == FocusedField::RemoteId) focusedField_ = FocusedField::RemotePassword;
         else if (focusedField_ == FocusedField::RemotePassword) focusedField_ = FocusedField::LocalPassword;
         else if (focusedField_ == FocusedField::LocalPassword) focusedField_ = FocusedField::RelayServer;
+        else if (focusedField_ == FocusedField::PrivacyBrand) focusedField_ = FocusedField::PrivacyNotice;
+        else if (focusedField_ == FocusedField::PrivacyNotice) focusedField_ = FocusedField::PrivacyBrand;
         else focusedField_ = FocusedField::RemoteId;
     } else if (ch == 22) {
         if (focusedField_ == FocusedField::ChatInput) {
@@ -5570,6 +5978,11 @@ void CppDeskWindow::onKeyEvent(uint16_t vk, uint16_t scan, bool isDown, bool isE
         if (vk == VK_ESCAPE) {
             if (showPerformanceHud_) {
                 showPerformanceHud_ = false;
+                InvalidateRect(hwnd_, nullptr, FALSE);
+                return;
+            }
+            if (showAudioVolumePopup_) {
+                showAudioVolumePopup_ = false;
                 InvalidateRect(hwnd_, nullptr, FALSE);
                 return;
             }
@@ -5617,8 +6030,21 @@ void CppDeskWindow::onKeyEvent(uint16_t vk, uint16_t scan, bool isDown, bool isE
             InvalidateRect(hwnd_, nullptr, FALSE);
             return;
         }
-        // Remote Hotkeys: Ctrl+Alt+[1-9], Ctrl+Alt+L, Ctrl+Alt+D, Ctrl+Alt+Del
+        // Ctrl+Shift+M: In-Session Audio Mute Hotkey
+        if ((GetKeyState(VK_CONTROL) & 0x8000) && (GetKeyState(VK_SHIFT) & 0x8000) && (vk == 'M' || vk == 'm')) {
+            bool nowMuted = !network_.isAudioMuted();
+            network_.setAudioMuted(nowMuted);
+            showToast(nowMuted ? "Audio: Muted (Ctrl+Shift+M)" : "Audio: Unmuted (Ctrl+Shift+M)");
+            InvalidateRect(hwnd_, nullptr, FALSE);
+            return;
+        }
+        // Remote Hotkeys: Ctrl+Alt+[1-9], Ctrl+Alt+0, Ctrl+Alt+G, Ctrl+Alt+L, Ctrl+Alt+D, Ctrl+Alt+Del
         if (activeTab_ == ActiveTab::RemoteSession && (GetKeyState(VK_CONTROL) & 0x8000) && (GetKeyState(VK_MENU) & 0x8000)) {
+            if (vk == '0' || vk == 'G' || vk == 'g') {
+                network_.selectRemoteMonitor(-1);
+                showToast("Switched to All Displays (Grid View)");
+                return;
+            }
             if (vk >= '1' && vk <= '9') {
                 int monIdx = (vk - '1');
                 network_.selectRemoteMonitor(monIdx);

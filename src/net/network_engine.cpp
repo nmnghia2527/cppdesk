@@ -13,6 +13,8 @@
 #include <audioclient.h>
 #include <tlhelp32.h>
 #include <psapi.h>
+#include <dxgi.h>
+#include <cpuid.h>
 
 #include <cstring>
 #include <chrono>
@@ -91,6 +93,23 @@ bool sendAllBytes(SOCKET s, const void* buf, size_t len) {
     return true;
 }
 
+struct CurtainWindowConfig {
+    std::wstring brandName = L"CppDesk Enterprise Security";
+    std::wstring noticeText = L"Screen output hidden and local physical inputs secured for authorized administration.";
+    std::wstring deskIdText = L"";
+    bool showDeskId = true;
+};
+static CurtainWindowConfig s_curtainConfig;
+
+static std::wstring utf8ToWide(const std::string& str) {
+    if (str.empty()) return L"";
+    int req = MultiByteToWideChar(CP_UTF8, 0, str.c_str(), static_cast<int>(str.size()), nullptr, 0);
+    if (req <= 0) return L"";
+    std::wstring out(req, L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, str.c_str(), static_cast<int>(str.size()), &out[0], req);
+    return out;
+}
+
 static LRESULT CALLBACK PrivacyCurtainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
         case WM_ERASEBKGND:
@@ -100,41 +119,136 @@ static LRESULT CALLBACK PrivacyCurtainWndProc(HWND hwnd, UINT msg, WPARAM wParam
             HDC hdc = BeginPaint(hwnd, &ps);
             RECT rc;
             GetClientRect(hwnd, &rc);
+            int w = std::max<int>(1, rc.right - rc.left);
+            int h = std::max<int>(1, rc.bottom - rc.top);
+
+            // Double buffering memory DC to eliminate flicker
+            HDC memDC = CreateCompatibleDC(hdc);
+            HBITMAP memBmp = CreateCompatibleBitmap(hdc, w, h);
+            HBITMAP oldBmp = (HBITMAP)SelectObject(memDC, memBmp);
+
+            // 1. OLED Deep Dark Background (#0B0E14)
             HBRUSH bgBrush = CreateSolidBrush(RGB(11, 14, 20));
-            FillRect(hdc, &rc, bgBrush);
+            FillRect(memDC, &rc, bgBrush);
             DeleteObject(bgBrush);
 
-            SetBkMode(hdc, TRANSPARENT);
-            SetTextColor(hdc, RGB(229, 9, 20));
-            HFONT hFontTitle = CreateFontW(32, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
+            // 2. Central Frosted Security Card Container
+            int cardW = std::clamp(w - 60, 360, 680);
+            int cardH = std::clamp(h - 60, 300, 420);
+            int cardX = (w - cardW) / 2;
+            int cardY = (h - cardH) / 2;
+            RECT cardRc = { cardX, cardY, cardX + cardW, cardY + cardH };
+
+            HBRUSH cardBrush = CreateSolidBrush(RGB(20, 24, 34));
+            HPEN cardPen = CreatePen(PS_SOLID, 1, RGB(36, 45, 61));
+            HBRUSH oldBrush = (HBRUSH)SelectObject(memDC, cardBrush);
+            HPEN oldPen = (HPEN)SelectObject(memDC, cardPen);
+            RoundRect(memDC, cardRc.left, cardRc.top, cardRc.right, cardRc.bottom, 22, 22);
+            SelectObject(memDC, oldBrush);
+            SelectObject(memDC, oldPen);
+            DeleteObject(cardBrush);
+            DeleteObject(cardPen);
+
+            // 3. Central Shield Polygon Icon (Emerald Accent #10B981)
+            int shieldCX = cardX + cardW / 2;
+            int shieldCY = cardY + 58;
+            POINT shieldPts[5] = {
+                { shieldCX, shieldCY - 26 },
+                { shieldCX + 24, shieldCY - 14 },
+                { shieldCX + 16, shieldCY + 18 },
+                { shieldCX, shieldCY + 28 },
+                { shieldCX - 16, shieldCY + 18 }
+            };
+            HBRUSH shieldBrush = CreateSolidBrush(RGB(16, 185, 129));
+            HPEN shieldPen = CreatePen(PS_SOLID, 2, RGB(5, 150, 105));
+            oldBrush = (HBRUSH)SelectObject(memDC, shieldBrush);
+            oldPen = (HPEN)SelectObject(memDC, shieldPen);
+            Polygon(memDC, shieldPts, 5);
+
+            // Inner lock core
+            HBRUSH innerBrush = CreateSolidBrush(RGB(20, 24, 34));
+            SelectObject(memDC, innerBrush);
+            Ellipse(memDC, shieldCX - 5, shieldCY - 4, shieldCX + 5, shieldCY + 6);
+            SelectObject(memDC, oldBrush);
+            SelectObject(memDC, oldPen);
+            DeleteObject(shieldBrush);
+            DeleteObject(shieldPen);
+            DeleteObject(innerBrush);
+
+            // 4. Branded Typography & Badges
+            SetBkMode(memDC, TRANSPARENT);
+
+            // Brand Title (Segoe UI Bold 24pt, #F8FAFC)
+            HFONT hFontBrand = CreateFontW(25, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
+                                           DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                                           CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+            HFONT hOldFont = (HFONT)SelectObject(memDC, hFontBrand);
+            SetTextColor(memDC, RGB(248, 250, 252));
+            RECT brandRc = { cardX + 24, shieldCY + 36, cardX + cardW - 24, shieldCY + 70 };
+            DrawTextW(memDC, s_curtainConfig.brandName.c_str(), -1, &brandRc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+
+            // Status Pill: [ SECURED PRIVACY CURTAIN ACTIVE ]
+            HFONT hFontPill = CreateFontW(13, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
                                           DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                                           CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
-            HFONT hOldFont = (HFONT)SelectObject(hdc, hFontTitle);
+            SelectObject(memDC, hFontPill);
+            SetTextColor(memDC, RGB(16, 185, 129));
+            RECT pillRc = { cardX + 24, brandRc.bottom + 2, cardX + cardW - 24, brandRc.bottom + 20 };
+            DrawTextW(memDC, L"[ SECURED PRIVACY CURTAIN ACTIVE ]", -1, &pillRc, DT_CENTER | DT_SINGLELINE);
 
-            RECT titleRc = rc;
-            titleRc.bottom = rc.top + (rc.bottom - rc.top) / 2;
-            DrawTextW(hdc, L"CppDesk Privacy Mode Active", -1, &titleRc, DT_CENTER | DT_BOTTOM | DT_SINGLELINE);
+            // Custom Security Notice (#CBD5E1, Segoe UI 15pt)
+            HFONT hFontNotice = CreateFontW(16, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                                            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                                            CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+            SelectObject(memDC, hFontNotice);
+            SetTextColor(memDC, RGB(203, 213, 225));
+            RECT noticeRc = { cardX + 32, pillRc.bottom + 12, cardX + cardW - 32, pillRc.bottom + 76 };
+            DrawTextW(memDC, s_curtainConfig.noticeText.c_str(), -1, &noticeRc, DT_CENTER | DT_WORDBREAK);
 
-            HFONT hFontSub = CreateFontW(18, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-                                         DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                                         CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
-            SelectObject(hdc, hFontSub);
-            SetTextColor(hdc, RGB(200, 210, 225));
+            // Desk ID Pill Badge
+            HFONT hFontId = nullptr;
+            if (s_curtainConfig.showDeskId && !s_curtainConfig.deskIdText.empty()) {
+                RECT idBox = { cardX + cardW / 2 - 130, noticeRc.bottom + 8, cardX + cardW / 2 + 130, noticeRc.bottom + 34 };
+                HBRUSH idBrush = CreateSolidBrush(RGB(28, 33, 46));
+                HPEN idPen = CreatePen(PS_SOLID, 1, RGB(45, 55, 75));
+                HBRUSH prevBrush = (HBRUSH)SelectObject(memDC, idBrush);
+                HPEN prevPen = (HPEN)SelectObject(memDC, idPen);
+                RoundRect(memDC, idBox.left, idBox.top, idBox.right, idBox.bottom, 8, 8);
+                SelectObject(memDC, prevBrush);
+                SelectObject(memDC, prevPen);
+                DeleteObject(idBrush);
+                DeleteObject(idPen);
 
-            RECT subRc = rc;
-            subRc.top = titleRc.bottom + 16;
-            subRc.bottom = subRc.top + 30;
-            DrawTextW(hdc, L"Screen output hidden and local physical inputs secured for authorized remote administration.", -1, &subRc, DT_CENTER | DT_TOP | DT_SINGLELINE);
+                hFontId = CreateFontW(14, 0, 0, 0, FW_MEDIUM, FALSE, FALSE, FALSE,
+                                      DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                                      CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+                SelectObject(memDC, hFontId);
+                SetTextColor(memDC, RGB(148, 163, 184));
+                DrawTextW(memDC, s_curtainConfig.deskIdText.c_str(), -1, &idBox, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            }
 
-            RECT hintRc = rc;
-            hintRc.top = subRc.bottom + 12;
-            hintRc.bottom = hintRc.top + 30;
-            SetTextColor(hdc, RGB(130, 145, 165));
-            DrawTextW(hdc, L"Host emergency failsafe: Press Ctrl+Alt+Del on host to release control.", -1, &hintRc, DT_CENTER | DT_TOP | DT_SINGLELINE);
+            // Host Physical Abort Failsafe
+            HFONT hFontFailsafe = CreateFontW(12, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                                             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                                             CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+            SelectObject(memDC, hFontFailsafe);
+            SetTextColor(memDC, RGB(100, 116, 139));
+            RECT hintRc = { cardX + 24, cardRc.bottom - 36, cardX + cardW - 24, cardRc.bottom - 12 };
+            DrawTextW(memDC, L"Local emergency failsafe: Press Ctrl+Alt+Del on host physical keyboard to unlock workstation.", -1, &hintRc, DT_CENTER | DT_SINGLELINE);
 
-            SelectObject(hdc, hOldFont);
-            DeleteObject(hFontTitle);
-            DeleteObject(hFontSub);
+            // Transfer backbuffer to screen
+            BitBlt(hdc, 0, 0, w, h, memDC, 0, 0, SRCCOPY);
+
+            // Cleanup GDI objects
+            SelectObject(memDC, hOldFont);
+            DeleteObject(hFontBrand);
+            DeleteObject(hFontPill);
+            DeleteObject(hFontNotice);
+            if (hFontId) DeleteObject(hFontId);
+            DeleteObject(hFontFailsafe);
+            SelectObject(memDC, oldBmp);
+            DeleteObject(memBmp);
+            DeleteDC(memDC);
             EndPaint(hwnd, &ps);
             return 0;
         }
@@ -1668,7 +1782,7 @@ void NetworkEngine::runHostSession(uintptr_t clientSock, std::string clientIp) {
                         }
                         case PacketType::MONITOR_SELECT: {
                             int32_t monIdx = r.readI32();
-                            if (monIdx >= 0) {
+                            if (monIdx >= -1) {
                                 requestedMonitor.store(monIdx);
                                 forceKeyframeFlag.store(true);
                             }
@@ -1689,7 +1803,7 @@ void NetworkEngine::runHostSession(uintptr_t clientSock, std::string clientIp) {
                             int32_t monIdx = r.readI32();
                             uint8_t reqKf = r.readU8();
                             requestedQuality.store(q);
-                            if (monIdx >= 0) requestedMonitor.store(monIdx);
+                            if (monIdx >= -1) requestedMonitor.store(monIdx);
                             if (reqKf != 0) forceKeyframeFlag.store(true);
                             if (r.hasRemaining(1)) {
                                 uint8_t fpsReq = r.readU8();
@@ -1827,7 +1941,23 @@ void NetworkEngine::runHostSession(uintptr_t clientSock, std::string clientIp) {
                         }
                         case PacketType::PRIVACY_MODE_TOGGLE: {
                             if (perms & PERM_INPUT) {
-                                if (r.hasRemaining(sizeof(PrivacyModePayload))) {
+                                if (r.hasRemaining(sizeof(PrivacyModeConfigPayload))) {
+                                    PrivacyModeConfigPayload cp{};
+                                    r.readBytes(&cp, sizeof(cp));
+                                    cp.customNotice[sizeof(cp.customNotice) - 1] = '\0';
+                                    cp.brandName[sizeof(cp.brandName) - 1] = '\0';
+                                    setHostPrivacyMode(cp.enable != 0, cp.customNotice, cp.brandName, cp.showDeskId != 0);
+
+                                    PrivacyModeConfigPayload ack{};
+                                    ack.enable = isHostPrivacyModeActive() ? 1 : 0;
+                                    ack.acknowledge = 1;
+                                    ack.showDeskId = cp.showDeskId;
+                                    std::snprintf(ack.customNotice, sizeof(ack.customNotice), "%s", cp.customNotice);
+                                    std::snprintf(ack.brandName, sizeof(ack.brandName), "%s", cp.brandName);
+                                    ByteWriter w;
+                                    w.writeBytes(&ack, sizeof(ack));
+                                    sendHostEncryptedPacket(PacketType::PRIVACY_MODE_TOGGLE, 0, w.buffer().data(), w.buffer().size());
+                                } else if (r.hasRemaining(sizeof(PrivacyModePayload))) {
                                     PrivacyModePayload p{};
                                     r.readBytes(&p, sizeof(p));
                                     setHostPrivacyMode(p.enable != 0);
@@ -1839,6 +1969,14 @@ void NetworkEngine::runHostSession(uintptr_t clientSock, std::string clientIp) {
                                     w.writeBytes(&ack, sizeof(ack));
                                     sendHostEncryptedPacket(PacketType::PRIVACY_MODE_TOGGLE, 0, w.buffer().data(), w.buffer().size());
                                 }
+                            }
+                            break;
+                        }
+                        case PacketType::AUDIO_CONTROL: {
+                            if (r.hasRemaining(sizeof(AudioControlPayload))) {
+                                AudioControlPayload p{};
+                                r.readBytes(&p, sizeof(p));
+                                hostAudioSuspended_.store(p.isMuted != 0);
                             }
                             break;
                         }
@@ -3239,6 +3377,11 @@ void NetworkEngine::requestVideoSettings(QualityPreset preset, int monitorIndex,
             0.0f
         );
         viewerStats_.networkThrottled = (viewerStats_.effectiveFpsCap < viewerStats_.targetFps);
+        viewerStats_.connectionProfile = inferConnectionProfile(
+            viewerStats_.qualityPreset,
+            viewerStats_.targetFps,
+            viewerStats_.adaptiveFps
+        );
         sendFps = viewerStats_.targetFps;
         sendAdap = viewerStats_.adaptiveFps ? 1 : 0;
     }
@@ -3287,12 +3430,45 @@ void NetworkEngine::updateQualitySettings(QualityPreset preset, uint8_t targetFp
             0.0f
         );
         viewerStats_.networkThrottled = (viewerStats_.effectiveFpsCap < viewerStats_.targetFps);
+        viewerStats_.connectionProfile = inferConnectionProfile(
+            viewerStats_.qualityPreset,
+            viewerStats_.targetFps,
+            viewerStats_.adaptiveFps
+        );
     }
     ByteWriter w;
     w.writeU8(static_cast<uint8_t>(preset));
     w.writeU8(targetFps);
     w.writeU8(adaptiveFps ? 1 : 0);
     sendViewerEncryptedPacket(PacketType::QUALITY_UPDATE, 0, w.buffer().data(), w.buffer().size());
+}
+
+void NetworkEngine::applyConnectionProfile(ConnectionProfile profile) {
+    QualityPreset qp = QualityPreset::Balanced;
+    uint8_t fps = 30;
+    bool adaptive = true;
+    getProfileSettings(profile, qp, fps, adaptive);
+
+    int activeMon = 0;
+    {
+        std::lock_guard<std::mutex> lock(viewerStatsMutex_);
+        viewerStats_.connectionProfile = profile;
+        viewerStats_.qualityPreset = qp;
+        viewerStats_.targetFps = fps;
+        viewerStats_.adaptiveFps = adaptive;
+        viewerStats_.effectiveFpsCap = computeAdaptiveFpsCap(
+            viewerStats_.targetFps,
+            viewerStats_.adaptiveFps,
+            viewerStats_.rttMs,
+            0.0f
+        );
+        viewerStats_.networkThrottled = (viewerStats_.effectiveFpsCap < viewerStats_.targetFps);
+        activeMon = viewerStats_.activeMonitorIndex;
+    }
+
+    if (viewerSock_.load() != ~uintptr_t(0)) {
+        requestVideoSettings(qp, activeMon, true, fps, adaptive ? 1 : 0);
+    }
 }
 
 uint32_t NetworkEngine::sendFile(const std::string& filePath, FileOfferTarget targetHint, float dropNx, float dropNy) {
@@ -3428,6 +3604,7 @@ std::vector<ChatMessageEntry> NetworkEngine::chatMessages() const {
 
 void NetworkEngine::setAudioVolume(int percent) {
     audioVolumePercent_.store(std::clamp(percent, 0, 100));
+    syncAudioControl();
 }
 
 int NetworkEngine::audioVolume() const {
@@ -3436,17 +3613,44 @@ int NetworkEngine::audioVolume() const {
 
 void NetworkEngine::setAudioMuted(bool muted) {
     audioMuted_.store(muted);
+    syncAudioControl();
 }
 
 bool NetworkEngine::isAudioMuted() const {
     return audioMuted_.load();
 }
 
+void NetworkEngine::syncAudioControl() {
+    AudioControlPayload p{};
+    p.isMuted = audioMuted_.load() ? 1 : 0;
+    p.volumePercent = static_cast<uint8_t>(std::clamp(audioVolumePercent_.load(), 0, 100));
+    p.reserved[0] = 0;
+    p.reserved[1] = 0;
+    sendViewerEncryptedPacket(PacketType::AUDIO_CONTROL, 0, &p, sizeof(p));
+}
+
+bool NetworkEngine::isHostAudioSuspended() const {
+    return hostAudioSuspended_.load();
+}
+
+void NetworkEngine::configurePrivacyCurtain(const std::string& notice, const std::string& brand, bool showId) {
+    privacyCurtainNotice_ = notice;
+    privacyCurtainBrand_ = brand;
+    privacyCurtainShowId_ = showId;
+}
+
 void NetworkEngine::requestTogglePrivacyMode() {
     bool current = viewerPrivacyModeActive_.load();
-    PrivacyModePayload p{};
+    const auto& s = identity_.settings();
+    std::string notice = !privacyCurtainNotice_.empty() ? privacyCurtainNotice_ : s.privacyCustomNotice;
+    std::string brand = !privacyCurtainBrand_.empty() ? privacyCurtainBrand_ : s.privacyBrandName;
+    PrivacyModeConfigPayload p{};
     p.enable = current ? 0 : 1;
     p.acknowledge = 0;
+    p.showDeskId = privacyCurtainShowId_ ? 1 : 0;
+    p.reserved = 0;
+    std::snprintf(p.customNotice, sizeof(p.customNotice), "%s", notice.c_str());
+    std::snprintf(p.brandName, sizeof(p.brandName), "%s", brand.c_str());
     ByteWriter w;
     w.writeBytes(&p, sizeof(p));
     sendViewerEncryptedPacket(PacketType::PRIVACY_MODE_TOGGLE, 0, w.buffer().data(), w.buffer().size());
@@ -3460,8 +3664,15 @@ bool NetworkEngine::isHostPrivacyModeActive() const {
     return hostPrivacyModeActive_.load();
 }
 
-void NetworkEngine::setHostPrivacyMode(bool enable) {
+void NetworkEngine::setHostPrivacyMode(bool enable, const std::string& notice, const std::string& brand, bool showId) {
     if (enable) {
+        if (!notice.empty()) privacyCurtainNotice_ = notice;
+        else if (privacyCurtainNotice_.empty()) privacyCurtainNotice_ = identity_.settings().privacyCustomNotice;
+
+        if (!brand.empty()) privacyCurtainBrand_ = brand;
+        else if (privacyCurtainBrand_.empty()) privacyCurtainBrand_ = identity_.settings().privacyBrandName;
+
+        privacyCurtainShowId_ = showId;
         createPrivacyCurtainWindow();
     } else {
         destroyPrivacyCurtainWindow();
@@ -3470,6 +3681,26 @@ void NetworkEngine::setHostPrivacyMode(bool enable) {
 
 void NetworkEngine::createPrivacyCurtainWindow() {
     if (hwndPrivacyCurtain_) return;
+
+    // Populate global curtain configuration for double-buffered GDI window
+    std::string activeBrand = privacyCurtainBrand_.empty() ? identity_.settings().privacyBrandName : privacyCurtainBrand_;
+    std::string activeNotice = privacyCurtainNotice_.empty() ? identity_.settings().privacyCustomNotice : privacyCurtainNotice_;
+    s_curtainConfig.brandName = utf8ToWide(activeBrand.empty() ? "CppDesk Enterprise Security" : activeBrand);
+    s_curtainConfig.noticeText = utf8ToWide(activeNotice.empty() ? "Screen output hidden and local physical inputs secured for authorized administration." : activeNotice);
+    s_curtainConfig.showDeskId = privacyCurtainShowId_;
+
+    uint64_t deskId = identity_.deskId();
+    if (deskId > 0) {
+        std::string rawId = std::to_string(deskId);
+        std::string fmtId;
+        for (size_t i = 0; i < rawId.size(); ++i) {
+            if (i > 0 && (rawId.size() - i) % 3 == 0) fmtId += "-";
+            fmtId += rawId[i];
+        }
+        s_curtainConfig.deskIdText = L"Workstation Desk ID: " + utf8ToWide(fmtId);
+    } else {
+        s_curtainConfig.deskIdText = L"";
+    }
 
     WNDCLASSEXW wc{};
     wc.cbSize = sizeof(wc);
@@ -3481,8 +3712,8 @@ void NetworkEngine::createPrivacyCurtainWindow() {
 
     int vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
     int vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
-    int vw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
-    int vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+    int vw = std::max<int>(1, GetSystemMetrics(SM_CXVIRTUALSCREEN));
+    int vh = std::max<int>(1, GetSystemMetrics(SM_CYVIRTUALSCREEN));
 
     hwndPrivacyCurtain_ = CreateWindowExW(
         WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
@@ -3612,6 +3843,11 @@ void NetworkEngine::hostAudioCaptureLoop() {
         if (FAILED(hr)) break;
 
         if (numFramesRead > 0) {
+            if (hostAudioSuspended_.load()) {
+                pCaptureClient->ReleaseBuffer(numFramesRead);
+                std::this_thread::sleep_for(std::chrono::milliseconds(20));
+                continue;
+            }
             if (flags & AUDCLNT_BUFFERFLAGS_SILENT) {
                 AudioChunkHeader hdr{};
                 hdr.sampleRate = 48000;
@@ -4484,6 +4720,96 @@ SystemDiagnosticsPayload NetworkEngine::sampleHostDiagnostics() {
         }
         CloseHandle(hSnap);
     }
+
+    // 5. Extended Host Hardware Specs & Health Info (Phase 19)
+    static std::string s_cachedCpuModel;
+    static std::string s_cachedGpuModel;
+    static std::string s_cachedOsVersion;
+    static uint32_t    s_cachedCpuCores = 0;
+    static std::mutex  s_hwInfoMutex;
+
+    {
+        std::lock_guard<std::mutex> hwLock(s_hwInfoMutex);
+        if (s_cachedCpuCores == 0) {
+            // CPU brand string
+            char cpuBrand[49] = {0};
+            unsigned int eax = 0, ebx = 0, ecx = 0, edx = 0;
+            if (__get_cpuid(0x80000000, &eax, &ebx, &ecx, &edx) && eax >= 0x80000004) {
+                __get_cpuid(0x80000002, (unsigned int*)(cpuBrand), (unsigned int*)(cpuBrand + 4), (unsigned int*)(cpuBrand + 8), (unsigned int*)(cpuBrand + 12));
+                __get_cpuid(0x80000003, (unsigned int*)(cpuBrand + 16), (unsigned int*)(cpuBrand + 20), (unsigned int*)(cpuBrand + 24), (unsigned int*)(cpuBrand + 28));
+                __get_cpuid(0x80000004, (unsigned int*)(cpuBrand + 32), (unsigned int*)(cpuBrand + 36), (unsigned int*)(cpuBrand + 40), (unsigned int*)(cpuBrand + 44));
+                char* p = cpuBrand;
+                while (*p == ' ') p++;
+                s_cachedCpuModel = p;
+            }
+            if (s_cachedCpuModel.empty()) {
+                s_cachedCpuModel = "x86_64 Processor";
+            }
+
+            // CPU cores
+            SYSTEM_INFO si{};
+            GetSystemInfo(&si);
+            s_cachedCpuCores = si.dwNumberOfProcessors > 0 ? si.dwNumberOfProcessors : 1;
+
+            // GPU model via DXGI
+            IDXGIFactory1* pFactory = nullptr;
+            if (SUCCEEDED(CreateDXGIFactory1(__uuidof(IDXGIFactory1), (void**)&pFactory)) && pFactory) {
+                IDXGIAdapter1* pAdapter = nullptr;
+                if (SUCCEEDED(pFactory->EnumAdapters1(0, &pAdapter)) && pAdapter) {
+                    DXGI_ADAPTER_DESC1 desc{};
+                    if (SUCCEEDED(pAdapter->GetDesc1(&desc))) {
+                        int req = WideCharToMultiByte(CP_UTF8, 0, desc.Description, -1, nullptr, 0, nullptr, nullptr);
+                        if (req > 1) {
+                            std::string gpuStr(req - 1, '\0');
+                            WideCharToMultiByte(CP_UTF8, 0, desc.Description, -1, gpuStr.data(), req, nullptr, nullptr);
+                            s_cachedGpuModel = std::move(gpuStr);
+                        }
+                    }
+                    pAdapter->Release();
+                }
+                pFactory->Release();
+            }
+            if (s_cachedGpuModel.empty()) {
+                s_cachedGpuModel = "Primary Display Adapter";
+            }
+
+            // OS version via Registry
+            HKEY hKey = nullptr;
+            if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion", 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
+                wchar_t prodName[128] = {0};
+                DWORD sz = sizeof(prodName);
+                if (RegQueryValueExW(hKey, L"ProductName", nullptr, nullptr, (LPBYTE)prodName, &sz) == ERROR_SUCCESS) {
+                    wchar_t buildLab[64] = {0};
+                    DWORD bsz = sizeof(buildLab);
+                    RegQueryValueExW(hKey, L"CurrentBuild", nullptr, nullptr, (LPBYTE)buildLab, &bsz);
+                    int req = WideCharToMultiByte(CP_UTF8, 0, prodName, -1, nullptr, 0, nullptr, nullptr);
+                    if (req > 1) {
+                        std::string osStr(req - 1, '\0');
+                        WideCharToMultiByte(CP_UTF8, 0, prodName, -1, osStr.data(), req, nullptr, nullptr);
+                        s_cachedOsVersion = std::move(osStr);
+                    }
+                    if (buildLab[0] != L'\0') {
+                        int reqB = WideCharToMultiByte(CP_UTF8, 0, buildLab, -1, nullptr, 0, nullptr, nullptr);
+                        if (reqB > 1) {
+                            std::string bStr(reqB - 1, '\0');
+                            WideCharToMultiByte(CP_UTF8, 0, buildLab, -1, bStr.data(), reqB, nullptr, nullptr);
+                            s_cachedOsVersion += " (Build " + bStr + ")";
+                        }
+                    }
+                }
+                RegCloseKey(hKey);
+            }
+            if (s_cachedOsVersion.empty()) {
+                s_cachedOsVersion = "Windows Workstation";
+            }
+        }
+        diag.cpuModel = s_cachedCpuModel;
+        diag.gpuModel = s_cachedGpuModel;
+        diag.osVersion = s_cachedOsVersion;
+        diag.cpuCores = s_cachedCpuCores;
+    }
+
+    diag.uptimeSeconds = GetTickCount64() / 1000;
 
     return diag;
 }

@@ -27,7 +27,8 @@ $CoreSources = @(
     "src/media/voice_intercom.cpp",
     "src/capture/display_manager.cpp",
     "src/control/session_tab_manager.cpp",
-    "src/control/windows_service_manager.cpp"
+    "src/control/windows_service_manager.cpp",
+    "src/control/shortcut_manager.cpp"
 )
 
 $AppSources = $CoreSources + @(

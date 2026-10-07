@@ -4,6 +4,7 @@
 #include "ui/ui_window.hpp"
 
 #include "control/windows_service_manager.hpp"
+#include "control/shortcut_manager.hpp"
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -111,7 +112,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPSTR /*lpC
     cppdesk::NetworkEngine network(identity);
     network.start();
 
-    cppdesk::CppDeskWindow window(identity, network);
+    std::string autoConnectTarget = cppdesk::ShortcutManager::parseStartupConnectTarget(GetCommandLineW());
+    cppdesk::CppDeskWindow window(identity, network, autoConnectTarget);
     if (!window.create(hInstance, nCmdShow)) {
         network.stop();
         if (hMutex) CloseHandle(hMutex);
