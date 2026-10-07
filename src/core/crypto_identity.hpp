@@ -34,6 +34,12 @@ struct AppSettings {
     bool          enableTaskbarFlash = true;             // Pulse taskbar orange when background alerts arrive
     bool          enableNotificationSounds = true;       // Audio chime on incoming alerts
     bool          minimizeToTray = false;                // Minimize window to Windows Notification Area
+
+    // Phase 09 Self-Hosted Relay & STUN Configuration
+    std::string   relayServer = "127.0.0.1:50999";
+    std::string   relayAuthKey = "";
+    std::string   stunServer = "stun.l.google.com:19302";
+    uint8_t       relayMode = 0;                         // 0 = Auto, 1 = Self-Hosted, 2 = Direct LAN
 };
 
 class CryptoUtils {
@@ -49,6 +55,7 @@ public:
     static std::array<uint8_t, 32> sha256(const void* data, size_t len);
     static std::array<uint8_t, 32> sha256(const std::string& text);
     static std::string toHex(const uint8_t* data, size_t len);
+    static std::vector<uint8_t> fromHex(const std::string& hex);
     static std::string sha256Hex(const std::string& text);
 
     // Cryptographic PRF / KDF helpers (RFC 5869 HKDF-SHA256)

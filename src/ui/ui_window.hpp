@@ -47,14 +47,18 @@ enum class FocusedField : uint8_t {
     DashboardSearch = 11,
     EditAlias       = 12,
     EditTag         = 13,
-    EditNotes       = 14
+    EditNotes       = 14,
+    RelayAuthKey    = 15,
+    StunServer      = 16,
+    ClipboardSearch = 17
 };
 
 enum class DrawerTab : uint8_t {
-    FilesAndClip   = 0,
-    LiveChat       = 1,
-    RemoteTerminal = 2,
-    Diagnostics    = 3
+    FilesAndClip     = 0,
+    LiveChat         = 1,
+    RemoteTerminal   = 2,
+    Diagnostics      = 3,
+    ClipboardHistory = 4
 };
 
 struct UiRect {
@@ -135,11 +139,14 @@ private:
     void drawFileTransferDrawer(const UiRect& bounds, float slideProgress);
     void drawIncomingApprovalModal(float width, float height, float modalProgress);
     void drawDynamicIslandToolbar(float width, float height);
+    void drawClipboardTransferPill(float width, float height);
     void drawShortcutsModal(float width, float height, float modalProgress);
     void drawPortForwardModal(float width, float height, float modalProgress);
     void drawAddressBookModal(float width, float height, float modalProgress);
     void drawWhiteboardOverlay(const UiRect& canvasRect);
+    void drawPerformanceHud(const UiRect& stageRect, float alpha);
     void drawUpdateRequiredModal(float width, float height, float modalProgress);
+    void drawRebootConfirmModal(float width, float height, float modalProgress);
     void drawToastBanner(float width, float height, float toastProgress);
     void triggerUpdateCheck(bool manual);
 
@@ -228,8 +235,17 @@ private:
     std::string             remotePasswordInput_;
     std::string             localPasswordEdit_;
     std::string             relayServerEdit_;
+    std::string             relayAuthKeyEdit_;
+    std::string             stunServerEdit_;
+    uint8_t                 relayModeEdit_ = 0;
+    bool                    relayDiagnosticRunning_ = false;
+    std::string             relayDiagnosticStatus_;
+    int                     relayDiagnosticLatency_ = -1;
+    bool                    relayDiagnosticSuccess_ = false;
     std::string             chatInput_;
     int32_t                 chatScrollOffset_ = 0;
+    std::string             clipSearchQuery_;
+    int32_t                 clipHistoryScrollOffset_ = 0;
 
     // Pending incoming request local permission checkboxes
     uint8_t                 modalPermissions_ = PERM_ALL;
@@ -314,11 +330,18 @@ private:
     bool                    showDisplayMenu_ = false;
     bool                    showAdminMenu_ = false;
     bool                    showQualityMenu_ = false;
+    bool                    lastClipTransferActive_ = false;
+    uint64_t                lastClipTransferBytes_ = 0;
 
     // Keyboard Shortcuts Sheet Modal state
     bool                    showShortcutsModal_ = false;
     float                   shortcutsModalAnimT_ = 0.0f;
     float                   shortcutsModalAnimVel_ = 0.0f;
+
+    // Real-Time Performance & Diagnostics HUD Overlay state (Phase 10)
+    bool                    showPerformanceHud_ = false;
+    float                   hudAnimT_ = 0.0f;
+    float                   hudAnimVel_ = 0.0f;
 
     // Remote Terminal UI state (v2.1.0)
     std::string             terminalInputText_;
@@ -378,6 +401,12 @@ private:
     UpdateInfo              latestUpdateInfo_{};
     float                   startupUpdateCheckTimer_ = 2.0f;
     bool                    startupCheckTriggered_ = false;
+
+    // Remote Reboot & Reconnect Modal (v3.2.0 Phase 12)
+    bool                    showRebootConfirmModal_ = false;
+    bool                    rebootSafeModeChoice_ = false;
+    float                   rebootModalAnimT_ = 0.0f;
+    float                   rebootModalAnimVel_ = 0.0f;
 
     // Multi-Session Tabbed Management (Feature 6)
     SessionTabManager       sessionTabs_;

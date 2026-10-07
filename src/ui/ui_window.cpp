@@ -1,4 +1,5 @@
 #include "ui_window.hpp"
+#include "../control/windows_service_manager.hpp"
 
 #include <windowsx.h>
 #include <dwmapi.h>
@@ -166,9 +167,11 @@ CppDeskWindow::CppDeskWindow(IdentityManager& identity, NetworkEngine& network)
     : identity_(identity)
     , network_(network)
 {
-    relayServerEdit_ = identity_.relayServerAddress();
-
     const auto& s = identity_.settings();
+    relayServerEdit_ = s.relayServer.empty() ? identity_.relayServerAddress() : s.relayServer;
+    relayAuthKeyEdit_ = s.relayAuthKey;
+    stunServerEdit_ = s.stunServer;
+    relayModeEdit_ = s.relayMode;
     themeAnimT_ = s.darkTheme ? 1.0f : 0.0f;
     scaleMode_ = static_cast<ScaleMode>(std::clamp<int>(s.defaultScaleMode, 0, 3));
     updateActivePalette(themeAnimT_);
@@ -413,6 +416,14 @@ bool CppDeskWindow::stepAnimations(float dt) {
     // 11. Mandatory Update Modal Spring (v3.0.0)
     float targetUpdateModal = showUpdateRequiredModal_ ? 1.0f : 0.0f;
     if (stepSpring(updateModalAnimT_, updateModalAnimVel_, targetUpdateModal, 28.0f, 0.74f, dt)) active = true;
+
+    // 12. Real-Time Performance HUD Overlay Spring (Phase 10)
+    float targetHud = showPerformanceHud_ ? 1.0f : 0.0f;
+    if (stepSpring(hudAnimT_, hudAnimVel_, targetHud, 26.0f, 0.78f, dt)) active = true;
+
+    // 13. Remote Reboot & Reconnect Modal Spring (Phase 12)
+    float targetRebootModal = showRebootConfirmModal_ ? 1.0f : 0.0f;
+    if (stepSpring(rebootModalAnimT_, rebootModalAnimVel_, targetRebootModal, 28.0f, 0.74f, dt)) active = true;
 
     // Startup auto-update check timer (queries GitHub 2.0s after launch)
     if (!startupCheckTriggered_) {
@@ -1236,6 +1247,11 @@ void CppDeskWindow::onPaint() {
         drawDynamicIslandToolbar(width, height);
     }
 
+    // Dynamic Island Clipboard File Transfer Progress Pill
+    if (activeTab_ == ActiveTab::RemoteSession) {
+        drawClipboardTransferPill(width, height);
+    }
+
     // Keyboard Shortcuts Sheet Modal
     if (shortcutsModalAnimT_ > 0.004f) {
         drawShortcutsModal(width, height, shortcutsModalAnimT_);
@@ -1254,6 +1270,11 @@ void CppDeskWindow::onPaint() {
     // Mandatory Update Required Modal (v3.0.0)
     if (updateModalAnimT_ > 0.004f) {
         drawUpdateRequiredModal(width, height, updateModalAnimT_);
+    }
+
+    // Remote Reboot & Reconnect Sheet Modal (Phase 12)
+    if (rebootModalAnimT_ > 0.004f) {
+        drawRebootConfirmModal(width, height, rebootModalAnimT_);
     }
 
     // Floating Capsule Toast
@@ -2245,6 +2266,20 @@ void CppDeskWindow::drawRemoteSessionView(const UiRect& bounds, float alpha) {
                        showToast(whiteboardActive_ ? "Whiteboard active" : "Whiteboard hidden");
                    }, fmtSmall_, !whiteboardActive_, COL_BORDER,
                    whiteboardActive_ ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
+        rx = wbBtn.left - 6.0f;
+
+        // Performance HUD Button
+        std::string hudLabel = showPerformanceHud_ ? "HUD: ON" : "HUD";
+        UiRect hudBtn = { rx - 72.0f, hudBar.top + 8.0f, rx, hudBar.bottom - 8.0f };
+        drawButton("sess_hud_btn", hudBtn, hudLabel,
+                   showPerformanceHud_ ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
+                   showPerformanceHud_ ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
+                   showPerformanceHud_ ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
+                   7.5f, [this]() {
+                       showPerformanceHud_ = !showPerformanceHud_;
+                       showToast(showPerformanceHud_ ? "Performance HUD: ON" : "Performance HUD: OFF");
+                   }, fmtSmall_, !showPerformanceHud_, COL_BORDER,
+                   showPerformanceHud_ ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
 
         stageRect = { bounds.left, hudBar.bottom, bounds.right, bounds.bottom };
     }
@@ -2464,8 +2499,39 @@ void CppDeskWindow::drawRemoteSessionView(const UiRect& bounds, float alpha) {
         }
     } else {
         renderedCanvasRect_ = {};
-        drawText(stats.statusMessage, stageRect, fmtSubheading_, COL_TEXT_SECONDARY, DWRITE_TEXT_ALIGNMENT_CENTER);
+        if (network_.isAutoReconnectingWithToken()) {
+            float bannerW = 440.0f;
+            float bannerH = 150.0f;
+            UiRect bannerRect = { stageRect.centerX() - bannerW * 0.5f,
+                                  stageRect.centerY() - bannerH * 0.5f,
+                                  stageRect.centerX() + bannerW * 0.5f,
+                                  stageRect.centerY() + bannerH * 0.5f };
+            drawCardShadow(bannerRect, 14.0f, 0.95f);
+            fillRoundRect(bannerRect, 14.0f, rgba(15, 23, 42, 0.96f));
+            strokeRoundRect(bannerRect, 14.0f, withAlpha(COL_PRIMARY_ACCENT, 0.6f), 1.2f);
+
+            drawPulseDot(bannerRect.centerX(), bannerRect.top + 28.0f, 5.0f, COL_PRIMARY_ACCENT);
+            drawText("Host Restarting...", { bannerRect.left + 20.0f, bannerRect.top + 42.0f, bannerRect.right - 20.0f, bannerRect.top + 68.0f },
+                     fmtHeading_, COL_TEXT_PRIMARY, DWRITE_TEXT_ALIGNMENT_CENTER);
+
+            std::string subText = "Auto-reconnecting with security token...\nWaiting for remote system to come back online.";
+            drawText(subText, { bannerRect.left + 20.0f, bannerRect.top + 70.0f, bannerRect.right - 20.0f, bannerRect.bottom - 46.0f },
+                     fmtSmall_, COL_TEXT_SECONDARY, DWRITE_TEXT_ALIGNMENT_CENTER);
+
+            UiRect cancelBtn = { bannerRect.centerX() - 70.0f, bannerRect.bottom - 38.0f, bannerRect.centerX() + 70.0f, bannerRect.bottom - 10.0f };
+            drawButton("btn_cancel_reboot_rec", cancelBtn, "Cancel Reconnect",
+                       COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 6.0f, [this]() {
+                           network_.cancelAutoReconnection();
+                           network_.disconnectViewer();
+                           showToast("Auto-reconnection cancelled");
+                       }, fmtSmall_, true, COL_BORDER);
+        } else {
+            drawText(stats.statusMessage, stageRect, fmtSubheading_, COL_TEXT_SECONDARY, DWRITE_TEXT_ALIGNMENT_CENTER);
+        }
     }
+
+    // Real-Time Performance & Diagnostics HUD Overlay (Phase 10)
+    drawPerformanceHud(stageRect_, alpha);
 }
 
 // ---------------- macOS System Settings View ----------------
@@ -2900,46 +2966,237 @@ void CppDeskWindow::drawSettingsView(const UiRect& bounds, float alpha) {
 
     ry = notifBox.bottom + 10.0f;
 
-    // 3. Network & Relay
-    UiRect netBox = { rx, ry, rrx, ry + 76.0f };
+    // 3. Relay & Rendezvous Network (v3.2.0 Phase 09)
+    UiRect netBox = { rx, ry, rrx, ry + 196.0f };
     fillRoundRect(netBox, 12.0f, COL_BG_SUBTLE);
     strokeRoundRect(netBox, 12.0f, COL_BORDER);
 
-    drawText("NETWORK",
-             { netBox.left + 16.0f, netBox.top + 8.0f, netBox.right - 16.0f, netBox.top + 22.0f },
+    drawText("RELAY & RENDEZVOUS NETWORK",
+             { netBox.left + 16.0f, netBox.top + 8.0f, netBox.left + 240.0f, netBox.top + 22.0f },
              fmtSmall_, COL_TEXT_ACCENT);
 
-    UiRect settRelayField = { netBox.left + 16.0f, netBox.top + 28.0f, netBox.right - 196.0f, netBox.top + 64.0f };
-    drawTextField("field_relay_srv_sett", FocusedField::RelayServer, settRelayField,
-                  relayServerEdit_, "Relay server address", false);
+    // Preset pills on top right
+    float presetW = 54.0f;
+    float presetH = 20.0f;
+    float prX = netBox.right - 16.0f;
+    UiRect lanPreset = { prX - presetW, netBox.top + 5.0f, prX, netBox.top + 5.0f + presetH };
+    UiRect localPreset = { lanPreset.left - 4.0f - 64.0f, netBox.top + 5.0f, lanPreset.left - 4.0f, netBox.top + 5.0f + presetH };
+    UiRect pubPreset = { localPreset.left - 4.0f - 54.0f, netBox.top + 5.0f, localPreset.left - 4.0f, netBox.top + 5.0f + presetH };
 
-    UiRect applyRelayBtn = { settRelayField.right + 8.0f, netBox.top + 28.0f, settRelayField.right + 82.0f, netBox.top + 64.0f };
-    drawButton("sett_apply_relay", applyRelayBtn, "Save",
-               COL_PRIMARY_ACCENT, COL_PRIMARY_ACCENT_HV, COL_TEXT_ON_ACCENT, 8.0f, [this]() {
-                   identity_.setRelayServerAddress(relayServerEdit_);
-                   showToast("Relay server saved");
+    drawButton("sett_pre_pub", pubPreset, "Public",
+               (relayModeEdit_ == 0) ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
+               (relayModeEdit_ == 0) ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
+               (relayModeEdit_ == 0) ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
+               5.0f, [this]() {
+                   relayServerEdit_ = "relay.cppdesk.io:50999";
+                   stunServerEdit_ = "stun.l.google.com:19302";
+                   relayModeEdit_ = 0;
+               }, fmtSmall_, relayModeEdit_ != 0, COL_BORDER);
+
+    drawButton("sett_pre_loc", localPreset, "Localhost",
+               (relayModeEdit_ == 1) ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
+               (relayModeEdit_ == 1) ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
+               (relayModeEdit_ == 1) ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
+               5.0f, [this]() {
+                   relayServerEdit_ = "127.0.0.1:50999";
+                   stunServerEdit_ = "stun.l.google.com:19302";
+                   relayModeEdit_ = 1;
+               }, fmtSmall_, relayModeEdit_ != 1, COL_BORDER);
+
+    drawButton("sett_pre_lan", lanPreset, "LAN",
+               (relayModeEdit_ == 2) ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
+               (relayModeEdit_ == 2) ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
+               (relayModeEdit_ == 2) ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
+               5.0f, [this]() {
+                   relayServerEdit_ = "127.0.0.1:50999";
+                   stunServerEdit_ = "";
+                   relayModeEdit_ = 2;
+               }, fmtSmall_, relayModeEdit_ != 2, COL_BORDER);
+
+    // Row 1: Relay Address
+    float row1Y = netBox.top + 28.0f;
+    UiRect relayField = { netBox.left + 16.0f, row1Y, netBox.right - 16.0f, row1Y + 30.0f };
+    drawTextField("field_relay_srv_sett", FocusedField::RelayServer, relayField,
+                  relayServerEdit_, "Relay host:port (e.g. 127.0.0.1:50999)", false);
+
+    // Row 2: Auth Key (left) & STUN Server (right)
+    float row2Y = row1Y + 34.0f;
+    float halfFieldW = (netBox.width() - 32.0f - 8.0f) * 0.5f;
+    UiRect keyField = { netBox.left + 16.0f, row2Y, netBox.left + 16.0f + halfFieldW, row2Y + 30.0f };
+    UiRect stunField = { keyField.right + 8.0f, row2Y, netBox.right - 16.0f, row2Y + 30.0f };
+
+    drawTextField("field_relay_key_sett", FocusedField::RelayAuthKey, keyField,
+                  relayAuthKeyEdit_, "Auth key (optional)", true);
+    drawTextField("field_stun_srv_sett", FocusedField::StunServer, stunField,
+                  stunServerEdit_, "STUN server (e.g. stun.l.google.com:19302)", false);
+
+    // Row 3: Action Buttons
+    float row3Y = row2Y + 34.0f;
+    float thirdBtnW = (netBox.width() - 32.0f - 16.0f) / 3.0f;
+    UiRect pingBtn = { netBox.left + 16.0f, row3Y, netBox.left + 16.0f + thirdBtnW, row3Y + 30.0f };
+    UiRect saveBtn = { pingBtn.right + 8.0f, row3Y, pingBtn.right + 8.0f + thirdBtnW, row3Y + 30.0f };
+    UiRect toggleRelayBtn = { saveBtn.right + 8.0f, row3Y, netBox.right - 16.0f, row3Y + 30.0f };
+
+    bool isDiagActive = network_.isNetworkDiagnosticRunning();
+    drawButton("sett_ping_btn", pingBtn, isDiagActive ? "Testing..." : "Test & Ping",
+               COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 7.0f, [this]() {
+                   network_.startNetworkDiagnostics(relayServerEdit_, stunServerEdit_);
+               }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
+
+    drawButton("sett_apply_relay", saveBtn, "Save & Apply",
+               COL_PRIMARY_ACCENT, COL_PRIMARY_ACCENT_HV, COL_TEXT_ON_ACCENT, 7.0f, [this]() {
+                   AppSettings ns = identity_.settings();
+                   ns.relayServer = relayServerEdit_;
+                   ns.relayAuthKey = relayAuthKeyEdit_;
+                   ns.stunServer = stunServerEdit_;
+                   ns.relayMode = relayModeEdit_;
+                   identity_.updateSettings(ns);
+                   network_.setRelayAddressAndReconnect(relayServerEdit_);
+                   showToast("Network settings applied & reconnected");
                }, fmtSmall_);
 
     bool relayRunning = network_.isLocalRelayRunning();
-    UiRect localRelayBtn = { applyRelayBtn.right + 8.0f, netBox.top + 28.0f, netBox.right - 16.0f, netBox.top + 64.0f };
-    drawButton("sett_toggle_relay", localRelayBtn, relayRunning ? "Relay: ON" : "Relay: OFF",
+    drawButton("sett_toggle_relay", toggleRelayBtn, relayRunning ? "Relay: ON" : "Relay: OFF",
                relayRunning ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
                relayRunning ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
                relayRunning ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
-               8.0f, [this, relayRunning]() {
+               7.0f, [this, relayRunning]() {
                    if (relayRunning) {
                        network_.stopLocalRelayServer();
                        showToast("Local relay stopped");
                    } else if (network_.startLocalRelayServer(DEFAULT_RELAY_PORT)) {
-                       showToast("Local relay started");
+                       showToast("Local relay started on :50999");
                    } else {
                        showToast("Relay port already in use", true);
                    }
                }, fmtSmall_, !relayRunning, COL_BORDER, relayRunning ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
 
+    // Row 4: Status Indicator & Telemetry Dot
+    float row4Y = row3Y + 33.0f;
+    RelayProbeResult rDiag;
+    StunNatResult sDiag;
+    bool hasResult = network_.getNetworkDiagnosticResult(rDiag, sDiag);
+
+    D2D1_COLOR_F dotCol = COL_TEXT_MUTED;
+    std::string diagText;
+    if (isDiagActive) {
+        dotCol = COL_WARNING;
+        diagText = "Probing relay TCP and RFC 5389 STUN NAT traversal...";
+    } else if (hasResult) {
+        if (rDiag.reachable) {
+            dotCol = COL_SUCCESS;
+            diagText = "Relay: " + rDiag.message + (sDiag.success ? ("  |  NAT: " + sDiag.publicIp + ":" + std::to_string(sDiag.publicPort)) : ("  |  " + sDiag.natTypeDescription));
+        } else {
+            dotCol = COL_DANGER;
+            diagText = "Relay: " + rDiag.message + ("  |  " + sDiag.natTypeDescription);
+        }
+    } else {
+        dotCol = COL_TEXT_SECONDARY;
+        std::string modeName = (relayModeEdit_ == 0) ? "Auto" : (relayModeEdit_ == 1 ? "Self-Hosted" : "Direct LAN");
+        diagText = "Mode: " + modeName + "  |  Ready to probe network";
+    }
+
+    drawPulseDot(netBox.left + 22.0f, row4Y + 14.0f, 3.8f, dotCol, alpha);
+    UiRect diagTextRect = { netBox.left + 32.0f, row4Y, netBox.right - 16.0f, row4Y + 28.0f };
+    drawText(diagText, diagTextRect, fmtSmall_, COL_TEXT_SECONDARY, DWRITE_TEXT_ALIGNMENT_LEADING);
+
     ry = netBox.bottom + 10.0f;
 
-    // 4. Data & Reset Actions
+    // 4. Windows System Service (v3.2.0 Phase 12)
+    UiRect svcBox = { rx, ry, rrx, ry + 78.0f };
+    fillRoundRect(svcBox, 12.0f, COL_BG_SUBTLE);
+    strokeRoundRect(svcBox, 12.0f, COL_BORDER);
+
+    drawText("WINDOWS SYSTEM SERVICE",
+             { svcBox.left + 16.0f, svcBox.top + 8.0f, svcBox.left + 240.0f, svcBox.top + 22.0f },
+             fmtSmall_, COL_TEXT_ACCENT);
+
+    ServiceStatusState svcState = WindowsServiceManager::getServiceState();
+    std::string svcStateLabel = (svcState == ServiceStatusState::Running) ? "Running" :
+                                (svcState == ServiceStatusState::Stopped) ? "Stopped" : "Not Installed";
+    D2D1_COLOR_F svcStateCol = (svcState == ServiceStatusState::Running) ? COL_SUCCESS :
+                               (svcState == ServiceStatusState::Stopped) ? COL_WARNING : COL_TEXT_MUTED;
+
+    drawPulseDot(svcBox.right - 100.0f, svcBox.top + 15.0f, 3.8f, svcStateCol, alpha);
+    drawText(svcStateLabel, { svcBox.right - 90.0f, svcBox.top + 7.0f, svcBox.right - 16.0f, svcBox.top + 23.0f },
+             fmtSmall_, svcStateCol, DWRITE_TEXT_ALIGNMENT_LEADING);
+
+    float sBtnTop = svcBox.top + 28.0f;
+    float sBtnBot = svcBox.top + 64.0f;
+    float sQuarterW = (rrx - rx - 32.0f - 24.0f) / 4.0f;
+
+    UiRect installBtn   = { svcBox.left + 16.0f, sBtnTop, svcBox.left + 16.0f + sQuarterW, sBtnBot };
+    UiRect uninstallBtn = { installBtn.right + 8.0f, sBtnTop, installBtn.right + 8.0f + sQuarterW, sBtnBot };
+    UiRect startBtn     = { uninstallBtn.right + 8.0f, sBtnTop, uninstallBtn.right + 8.0f + sQuarterW, sBtnBot };
+    UiRect stopBtn      = { startBtn.right + 8.0f, sBtnTop, svcBox.right - 16.0f, sBtnBot };
+
+    bool isInstalled = (svcState != ServiceStatusState::NotInstalled);
+    bool isRunning = (svcState == ServiceStatusState::Running);
+
+    drawButton("sett_svc_install", installBtn, "Install",
+               !isInstalled ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
+               !isInstalled ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
+               !isInstalled ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
+               7.0f, [this, isInstalled]() {
+                   if (!isInstalled) {
+                       if (WindowsServiceManager::installService()) {
+                           showToast("Service installed successfully");
+                       } else {
+                           showToast("Failed to install service (Admin required)", true);
+                       }
+                   } else {
+                       showToast("Service already installed");
+                   }
+               }, fmtSmall_, isInstalled, COL_BORDER, !isInstalled ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
+
+    drawButton("sett_svc_uninstall", uninstallBtn, "Uninstall",
+               COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY,
+               7.0f, [this, isInstalled]() {
+                   if (isInstalled) {
+                       if (WindowsServiceManager::uninstallService()) {
+                           showToast("Service uninstalled");
+                       } else {
+                           showToast("Failed to uninstall service (Admin required)", true);
+                       }
+                   } else {
+                       showToast("Service not installed");
+                   }
+               }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
+
+    drawButton("sett_svc_start", startBtn, "Start",
+               (isInstalled && !isRunning) ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
+               (isInstalled && !isRunning) ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
+               (isInstalled && !isRunning) ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
+               7.0f, [this, isInstalled, isRunning]() {
+                   if (isInstalled && !isRunning) {
+                       if (WindowsServiceManager::startService()) {
+                           showToast("Service started");
+                       } else {
+                           showToast("Failed to start service (Admin required)", true);
+                       }
+                   } else if (!isInstalled) {
+                       showToast("Install service first", true);
+                   }
+               }, fmtSmall_, !(isInstalled && !isRunning), COL_BORDER,
+               (isInstalled && !isRunning) ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
+
+    drawButton("sett_svc_stop", stopBtn, "Stop",
+               isRunning ? COL_DANGER : COL_SEC_BTN_BG,
+               isRunning ? COL_DANGER_HV : COL_SEC_BTN_HV,
+               isRunning ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
+               7.0f, [this, isRunning]() {
+                   if (isRunning) {
+                       if (WindowsServiceManager::stopService()) {
+                           showToast("Service stopped");
+                       } else {
+                           showToast("Failed to stop service", true);
+                       }
+                   }
+               }, fmtSmall_, !isRunning, COL_BORDER, isRunning ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
+
+    ry = svcBox.bottom + 10.0f;
+
+    // 5. Data & Reset Actions
     if (rightCard.bottom - 10.0f > ry + 36.0f) {
         UiRect maintBox = { rx, ry, rrx, rightCard.bottom - 16.0f };
         fillRoundRect(maintBox, 12.0f, COL_BG_SUBTLE);
@@ -2992,16 +3249,18 @@ void CppDeskWindow::drawFileTransferDrawer(const UiRect& bounds, float slideProg
     float rx = r.right - 20.0f;
     float y = r.top + 16.0f;
 
-    float tabW = (rx - x - 34.0f - 18.0f) / 4.0f;
+    float tabW = (rx - x - 34.0f - 20.0f) / 5.0f;
     UiRect tabFiles = { x, y, x + tabW, y + 32.0f };
-    UiRect tabChat  = { tabFiles.right + 6.0f, y, tabFiles.right + 6.0f + tabW, y + 32.0f };
-    UiRect tabTerm  = { tabChat.right + 6.0f, y, tabChat.right + 6.0f + tabW, y + 32.0f };
-    UiRect tabDiag  = { tabTerm.right + 6.0f, y, tabTerm.right + 6.0f + tabW, y + 32.0f };
+    UiRect tabChat  = { tabFiles.right + 5.0f, y, tabFiles.right + 5.0f + tabW, y + 32.0f };
+    UiRect tabTerm  = { tabChat.right + 5.0f, y, tabChat.right + 5.0f + tabW, y + 32.0f };
+    UiRect tabDiag  = { tabTerm.right + 5.0f, y, tabTerm.right + 5.0f + tabW, y + 32.0f };
+    UiRect tabHist  = { tabDiag.right + 5.0f, y, tabDiag.right + 5.0f + tabW, y + 32.0f };
 
     bool onFiles = (drawerTab_ == DrawerTab::FilesAndClip);
     bool onChat  = (drawerTab_ == DrawerTab::LiveChat);
     bool onTerm  = (drawerTab_ == DrawerTab::RemoteTerminal);
     bool onDiag  = (drawerTab_ == DrawerTab::Diagnostics);
+    bool onHist  = (drawerTab_ == DrawerTab::ClipboardHistory);
 
     drawButton("drawer_tab_files", tabFiles, "Files",
                onFiles ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
@@ -3043,6 +3302,16 @@ void CppDeskWindow::drawFileTransferDrawer(const UiRect& bounds, float slideProg
                        drawerTab_ = DrawerTab::Diagnostics;
                        network_.setDiagnosticsActive(true);
                    }
+               }, fmtSmall_);
+
+    drawButton("drawer_tab_hist", tabHist, "History",
+               onHist ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
+               onHist ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
+               onHist ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
+               8.0f, [this]() {
+                   if (drawerTab_ == DrawerTab::Diagnostics) network_.setDiagnosticsActive(false);
+                   drawerTab_ = DrawerTab::ClipboardHistory;
+                   focusedField_ = FocusedField::ClipboardSearch;
                }, fmtSmall_);
 
     UiRect closeBtn = { rx - 28.0f, y + 1.0f, rx, y + 31.0f };
@@ -3150,9 +3419,9 @@ void CppDeskWindow::drawFileTransferDrawer(const UiRect& bounds, float slideProg
                      { chatBox.left + 14.0f, chatBox.centerY() - 14.0f, chatBox.right - 14.0f, chatBox.centerY() + 14.0f },
                      fmtSmall_, COL_TEXT_MUTED, DWRITE_TEXT_ALIGNMENT_CENTER);
         } else {
-            float msgH = 46.0f;
-            int maxVisible = std::max(1, static_cast<int>((chatBox.height() - 16.0f) / (msgH + 6.0f)));
+            float rowBaseH = 46.0f;
             int totalMsgs = static_cast<int>(msgs.size());
+            int maxVisible = std::max(1, static_cast<int>((chatBox.height() - 16.0f) / (rowBaseH + 6.0f)));
             int maxOffset = std::max(0, totalMsgs - maxVisible);
             chatScrollOffset_ = std::clamp(chatScrollOffset_, 0, maxOffset);
             size_t startIdx = static_cast<size_t>(std::max(0, totalMsgs - maxVisible - chatScrollOffset_));
@@ -3161,6 +3430,7 @@ void CppDeskWindow::drawFileTransferDrawer(const UiRect& bounds, float slideProg
 
             for (size_t i = startIdx; i < endIdx; ++i) {
                 const auto& m = msgs[i];
+                float msgH = m.hasImage ? 86.0f : 46.0f;
                 UiRect bubble = m.fromLocal
                     ? UiRect{ chatBox.left + 36.0f, my, chatBox.right - 10.0f, my + msgH }
                     : UiRect{ chatBox.left + 10.0f, my, chatBox.right - 36.0f, my + msgH };
@@ -3169,17 +3439,48 @@ void CppDeskWindow::drawFileTransferDrawer(const UiRect& bounds, float slideProg
 
                 drawText(m.senderName, { bubble.left + 10.0f, bubble.top + 4.0f, bubble.right - 10.0f, bubble.top + 20.0f },
                          fmtSmall_, m.fromLocal ? COL_PRIMARY_ACCENT : COL_TEXT_ACCENT);
-                drawText(m.text, { bubble.left + 10.0f, bubble.top + 20.0f, bubble.right - 10.0f, bubble.bottom - 4.0f },
-                         fmtBody_, COL_TEXT_PRIMARY);
+
+                if (m.hasImage) {
+                    UiRect imgBadge = { bubble.left + 10.0f, bubble.top + 20.0f, bubble.right - 10.0f, bubble.top + 56.0f };
+                    fillRoundRect(imgBadge, 6.0f, rgba(0, 0, 0, 0.28f));
+                    strokeRoundRect(imgBadge, 6.0f, COL_BORDER);
+                    char imgInfo[128];
+                    std::snprintf(imgInfo, sizeof(imgInfo), "[Image Attachment %ux%u - %zu KB]",
+                                  m.imgWidth, m.imgHeight, m.imageJpegData.size() / 1024);
+                    drawText(imgInfo, { imgBadge.left + 8.0f, imgBadge.top + 8.0f, imgBadge.right - 8.0f, imgBadge.bottom - 4.0f },
+                             fmtSmall_, COL_PRIMARY_ACCENT);
+
+                    if (!m.text.empty()) {
+                        drawText(m.text, { bubble.left + 10.0f, bubble.top + 60.0f, bubble.right - 10.0f, bubble.bottom - 4.0f },
+                                 fmtBody_, COL_TEXT_PRIMARY);
+                    }
+                } else {
+                    drawText(m.text, { bubble.left + 10.0f, bubble.top + 20.0f, bubble.right - 10.0f, bubble.bottom - 4.0f },
+                             fmtBody_, COL_TEXT_PRIMARY);
+                }
                 my += msgH + 6.0f;
             }
         }
 
-        UiRect chatField = { x, r.bottom - 52.0f, rx - 76.0f, r.bottom - 14.0f };
+        UiRect chatField = { x, r.bottom - 52.0f, rx - 114.0f, r.bottom - 14.0f };
         drawTextField("field_chat_input", FocusedField::ChatInput, chatField,
                       chatInput_, "Message...", false);
 
-        UiRect sendChatBtn = { chatField.right + 6.0f, chatField.top, rx, chatField.bottom };
+        UiRect clipImgBtn = { chatField.right + 4.0f, chatField.top, chatField.right + 40.0f, chatField.bottom };
+        drawButton("btn_send_img", clipImgBtn, "Pic",
+                   COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 8.5f, [this]() {
+                       std::vector<uint8_t> jpeg;
+                       uint32_t w = 0, h = 0;
+                       if (ClipboardManager::getClipboardImageJpeg(jpeg, w, h)) {
+                           network_.sendChatImage(jpeg, w, h, chatInput_);
+                           chatInput_.clear();
+                           showToast("Sent image from clipboard");
+                       } else {
+                           showToast("No image in clipboard (copy image first)", true);
+                       }
+                   }, fmtSmall_);
+
+        UiRect sendChatBtn = { clipImgBtn.right + 4.0f, chatField.top, rx, chatField.bottom };
         drawButton("btn_send_chat", sendChatBtn, "Send",
                    COL_PRIMARY_ACCENT, COL_PRIMARY_ACCENT_HV, COL_TEXT_ON_ACCENT, 8.5f, [this]() {
                        sendChatFromInput();
@@ -3379,6 +3680,94 @@ void CppDeskWindow::drawFileTransferDrawer(const UiRect& bounds, float slideProg
                 py += rowH;
             }
         }
+    } else if (drawerTab_ == DrawerTab::ClipboardHistory) {
+        drawText("In-Session Clipboard History Hub",
+                 { x, y, rx, y + 18.0f }, fmtSmall_, COL_TEXT_SECONDARY);
+        y += 24.0f;
+
+        UiRect searchField = { x, y, rx - 72.0f, y + 32.0f };
+        drawTextField("field_clip_search", FocusedField::ClipboardSearch, searchField,
+                      clipSearchQuery_, "Search history...", false);
+
+        UiRect clearBtn = { searchField.right + 6.0f, y, rx, y + 32.0f };
+        drawButton("btn_clip_clear", clearBtn, "Clear",
+                   COL_SEC_BTN_BG, COL_DANGER, COL_TEXT_SECONDARY, 7.5f, [this]() {
+                       network_.clipboardManager().history().clear();
+                       showToast("Clipboard history cleared");
+                   }, fmtSmall_, false, D2D1::ColorF(0, 0, 0, 0), COL_TEXT_ON_ACCENT);
+
+        y += 40.0f;
+
+        UiRect listBox = { x, y, rx, r.bottom - 16.0f };
+        fillRoundRect(listBox, 11.0f, COL_BG_SUBTLE);
+        strokeRoundRect(listBox, 11.0f, COL_BORDER);
+
+        auto histItems = network_.clipboardManager().history().search(clipSearchQuery_);
+        if (histItems.empty()) {
+            drawText("No clipboard history yet.",
+                     { listBox.left + 14.0f, listBox.centerY() - 14.0f, listBox.right - 14.0f, listBox.centerY() + 14.0f },
+                     fmtSmall_, COL_TEXT_MUTED, DWRITE_TEXT_ALIGNMENT_CENTER);
+        } else {
+            float cardH = 58.0f;
+            int maxVisible = std::max(1, static_cast<int>((listBox.height() - 16.0f) / (cardH + 6.0f)));
+            int totalItems = static_cast<int>(histItems.size());
+            int maxOffset = std::max(0, totalItems - maxVisible);
+            clipHistoryScrollOffset_ = std::clamp(clipHistoryScrollOffset_, 0, maxOffset);
+            size_t startIdx = static_cast<size_t>(clipHistoryScrollOffset_);
+            size_t endIdx = std::min(histItems.size(), startIdx + static_cast<size_t>(maxVisible));
+            float cy = listBox.top + 8.0f;
+
+            for (size_t i = startIdx; i < endIdx; ++i) {
+                const auto& item = histItems[i];
+                UiRect card = { listBox.left + 8.0f, cy, listBox.right - 8.0f, cy + cardH };
+                fillRoundRect(card, 8.0f, COL_BG_CARD);
+                strokeRoundRect(card, 8.0f, COL_BORDER);
+
+                // Type badge pill
+                float bx = card.left + 8.0f;
+                UiRect badgeRect = { bx, card.top + 6.0f, bx + 42.0f, card.top + 22.0f };
+                D2D1_COLOR_F badgeBg = (item.typeBadge == "URL") ? rgba(0, 122, 255, 0.25f) :
+                                       (item.typeBadge == "Code") ? rgba(175, 82, 222, 0.25f) :
+                                       (item.typeBadge == "Path") ? rgba(52, 199, 89, 0.25f) :
+                                       rgba(142, 142, 147, 0.25f);
+                D2D1_COLOR_F badgeFg = (item.typeBadge == "URL") ? COL_PRIMARY_ACCENT :
+                                       (item.typeBadge == "Code") ? rgba(191, 90, 242, 1.0f) :
+                                       (item.typeBadge == "Path") ? COL_SUCCESS :
+                                       COL_TEXT_SECONDARY;
+                fillRoundRect(badgeRect, 4.0f, badgeBg);
+                drawText(item.typeBadge, badgeRect, fmtSmall_, badgeFg, DWRITE_TEXT_ALIGNMENT_CENTER);
+
+                // Origin & chars
+                char metaStr[64];
+                std::snprintf(metaStr, sizeof(metaStr), "%s - %zu chars",
+                              item.isFromRemote ? "Remote" : "Local", item.charCount);
+                drawText(metaStr, { badgeRect.right + 8.0f, card.top + 6.0f, card.right - 90.0f, card.top + 22.0f },
+                         fmtSmall_, COL_TEXT_MUTED);
+
+                // Copy button
+                uint32_t iid = item.id;
+                UiRect copyBtn = { card.right - 82.0f, card.top + 6.0f, card.right - 36.0f, card.top + 26.0f };
+                drawButton("clip_copy_" + std::to_string(iid), copyBtn, "Copy",
+                           COL_SEC_BTN_BG, COL_PRIMARY_ACCENT, COL_TEXT_PRIMARY, 5.0f, [this, iid]() {
+                               if (network_.clipboardManager().history().copyItemToClipboard(iid)) {
+                                   showToast("Copied to clipboard");
+                               }
+                           }, fmtSmall_);
+
+                // Delete button
+                UiRect delBtn = { card.right - 30.0f, card.top + 6.0f, card.right - 6.0f, card.top + 26.0f };
+                drawButton("clip_del_" + std::to_string(iid), delBtn, "X",
+                           COL_SEC_BTN_BG, COL_DANGER, COL_TEXT_MUTED, 5.0f, [this, iid]() {
+                               network_.clipboardManager().history().deleteItem(iid);
+                           }, fmtSmall_);
+
+                // Text preview
+                drawText(item.previewText, { card.left + 8.0f, card.top + 28.0f, card.right - 8.0f, card.bottom - 4.0f },
+                         fmtSmall_, COL_TEXT_PRIMARY);
+
+                cy += cardH + 6.0f;
+            }
+        }
     }
 }
 
@@ -3459,7 +3848,7 @@ void CppDeskWindow::drawDynamicIslandToolbar(float width, float /*height*/) {
     if (floatingToolbarY_ <= -58.0f) return;
 
     auto stats = network_.viewerStats();
-    float pillW = 1024.0f;
+    float pillW = 1090.0f;
     float pillH = 42.0f;
     float pillLeft = (width - pillW) * 0.5f;
     float pillRight = pillLeft + pillW;
@@ -3612,6 +4001,18 @@ void CppDeskWindow::drawDynamicIslandToolbar(float width, float /*height*/) {
                (islandChatOpen || unreadChat > 0) ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
     curX = islandChatBtn.right + 6.0f;
 
+    // HUD Toggle Button
+    UiRect islandHudBtn = { curX, pillTop + 6.0f, curX + 58.0f, pillBottom - 6.0f };
+    drawButton("island_hud_btn", islandHudBtn, showPerformanceHud_ ? "HUD: ON" : "HUD",
+               showPerformanceHud_ ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
+               showPerformanceHud_ ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
+               showPerformanceHud_ ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
+               8.0f, [this]() {
+                   showPerformanceHud_ = !showPerformanceHud_;
+                   showToast(showPerformanceHud_ ? "Performance HUD: ON" : "Performance HUD: OFF");
+               }, fmtSmall_, !showPerformanceHud_, COL_BORDER);
+    curX = islandHudBtn.right + 6.0f;
+
     // 6. Shortcuts Button "?"
     UiRect helpBtn = { curX, pillTop + 6.0f, curX + 32.0f, pillBottom - 6.0f };
     drawButton("island_help_btn", helpBtn, "?",
@@ -3681,7 +4082,7 @@ void CppDeskWindow::drawDynamicIslandToolbar(float width, float /*height*/) {
     // Dropdown 2: Admin Actions Menu
     if (showAdminMenu_) {
         float itemH = 32.0f;
-        float dropH = 4 * itemH + 16.0f;
+        float dropH = 5 * itemH + 16.0f;
         UiRect dropRect = { adminBtn.left - 20.0f, pillBottom + 6.0f, adminBtn.left + 210.0f, pillBottom + 6.0f + dropH };
         drawCardShadow(dropRect, 14.0f, 0.95f);
         fillRoundRect(dropRect, 14.0f, withAlpha(COL_BG_CARD, 0.98f));
@@ -3716,7 +4117,15 @@ void CppDeskWindow::drawDynamicIslandToolbar(float width, float /*height*/) {
         dy += itemH;
 
         UiRect r4 = { dropRect.left + 8.0f, dy, dropRect.right - 8.0f, dy + 28.0f };
-        drawButton("drop_adm_reboot", r4, "Emergency Reboot...",
+        drawButton("drop_adm_reboot_rec", r4, "Reboot & Reconnect...",
+                   COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 6.0f, [this]() {
+                       showAdminMenu_ = false;
+                       showRebootConfirmModal_ = true;
+                   }, fmtSmall_, true, COL_BORDER);
+        dy += itemH;
+
+        UiRect r5 = { dropRect.left + 8.0f, dy, dropRect.right - 8.0f, dy + 28.0f };
+        drawButton("drop_adm_reboot", r5, "Emergency Reboot...",
                    COL_DANGER, COL_DANGER_HV, COL_TEXT_ON_ACCENT, 6.0f, [this]() {
                        network_.sendSystemAction(SystemActionType::EmergencyReboot);
                        showAdminMenu_ = false;
@@ -3777,6 +4186,83 @@ void CppDeskWindow::drawDynamicIslandToolbar(float width, float /*height*/) {
     }
 }
 
+// ---------------- Dynamic Island Clipboard File Transfer Progress Pill ----------------
+
+void CppDeskWindow::drawClipboardTransferPill(float width, float /*height*/) {
+    auto& clipMgr = network_.clipboardFileTransferManager();
+    bool active = clipMgr.isTransferActive();
+
+    // Check completion transition to trigger toast
+    if (lastClipTransferActive_ && !active) {
+        if (lastClipTransferBytes_ > 0) {
+            std::string szStr;
+            if (lastClipTransferBytes_ < 1024ULL * 1024ULL) {
+                szStr = std::to_string(lastClipTransferBytes_ / 1024ULL) + " KB";
+            } else {
+                szStr = std::to_string(lastClipTransferBytes_ / (1024ULL * 1024ULL)) + " MB";
+            }
+            showToast("Clipboard file transfer complete (" + szStr + ")");
+        }
+        lastClipTransferBytes_ = 0;
+    }
+    lastClipTransferActive_ = active;
+
+    if (!active) return;
+
+    std::string fname = clipMgr.activeFileName();
+    float progress = clipMgr.activeProgressFraction();
+    float speedMBs = clipMgr.activeTransferRateMBs();
+    lastClipTransferBytes_ = clipMgr.activeTotalBytes();
+
+    int pct = std::clamp(static_cast<int>(progress * 100.0f), 0, 100);
+
+    // Dynamic Island Pill sizing and position
+    float pillW = 380.0f;
+    float pillH = 38.0f;
+    float pillLeft = (width - pillW) * 0.5f;
+    float pillRight = pillLeft + pillW;
+    float pillTop = isFullscreen_ ? (floatingToolbarY_ > 0.0f ? floatingToolbarY_ + 48.0f : 16.0f) : 66.0f;
+    float pillBottom = pillTop + pillH;
+    UiRect pillRect = { pillLeft, pillTop, pillRight, pillBottom };
+
+    // Obsidian card background (#0B0D13) with glass styling
+    drawCardShadow(pillRect, 19.0f, 0.90f);
+    fillRoundRect(pillRect, 19.0f, rgba(11, 13, 19, 0.94f));
+    strokeRoundRect(pillRect, 19.0f, withAlpha(COL_BORDER_FOCUS, 0.35f), 1.0f);
+
+    // Accent progress fill bar under the surface (Windows Fluent Blue #0078D6)
+    if (progress > 0.005f) {
+        float barW = (pillW - 8.0f) * std::clamp(progress, 0.0f, 1.0f);
+        UiRect barRect = { pillLeft + 4.0f, pillBottom - 4.0f, pillLeft + 4.0f + barW, pillBottom - 2.0f };
+        fillRoundRect(barRect, 1.0f, COL_PRIMARY_ACCENT);
+    }
+
+    // Pulse dot
+    drawPulseDot(pillLeft + 16.0f, pillRect.centerY(), 3.5f, COL_PRIMARY_ACCENT, 1.0f);
+
+    // Label formatting: e.g. "Setup.iso • 78% • 24.6 MB/s"
+    char buf[128];
+    if (fname.size() > 18) {
+        fname = fname.substr(0, 15) + "...";
+    }
+    if (speedMBs > 0.05f) {
+        std::snprintf(buf, sizeof(buf), "%s • %d%% • %.1f MB/s", fname.c_str(), pct, speedMBs);
+    } else {
+        std::snprintf(buf, sizeof(buf), "%s • %d%%", fname.c_str(), pct);
+    }
+    UiRect textRect = { pillLeft + 28.0f, pillTop, pillRight - 38.0f, pillBottom };
+    drawText(buf, textRect, fmtSmall_, COL_TEXT_PRIMARY, DWRITE_TEXT_ALIGNMENT_LEADING);
+
+    // Interactive Cancel Button "✕"
+    UiRect cancelBtn = { pillRight - 32.0f, pillTop + 6.0f, pillRight - 8.0f, pillBottom - 6.0f };
+    drawButton("island_clip_cancel_btn", cancelBtn, "✕",
+               COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY,
+               8.0f, [this]() {
+                   network_.clipboardFileTransferManager().cancelActiveTransfer();
+                   showToast("Clipboard transfer cancelled");
+               }, fmtSmall_, true, COL_BORDER);
+}
+
 // ---------------- macOS Keyboard Shortcuts Sheet Modal ----------------
 
 void CppDeskWindow::drawShortcutsModal(float width, float height, float modalProgress) {
@@ -3829,6 +4315,7 @@ void CppDeskWindow::drawShortcutsModal(float width, float height, float modalPro
         { "Ctrl + Alt + L", "Lock Remote Workstation" },
         { "Ctrl + Alt + D", "Show Desktop (Minimize all remote windows)" },
         { "Ctrl + Alt + Del", "Open Task Manager / Lock Screen" },
+        { "Ctrl + Shift + O", "Toggle Real-Time Performance & Diagnostics HUD" },
         { "Esc", "Dismiss open menus, modals, or exit fullscreen" }
     };
 
@@ -4173,6 +4660,73 @@ void CppDeskWindow::drawUpdateRequiredModal(float width, float height, float mod
     renderTarget_->SetTransform(D2D1::Matrix3x2F::Identity());
 }
 
+// ---------------- Remote Reboot & Reconnect Sheet Modal (Phase 12) ----------------
+
+void CppDeskWindow::drawRebootConfirmModal(float width, float height, float modalProgress) {
+    if (!showRebootConfirmModal_ && modalProgress <= 0.01f) return;
+
+    float alpha = std::clamp(modalProgress, 0.0f, 1.0f);
+    fillRoundRect({ 0.0f, 0.0f, width, height }, 0.0f, rgba(5, 8, 15, 0.55f * alpha));
+
+    float mw = 480.0f;
+    float mh = 250.0f;
+    UiRect modal = { (width - mw) * 0.5f, (height - mh) * 0.5f, (width + mw) * 0.5f, (height + mh) * 0.5f };
+
+    float scale = 0.90f + 0.10f * modalProgress;
+    renderTarget_->SetTransform(
+        D2D1::Matrix3x2F::Scale(scale, scale, D2D1::Point2F(modal.centerX(), modal.centerY()))
+    );
+
+    drawCardSurface(modal, 18.0f, alpha);
+
+    float mx = modal.left + 26.0f;
+    float mrx = modal.right - 26.0f;
+    float my = modal.top + 22.0f;
+
+    drawText("Remote Reboot & Reconnect", { mx, my, mrx - 40.0f, my + 26.0f }, fmtHeading_, COL_TEXT_PRIMARY);
+
+    UiRect closeBtn = { mrx - 26.0f, my, mrx, my + 26.0f };
+    drawButton("modal_reboot_close", closeBtn, "×",
+               COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 13.0f,
+               [this]() { showRebootConfirmModal_ = false; }, fmtHeading_);
+    my += 34.0f;
+
+    drawText("The remote machine will restart and automatically reconnect once Windows boots back up. A secure resume token will authenticate the new session without requiring a password.",
+             { mx, my, mrx, my + 44.0f }, fmtSmall_, COL_TEXT_SECONDARY);
+    my += 52.0f;
+
+    // Safe mode toggle
+    UiRect toggleR = { mx, my, mrx, my + 26.0f };
+    drawToggleSwitch("modal_reboot_safemode", toggleR, rebootSafeModeChoice_,
+                     "Boot into Safe Mode with Networking", [this]() {
+                         rebootSafeModeChoice_ = !rebootSafeModeChoice_;
+                     });
+    my += 40.0f;
+
+    // Action buttons
+    float btnW = 140.0f;
+    float btnH = 34.0f;
+    UiRect cancelBtn = { mrx - btnW * 2.0f - 10.0f, my, mrx - btnW - 10.0f, my + btnH };
+    UiRect rebootBtn = { mrx - btnW, my, mrx, my + btnH };
+
+    drawButton("modal_reboot_cancel", cancelBtn, "Cancel",
+               COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 8.0f,
+               [this]() { showRebootConfirmModal_ = false; }, fmtSmall_, true, COL_BORDER);
+
+    drawButton("modal_reboot_confirm", rebootBtn, "Reboot & Reconnect",
+               COL_PRIMARY_ACCENT, COL_PRIMARY_ACCENT_HV, COL_TEXT_ON_ACCENT, 8.0f,
+               [this]() {
+                   showRebootConfirmModal_ = false;
+                   if (network_.requestRemoteReboot(rebootSafeModeChoice_, 5)) {
+                       showToast("Reboot requested. Reconnecting once online...");
+                   } else {
+                       showToast("Failed to request reboot", true);
+                   }
+               }, fmtSmall_);
+
+    renderTarget_->SetTransform(D2D1::Matrix3x2F::Identity());
+}
+
 void CppDeskWindow::triggerUpdateCheck(bool manual) {
     if (isCheckingUpdates_) return;
     isCheckingUpdates_ = true;
@@ -4359,6 +4913,128 @@ void CppDeskWindow::drawWhiteboardOverlay(const UiRect& canvasRect) {
                }, fmtBodyBold_, true, COL_BORDER);
 }
 
+// ---------------- Real-Time Performance & Diagnostics HUD Overlay (Phase 10) ----------------
+
+void CppDeskWindow::drawPerformanceHud(const UiRect& stageRect, float alpha) {
+    if (hudAnimT_ <= 0.01f || alpha <= 0.01f) return;
+
+    float hudProgress = std::clamp(hudAnimT_, 0.0f, 1.0f) * std::clamp(alpha, 0.0f, 1.0f);
+    auto stats = network_.viewerStats();
+
+    float hudW = 310.0f;
+    float hudH = 224.0f;
+    float hudRight = stageRect.right - 18.0f;
+    float hudTop = stageRect.top + 16.0f;
+    float hudLeft = hudRight - hudW;
+    float hudBottom = hudTop + hudH;
+    UiRect hudCard = { hudLeft, hudTop, hudRight, hudBottom };
+
+    // Apply spring slide & scale transform
+    float scale = 0.94f + 0.06f * hudProgress;
+    renderTarget_->SetTransform(
+        D2D1::Matrix3x2F::Scale(scale, scale, D2D1::Point2F(hudCard.right, hudCard.top))
+    );
+
+    // Frosted glass card surface with specular highlight (hud-sci-fi-fui)
+    drawCardShadow(hudCard, 14.0f, 0.95f * hudProgress);
+    fillRoundRect(hudCard, 14.0f, rgba(11, 14, 20, 0.92f * hudProgress));
+    strokeRoundRect(hudCard, 14.0f, withAlpha(COL_BORDER_FOCUS, 0.45f * hudProgress), 1.2f);
+    fillRoundRect({ hudCard.left + 14.0f, hudCard.top + 1.0f, hudCard.right - 14.0f, hudCard.top + 2.0f },
+                  0.5f, rgba(255, 255, 255, 0.40f * hudProgress));
+
+    // Header: Pulse dot + Title + Close button
+    float curX = hudCard.left + 14.0f;
+    drawPulseDot(curX + 4.0f, hudCard.top + 16.0f, 3.6f, rgba(16, 185, 129, hudProgress), hudProgress);
+    curX += 16.0f;
+    drawText("DIAGNOSTICS & TELEMETRY", { curX, hudCard.top + 8.0f, hudCard.right - 36.0f, hudCard.top + 26.0f },
+             fmtSmall_, withAlpha(COL_TEXT_PRIMARY, hudProgress));
+
+    UiRect closeBtn = { hudCard.right - 28.0f, hudCard.top + 7.0f, hudCard.right - 8.0f, hudCard.top + 27.0f };
+    drawButton("hud_close_btn", closeBtn, "×",
+               COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_SECONDARY,
+               6.0f, [this]() {
+                   showPerformanceHud_ = false;
+               }, fmtSmall_, true, COL_BORDER);
+
+    // Thin separator line
+    fillRoundRect({ hudCard.left + 12.0f, hudCard.top + 33.0f, hudCard.right - 12.0f, hudCard.top + 34.0f },
+                  0.0f, withAlpha(COL_BORDER, 0.65f * hudProgress));
+
+    float cy = hudCard.top + 40.0f;
+
+    // Row 1: Framerate & Display
+    float curFps = stats.fps;
+    float frameTimeMs = (curFps > 0.5f) ? (1000.0f / curFps) : 0.0f;
+    D2D1_COLOR_F fpsColor = (curFps >= 50.0f) ? rgba(16, 185, 129, hudProgress) :
+                            (curFps >= 25.0f) ? rgba(245, 158, 11, hudProgress) :
+                                                rgba(239, 68, 68, hudProgress);
+
+    char fpsBuf[64];
+    std::snprintf(fpsBuf, sizeof(fpsBuf), "%.0f FPS (%.1f ms)", curFps, frameTimeMs);
+    drawText(fpsBuf, { hudCard.left + 14.0f, cy, hudCard.left + 160.0f, cy + 18.0f },
+             fmtBodyBold_, fpsColor);
+
+    char resBuf[64];
+    const char* presetName = (stats.qualityPreset == QualityPreset::Ultra) ? "Ultra" :
+                             (stats.qualityPreset == QualityPreset::Balanced) ? "Balanced" : "Low";
+    std::snprintf(resBuf, sizeof(resBuf), "%dx%d • %s", stats.frameWidth, stats.frameHeight, presetName);
+    drawText(resBuf, { hudCard.left + 160.0f, cy, hudCard.right - 14.0f, cy + 18.0f },
+             fmtSmall_, withAlpha(COL_TEXT_SECONDARY, hudProgress), DWRITE_TEXT_ALIGNMENT_TRAILING);
+
+    cy += 24.0f;
+
+    // Row 2: Latency Pipeline (Capture | Encode | Decode)
+    drawText("LATENCY PIPELINE", { hudCard.left + 14.0f, cy, hudCard.right - 14.0f, cy + 14.0f },
+             fmtSmall_, withAlpha(COL_TEXT_MUTED, hudProgress * 0.85f));
+    cy += 16.0f;
+
+    char pipeBuf[80];
+    std::snprintf(pipeBuf, sizeof(pipeBuf), "Cap: %.1f ms   Enc: %.1f ms   Dec: %.1f ms",
+                  stats.captureLatencyMs, stats.encodeLatencyMs, stats.decodeLatencyMs);
+    drawText(pipeBuf, { hudCard.left + 14.0f, cy, hudCard.right - 14.0f, cy + 18.0f },
+             fmtMono_ ? fmtMono_ : fmtSmall_, withAlpha(COL_TEXT_PRIMARY, hudProgress));
+
+    cy += 24.0f;
+
+    // Row 3: Network Ping & Bitrate
+    D2D1_COLOR_F pingColor = (stats.rttMs < 35) ? rgba(16, 185, 129, hudProgress) :
+                             (stats.rttMs < 85) ? rgba(245, 158, 11, hudProgress) :
+                                                  rgba(239, 68, 68, hudProgress);
+    char netBuf[64];
+    std::snprintf(netBuf, sizeof(netBuf), "RTT: %u ms   •   %.1f kbps", stats.rttMs, stats.kbps);
+    drawText(netBuf, { hudCard.left + 14.0f, cy, hudCard.left + 190.0f, cy + 18.0f },
+             fmtSmall_, pingColor);
+
+    char compBuf[64];
+    std::snprintf(compBuf, sizeof(compBuf), "Comp: %.1f:1 (%u tiles)",
+                  ((std::isfinite(stats.compressionRatio) && stats.compressionRatio > 0.1f) ? stats.compressionRatio : 1.0f),
+                  stats.deltaTilesCount);
+    drawText(compBuf, { hudCard.left + 160.0f, cy, hudCard.right - 14.0f, cy + 18.0f },
+             fmtSmall_, withAlpha(COL_TEXT_SECONDARY, hudProgress), DWRITE_TEXT_ALIGNMENT_TRAILING);
+
+    cy += 20.0f;
+
+    // Row 4: RTT Latency Sparkline
+    if (stats.rttHistory.size() >= 2) {
+        UiRect sparkRect = { hudCard.left + 14.0f, cy, hudCard.right - 14.0f, cy + 28.0f };
+        drawSparkline(sparkRect, stats.rttHistory.data(), stats.rttHistory.size(), 120.0f, COL_PRIMARY_ACCENT, hudProgress);
+    } else {
+        UiRect sparkRect = { hudCard.left + 14.0f, cy, hudCard.right - 14.0f, cy + 28.0f };
+        fillRoundRect(sparkRect, 4.0f, withAlpha(COL_BG_SUBTLE, hudProgress * 0.5f));
+        drawText("Sampling network latency...", sparkRect, fmtSmall_,
+                 withAlpha(COL_TEXT_MUTED, hudProgress), DWRITE_TEXT_ALIGNMENT_CENTER);
+    }
+
+    cy += 34.0f;
+
+    // Row 5: Hotkey helper
+    drawText("Press Ctrl + Shift + O to toggle overlay",
+             { hudCard.left + 14.0f, cy, hudCard.right - 14.0f, cy + 16.0f },
+             fmtSmall_, withAlpha(COL_TEXT_MUTED, hudProgress * 0.70f), DWRITE_TEXT_ALIGNMENT_CENTER);
+
+    renderTarget_->SetTransform(D2D1::Matrix3x2F::Identity());
+}
+
 // ---------------- macOS Dynamic Capsule Toast Banner ----------------
 
 void CppDeskWindow::drawToastBanner(float width, float height, float toastProgress) {
@@ -4426,6 +5102,8 @@ std::string* CppDeskWindow::activeFocusedTextBuffer() {
     if (focusedField_ == FocusedField::RemotePassword) return &remotePasswordInput_;
     if (focusedField_ == FocusedField::LocalPassword) return &localPasswordEdit_;
     if (focusedField_ == FocusedField::RelayServer) return &relayServerEdit_;
+    if (focusedField_ == FocusedField::RelayAuthKey) return &relayAuthKeyEdit_;
+    if (focusedField_ == FocusedField::StunServer) return &stunServerEdit_;
     if (focusedField_ == FocusedField::ChatInput) return &chatInput_;
     if (focusedField_ == FocusedField::TerminalInput) return &terminalInputText_;
     if (focusedField_ == FocusedField::ForwardLocal) return &forwardLocalPortEdit_;
@@ -4435,6 +5113,7 @@ std::string* CppDeskWindow::activeFocusedTextBuffer() {
     if (focusedField_ == FocusedField::EditAlias) return &editAliasInput_;
     if (focusedField_ == FocusedField::EditTag) return &editTagInput_;
     if (focusedField_ == FocusedField::EditNotes) return &editNotesInput_;
+    if (focusedField_ == FocusedField::ClipboardSearch) return &clipSearchQuery_;
     return nullptr;
 }
 
@@ -4625,6 +5304,10 @@ void CppDeskWindow::onMouseWheel(int delta) {
                 diagnosticsScrollOffset_ += (delta > 0 ? -1.0f : 1.0f);
                 if (diagnosticsScrollOffset_ < 0.0f) diagnosticsScrollOffset_ = 0.0f;
                 InvalidateRect(hwnd_, nullptr, FALSE);
+            } else if (drawerTab_ == DrawerTab::ClipboardHistory) {
+                clipHistoryScrollOffset_ += (delta > 0 ? -1 : 1);
+                if (clipHistoryScrollOffset_ < 0) clipHistoryScrollOffset_ = 0;
+                InvalidateRect(hwnd_, nullptr, FALSE);
             }
             return;
         }
@@ -4678,6 +5361,17 @@ void CppDeskWindow::onCharInput(wchar_t ch) {
         else if (focusedField_ == FocusedField::LocalPassword) focusedField_ = FocusedField::RelayServer;
         else focusedField_ = FocusedField::RemoteId;
     } else if (ch == 22) {
+        if (focusedField_ == FocusedField::ChatInput) {
+            std::vector<uint8_t> jpeg;
+            uint32_t w = 0, h = 0;
+            if (ClipboardManager::getClipboardImageJpeg(jpeg, w, h)) {
+                network_.sendChatImage(jpeg, w, h, chatInput_);
+                chatInput_.clear();
+                showToast("Sent image from clipboard");
+                InvalidateRect(hwnd_, nullptr, FALSE);
+                return;
+            }
+        }
         std::string clip = ClipboardManager::getClipboardUtf8();
         for (char c : clip) {
             if (c >= 32 && c < 127 && target->size() < maxLen) {
@@ -4702,6 +5396,11 @@ void CppDeskWindow::onKeyEvent(uint16_t vk, uint16_t scan, bool isDown, bool isE
             return;
         }
         if (vk == VK_ESCAPE) {
+            if (showPerformanceHud_) {
+                showPerformanceHud_ = false;
+                InvalidateRect(hwnd_, nullptr, FALSE);
+                return;
+            }
             if (showPortForwardModal_) {
                 showPortForwardModal_ = false;
                 InvalidateRect(hwnd_, nullptr, FALSE);
@@ -4738,6 +5437,13 @@ void CppDeskWindow::onKeyEvent(uint16_t vk, uint16_t scan, bool isDown, bool isE
                 InvalidateRect(hwnd_, nullptr, FALSE);
                 return;
             }
+        }
+        // Ctrl+Shift+O: Toggle Real-time Performance & Diagnostics HUD Overlay
+        if ((GetKeyState(VK_CONTROL) & 0x8000) && (GetKeyState(VK_SHIFT) & 0x8000) && (vk == 'O' || vk == 'o')) {
+            showPerformanceHud_ = !showPerformanceHud_;
+            showToast(showPerformanceHud_ ? "Performance HUD: ON" : "Performance HUD: OFF");
+            InvalidateRect(hwnd_, nullptr, FALSE);
+            return;
         }
         // Remote Hotkeys: Ctrl+Alt+[1-9], Ctrl+Alt+L, Ctrl+Alt+D, Ctrl+Alt+Del
         if (activeTab_ == ActiveTab::RemoteSession && (GetKeyState(VK_CONTROL) & 0x8000) && (GetKeyState(VK_MENU) & 0x8000)) {

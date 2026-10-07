@@ -3,6 +3,8 @@
 #include "net/network_engine.hpp"
 #include "ui/ui_window.hpp"
 
+#include "control/windows_service_manager.hpp"
+
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -18,7 +20,7 @@
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPSTR /*lpCmdLine*/, int nCmdShow) {
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
-    CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    OleInitialize(nullptr);
 
     int instanceId = 1;
     bool headlessRelayOnly = false;
@@ -29,7 +31,32 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPSTR /*lpC
     if (argv) {
         for (int i = 1; i < argc; ++i) {
             std::wstring arg = argv[i];
-            if (arg == L"--instance" && i + 1 < argc) {
+            if (arg == L"--service-install") {
+                bool ok = cppdesk::WindowsServiceManager::installService();
+                LocalFree(argv);
+                OleUninitialize();
+                return ok ? 0 : 1;
+            } else if (arg == L"--service-uninstall") {
+                bool ok = cppdesk::WindowsServiceManager::uninstallService();
+                LocalFree(argv);
+                OleUninitialize();
+                return ok ? 0 : 1;
+            } else if (arg == L"--service-start") {
+                bool ok = cppdesk::WindowsServiceManager::startService();
+                LocalFree(argv);
+                OleUninitialize();
+                return ok ? 0 : 1;
+            } else if (arg == L"--service-stop") {
+                bool ok = cppdesk::WindowsServiceManager::stopService();
+                LocalFree(argv);
+                OleUninitialize();
+                return ok ? 0 : 1;
+            } else if (arg == L"--service-run") {
+                int res = cppdesk::WindowsServiceManager::runServiceDispatcher();
+                LocalFree(argv);
+                OleUninitialize();
+                return res;
+            } else if (arg == L"--instance" && i + 1 < argc) {
                 try {
                     instanceId = std::stoi(argv[++i]);
                 } catch (...) {}
@@ -88,14 +115,14 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPSTR /*lpC
     if (!window.create(hInstance, nCmdShow)) {
         network.stop();
         if (hMutex) CloseHandle(hMutex);
-        CoUninitialize();
+        OleUninitialize();
         return 1;
     }
 
     int exitCode = window.messageLoop();
     network.stop();
     if (hMutex) CloseHandle(hMutex);
-    CoUninitialize();
+    OleUninitialize();
 
     // Absolute zero background residue: terminate all process threads immediately
     ExitProcess(static_cast<UINT>(exitCode));

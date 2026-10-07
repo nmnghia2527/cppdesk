@@ -17,6 +17,7 @@ $CoreSources = @(
     "src/core/crypto_identity.cpp",
     "src/capture/screen_capture.cpp",
     "src/control/input_injector.cpp",
+    "src/control/shell_clipboard.cpp",
     "src/control/clipboard_file_manager.cpp",
     "src/control/whiteboard_manager.cpp",
     "src/net/network_engine.cpp",
@@ -25,7 +26,8 @@ $CoreSources = @(
     "src/media/session_recorder.cpp",
     "src/media/voice_intercom.cpp",
     "src/capture/display_manager.cpp",
-    "src/control/session_tab_manager.cpp"
+    "src/control/session_tab_manager.cpp",
+    "src/control/windows_service_manager.cpp"
 )
 
 $AppSources = $CoreSources + @(
@@ -60,12 +62,14 @@ $Libs = @(
     "-ldwmapi",
     "-lbcrypt",
     "-lole32",
+    "-loleaut32",
     "-luuid",
     "-lshlwapi",
     "-lcomdlg32",
     "-lgdi32",
     "-luser32",
     "-lshell32",
+    "-ladvapi32",
     "-lwinmm",
     "-lwinhttp",
     "-lpsapi"

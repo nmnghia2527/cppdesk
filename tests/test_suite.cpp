@@ -11,6 +11,7 @@
 #include "../src/media/voice_intercom.hpp"
 #include "../src/capture/display_manager.hpp"
 #include "../src/control/session_tab_manager.hpp"
+#include "../src/control/windows_service_manager.hpp"
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -1752,6 +1753,741 @@ void testMultiSessionTabbedManagement() {
     }
 }
 
+void testNativeClipboardFileTransfer() {
+    std::cout << "[TEST 19] Native OS Clipboard File Copy-Paste & COM Virtual Streams...\n";
+
+    // 1. Serialization & Deserialization of VirtualFileEntry and ClipboardFileListHeader
+    {
+        std::vector<VirtualFileEntry> originalFiles;
+        originalFiles.push_back({ 0, L"Documentation.pdf", 1048576ULL * 25, FILE_ATTRIBUTE_NORMAL });
+        originalFiles.push_back({ 1, L"Image_日本語_测试.png", 5242880ULL, FILE_ATTRIBUTE_READONLY });
+        originalFiles.push_back({ 2, L"Archive_2026.zip", 1024ULL * 1024ULL * 500, FILE_ATTRIBUTE_ARCHIVE });
+
+        std::vector<uint8_t> payload;
+        serializeClipboardFileList(42, originalFiles, payload);
+        TEST_ASSERT(!payload.empty());
+
+        uint32_t decodedTransferId = 0;
+        std::vector<VirtualFileEntry> decodedFiles;
+        bool ok = deserializeClipboardFileList(payload.data(), payload.size(), decodedTransferId, decodedFiles);
+        TEST_ASSERT(ok);
+        TEST_ASSERT(decodedTransferId == 42);
+        TEST_ASSERT(decodedFiles.size() == 3);
+        TEST_ASSERT(decodedFiles[0].fileIndex == 0);
+        TEST_ASSERT(decodedFiles[0].fileName == L"Documentation.pdf");
+        TEST_ASSERT(decodedFiles[0].fileSize == 1048576ULL * 25);
+        TEST_ASSERT(decodedFiles[0].fileAttributes == FILE_ATTRIBUTE_NORMAL);
+
+        TEST_ASSERT(decodedFiles[1].fileName == L"Image_日本語_测试.png");
+        TEST_ASSERT(decodedFiles[1].fileSize == 5242880ULL);
+        TEST_ASSERT(decodedFiles[1].fileAttributes == FILE_ATTRIBUTE_READONLY);
+
+        TEST_ASSERT(decodedFiles[2].fileName == L"Archive_2026.zip");
+        TEST_ASSERT(decodedFiles[2].fileSize == 1024ULL * 1024ULL * 500);
+    }
+
+    // 2. COM ShellDataObject & VirtualFileStream Queries (QueryGetData & GetData)
+    {
+        std::vector<VirtualFileEntry> files;
+        files.push_back({ 0, L"virtual_payload.bin", 65536, FILE_ATTRIBUTE_NORMAL });
+
+        std::vector<uint8_t> testData(65536, 0xAB);
+        auto chunkReader = [&](uint32_t fIndex, uint64_t offset, uint32_t length, std::vector<uint8_t>& out) {
+            if (fIndex != 0) return false;
+            if (offset >= testData.size()) return false;
+            size_t available = testData.size() - offset;
+            size_t toCopy = std::min<size_t>(length, available);
+            out.assign(testData.begin() + offset, testData.begin() + offset + toCopy);
+            return true;
+        };
+
+        ShellDataObject dataObj(files, chunkReader);
+
+        // QueryGetData for CFSTR_FILEDESCRIPTORW
+        FORMATETC fmtDesc{};
+        fmtDesc.cfFormat = ShellClipboard::getFileGroupDescriptorWFormat();
+        fmtDesc.dwAspect = DVASPECT_CONTENT;
+        fmtDesc.lindex = -1;
+        fmtDesc.tymed = TYMED_HGLOBAL;
+        TEST_ASSERT(dataObj.QueryGetData(&fmtDesc) == S_OK);
+
+        // GetData for CFSTR_FILEDESCRIPTORW
+        STGMEDIUM medDesc{};
+        TEST_ASSERT(dataObj.GetData(&fmtDesc, &medDesc) == S_OK);
+        TEST_ASSERT(medDesc.tymed == TYMED_HGLOBAL);
+        TEST_ASSERT(medDesc.hGlobal != nullptr);
+        FILEGROUPDESCRIPTORW* pGroup = static_cast<FILEGROUPDESCRIPTORW*>(GlobalLock(medDesc.hGlobal));
+        TEST_ASSERT(pGroup != nullptr);
+        TEST_ASSERT(pGroup->cItems == 1);
+        TEST_ASSERT(std::wstring(pGroup->fgd[0].cFileName) == L"virtual_payload.bin");
+        TEST_ASSERT(pGroup->fgd[0].nFileSizeLow == 65536);
+        GlobalUnlock(medDesc.hGlobal);
+        ReleaseStgMedium(&medDesc);
+
+        // QueryGetData & GetData for CFSTR_FILECONTENTS
+        FORMATETC fmtContents{};
+        fmtContents.cfFormat = ShellClipboard::getFileContentsFormat();
+        fmtContents.dwAspect = DVASPECT_CONTENT;
+        fmtContents.lindex = 0;
+        fmtContents.tymed = TYMED_ISTREAM;
+        TEST_ASSERT(dataObj.QueryGetData(&fmtContents) == S_OK);
+
+        STGMEDIUM medContents{};
+        TEST_ASSERT(dataObj.GetData(&fmtContents, &medContents) == S_OK);
+        TEST_ASSERT(medContents.tymed == TYMED_ISTREAM);
+        TEST_ASSERT(medContents.pstm != nullptr);
+
+        // Read through IStream
+        IStream* pStream = medContents.pstm;
+        STATSTG stat{};
+        TEST_ASSERT(pStream->Stat(&stat, STATFLAG_NONAME) == S_OK);
+        TEST_ASSERT(stat.cbSize.QuadPart == 65536);
+
+        std::vector<uint8_t> readBuf(32768, 0);
+        ULONG bytesRead = 0;
+        TEST_ASSERT(pStream->Read(readBuf.data(), 32768, &bytesRead) == S_OK);
+        TEST_ASSERT(bytesRead == 32768);
+        TEST_ASSERT(readBuf[0] == 0xAB && readBuf[32767] == 0xAB);
+
+        // Second chunk read
+        TEST_ASSERT(pStream->Read(readBuf.data(), 32768, &bytesRead) == S_OK);
+        TEST_ASSERT(bytesRead == 32768);
+
+        // EOF read
+        TEST_ASSERT(pStream->Read(readBuf.data(), 32768, &bytesRead) == S_OK);
+        TEST_ASSERT(bytesRead == 0);
+
+        ReleaseStgMedium(&medContents);
+    }
+
+    // 3. Conflict Resolution Suffix Naming Logic
+    {
+        std::string testDir = "tests_scratch_conflict";
+        std::filesystem::create_directories(testDir);
+
+        // Create base file
+        std::ofstream(testDir + "/sample.txt") << "base";
+        std::string res1 = ShellClipboard::resolveConflictFilename(testDir, "sample.txt");
+        TEST_ASSERT(res1 == "sample (1).txt");
+
+        // Create conflict file (1)
+        std::ofstream(testDir + "/sample (1).txt") << "copy1";
+        std::string res2 = ShellClipboard::resolveConflictFilename(testDir, "sample.txt");
+        TEST_ASSERT(res2 == "sample (2).txt");
+
+        // Non-conflicting filename
+        std::string res3 = ShellClipboard::resolveConflictFilename(testDir, "unique.txt");
+        TEST_ASSERT(res3 == "unique.txt");
+
+        // Clean up
+        std::filesystem::remove_all(testDir);
+    }
+
+    // 4. On-Demand Chunk Request & SHA-256 Hash Verification in ClipboardFileTransferManager
+    {
+        ClipboardFileTransferManager mgr;
+
+        std::vector<VirtualFileEntry> remoteFiles;
+        remoteFiles.push_back({ 0, L"remote_stream.dat", 4096, FILE_ATTRIBUTE_NORMAL });
+
+        std::vector<uint8_t> lastSentPacket;
+        PacketType lastSentType = PacketType::PING;
+        auto sendFn = [&](PacketType t, const std::vector<uint8_t>& p) {
+            lastSentType = t;
+            lastSentPacket = p;
+            return true;
+        };
+
+        mgr.handleRemoteFileList(101, remoteFiles, sendFn);
+
+        // Simulate background thread calling fetchChunk (which sends CLIPBOARD_FILE_REQUEST)
+        std::vector<uint8_t> chunkResult;
+        std::thread fetcherThread([&]() {
+            mgr.fetchChunk(0, 0, 4096, chunkResult);
+        });
+
+        // Wait for request packet to be emitted
+        int waitMs = 0;
+        while (lastSentType != PacketType::CLIPBOARD_FILE_REQUEST && waitMs < 1000) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            waitMs += 10;
+        }
+        TEST_ASSERT(lastSentType == PacketType::CLIPBOARD_FILE_REQUEST);
+        TEST_ASSERT(lastSentPacket.size() == sizeof(ClipboardFileRequestHeader));
+
+        ClipboardFileRequestHeader reqHdr{};
+        std::memcpy(&reqHdr, lastSentPacket.data(), sizeof(reqHdr));
+        TEST_ASSERT(reqHdr.transferId == 101);
+        TEST_ASSERT(reqHdr.fileIndex == 0);
+        TEST_ASSERT(reqHdr.length == 4096);
+
+        // Deliver chunk with valid SHA-256 hash
+        std::vector<uint8_t> mockData(4096, 0x7E);
+        auto digest = CryptoUtils::sha256(mockData.data(), mockData.size());
+        mgr.handleFileChunk(101, 0, 0, mockData.data(), mockData.size(), digest.data());
+
+        fetcherThread.join();
+        TEST_ASSERT(chunkResult.size() == 4096);
+        TEST_ASSERT(chunkResult[0] == 0x7E);
+        TEST_ASSERT(mgr.activeTransferredBytes() == 4096);
+    }
+
+    // 5. 2 GB Capacity Guardrail Rejection & Cancellation Staging Cleanup
+    {
+        ClipboardFileTransferManager mgr;
+
+        std::vector<VirtualFileEntry> hugeFiles;
+        hugeFiles.push_back({ 0, L"HugeVideo.mkv", 3ULL * 1024ULL * 1024ULL * 1024ULL, FILE_ATTRIBUTE_NORMAL }); // 3 GB > 2 GB
+
+        PacketType cancelSentType = PacketType::PING;
+        std::vector<uint8_t> cancelPacket;
+        auto sendFn = [&](PacketType t, const std::vector<uint8_t>& p) {
+            cancelSentType = t;
+            cancelPacket = p;
+            return true;
+        };
+
+        mgr.handleRemoteFileList(202, hugeFiles, sendFn);
+        TEST_ASSERT(cancelSentType == PacketType::CLIPBOARD_FILE_CANCEL);
+        TEST_ASSERT(cancelPacket.size() == sizeof(ClipboardFileCancelHeader));
+
+        ClipboardFileCancelHeader cancelHdr{};
+        std::memcpy(&cancelHdr, cancelPacket.data(), sizeof(cancelHdr));
+        TEST_ASSERT(cancelHdr.transferId == 202);
+        TEST_ASSERT(cancelHdr.reasonCode == 2); // size limit exceeded
+
+        // Test cancelActiveTransfer purges staging
+        std::wstring stageDir = mgr.stagingDirectory();
+        std::wstring partFile = stageDir + L"transfer_202_part_0.part";
+        std::ofstream(std::filesystem::path(partFile)) << "partial_garbage";
+        TEST_ASSERT(std::filesystem::exists(std::filesystem::path(partFile)));
+
+        mgr.cancelActiveTransfer(sendFn);
+        TEST_ASSERT(!std::filesystem::exists(std::filesystem::path(partFile)));
+    }
+
+    // 6. Path Traversal & Directory Separator Sanitization in handleRemoteFileList
+    {
+        // Also test resolveConflictFilenameW
+        std::wstring testDirW = L"tests_scratch_conflict_w";
+        std::filesystem::create_directories(testDirW);
+        std::ofstream(std::filesystem::path(testDirW) / L"wide.txt") << "base";
+        std::wstring wres1 = ShellClipboard::resolveConflictFilenameW(testDirW, L"wide.txt");
+        TEST_ASSERT(wres1 == L"wide (1).txt");
+        std::ofstream(std::filesystem::path(testDirW) / L"wide (1).txt") << "copy1";
+        std::wstring wres2 = ShellClipboard::resolveConflictFilenameW(testDirW, L"wide.txt");
+        TEST_ASSERT(wres2 == L"wide (2).txt");
+        std::wstring wres3 = ShellClipboard::resolveConflictFilenameW(testDirW, L"unique.txt");
+        TEST_ASSERT(wres3 == L"unique.txt");
+        std::filesystem::remove_all(testDirW);
+
+        // Test handleRemoteFileList sanitization
+        ClipboardFileTransferManager mgr;
+        std::vector<VirtualFileEntry> traversalFiles;
+        traversalFiles.push_back({ 0, L"../../evil_payload.exe", 1024, FILE_ATTRIBUTE_NORMAL });
+        traversalFiles.push_back({ 1, L"nested/folder\\sub..dir/data.bin", 1024, FILE_ATTRIBUTE_NORMAL });
+        traversalFiles.push_back({ 2, L"..", 1024, FILE_ATTRIBUTE_NORMAL });
+        traversalFiles.push_back({ 3, L"", 1024, FILE_ATTRIBUTE_NORMAL });
+
+        auto noopSend = [](PacketType, const std::vector<uint8_t>&) { return true; };
+        mgr.handleRemoteFileList(303, traversalFiles, noopSend);
+
+        // File 0: path("../../evil_payload.exe").filename() -> "evil_payload.exe"
+        TEST_ASSERT(mgr.activeFileName() == "evil_payload.exe");
+
+        // Fetch chunk on file 1: path("nested/folder\\sub..dir/data.bin").filename() -> "data.bin"
+        std::vector<uint8_t> dummyChunk;
+        mgr.fetchChunk(1, 0, 100, dummyChunk);
+        TEST_ASSERT(mgr.activeFileName() == "data.bin");
+
+        // Fetch chunk on file 2: ".." -> "received_file_2.bin"
+        mgr.fetchChunk(2, 0, 100, dummyChunk);
+        TEST_ASSERT(mgr.activeFileName() == "received_file_2.bin");
+
+        // Fetch chunk on file 3: "" -> "received_file_3.bin"
+        mgr.fetchChunk(3, 0, 100, dummyChunk);
+        TEST_ASSERT(mgr.activeFileName() == "received_file_3.bin");
+    }
+}
+
+void testSelfHostedRelayAndStunDiagnostics() {
+    std::cout << "[Test 20] Self-Hosted Relay, RFC 5389 STUN NAT Discovery & Diagnostics...\n" << std::flush;
+
+    // 1. INI persistence of AppSettings relay and STUN fields
+    {
+        IdentityManager idMgr(99);
+        AppSettings s = idMgr.settings();
+        s.relayServer = "relay.mycustomserver.net:50999";
+        s.relayAuthKey = "superSecretKey123";
+        s.stunServer = "stun1.l.google.com:19302";
+        s.relayMode = 1; // Self-Hosted
+        idMgr.updateSettings(s);
+
+        IdentityManager idReload(99);
+        idReload.loadOrCreate();
+        TEST_ASSERT(idReload.settings().relayServer == "relay.mycustomserver.net:50999");
+        TEST_ASSERT(idReload.settings().relayAuthKey == "superSecretKey123");
+        TEST_ASSERT(idReload.settings().stunServer == "stun1.l.google.com:19302");
+        TEST_ASSERT(idReload.settings().relayMode == 1);
+        TEST_ASSERT(idReload.relayServerAddress() == "relay.mycustomserver.net:50999");
+    }
+
+    // 2. TCP Relay Probe (online vs offline)
+    {
+        // Probe offline/unreachable port
+        auto probeFail = NetworkEngine::probeRelayServer("127.0.0.1:59998", 200);
+        TEST_ASSERT(!probeFail.reachable);
+        TEST_ASSERT(probeFail.rttMs == -1);
+
+        // Probe active relay server
+        RelayServer testRelay;
+        bool started = testRelay.start(50988);
+        TEST_ASSERT(started);
+        auto probeOk = NetworkEngine::probeRelayServer("127.0.0.1:50988", 1000);
+        TEST_ASSERT(probeOk.reachable);
+        TEST_ASSERT(probeOk.rttMs >= 0);
+        testRelay.stop();
+    }
+
+    // 3. RFC 5389 STUN Binding Request & XOR-MAPPED-ADDRESS Resolution with Mock Responder
+    {
+        SOCKET mockStunSock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+        TEST_ASSERT(mockStunSock != INVALID_SOCKET);
+
+        sockaddr_in stunBind{};
+        stunBind.sin_family = AF_INET;
+        stunBind.sin_addr.s_addr = inet_addr("127.0.0.1");
+        stunBind.sin_port = htons(50989);
+        int bErr = bind(mockStunSock, reinterpret_cast<sockaddr*>(&stunBind), sizeof(stunBind));
+        TEST_ASSERT(bErr == 0);
+
+        std::atomic<bool> mockRunning{true};
+        std::thread mockThread([mockStunSock, &mockRunning]() {
+            fd_set rfds;
+            FD_ZERO(&rfds);
+            FD_SET(mockStunSock, &rfds);
+            timeval tv{ 1, 500000 };
+            int sel = select(0, &rfds, nullptr, nullptr, &tv);
+            if (sel > 0 && FD_ISSET(mockStunSock, &rfds)) {
+                uint8_t reqBuf[256] = {};
+                sockaddr_in clientAddr{};
+                int clen = sizeof(clientAddr);
+                int n = recvfrom(mockStunSock, reinterpret_cast<char*>(reqBuf), sizeof(reqBuf), 0,
+                                 reinterpret_cast<sockaddr*>(&clientAddr), &clen);
+                if (n >= 20) {
+                    uint32_t magic = (static_cast<uint32_t>(reqBuf[4]) << 24) |
+                                     (static_cast<uint32_t>(reqBuf[5]) << 16) |
+                                     (static_cast<uint32_t>(reqBuf[6]) << 8)  |
+                                     static_cast<uint32_t>(reqBuf[7]);
+                    if (magic == 0x2112A442) {
+                        uint8_t respBuf[32] = {};
+                        respBuf[0] = 0x01; respBuf[1] = 0x01;
+                        respBuf[2] = 0x00; respBuf[3] = 0x0C;
+                        respBuf[4] = 0x21; respBuf[5] = 0x12; respBuf[6] = 0xA4; respBuf[7] = 0x42;
+                        std::memcpy(respBuf + 8, reqBuf + 8, 12);
+
+                        respBuf[20] = 0x00; respBuf[21] = 0x20;
+                        respBuf[22] = 0x00; respBuf[23] = 0x08;
+                        respBuf[24] = 0x00;
+                        respBuf[25] = 0x01;
+                        uint16_t xorPort = 54321 ^ 0x2112;
+                        respBuf[26] = static_cast<uint8_t>((xorPort >> 8) & 0xFF);
+                        respBuf[27] = static_cast<uint8_t>(xorPort & 0xFF);
+                        uint32_t testIp = 0xCB0071C3; // 203.0.113.195
+                        uint32_t xorIp = testIp ^ 0x2112A442;
+                        respBuf[28] = static_cast<uint8_t>((xorIp >> 24) & 0xFF);
+                        respBuf[29] = static_cast<uint8_t>((xorIp >> 16) & 0xFF);
+                        respBuf[30] = static_cast<uint8_t>((xorIp >> 8) & 0xFF);
+                        respBuf[31] = static_cast<uint8_t>(xorIp & 0xFF);
+
+                        sendto(mockStunSock, reinterpret_cast<const char*>(respBuf), sizeof(respBuf), 0,
+                               reinterpret_cast<sockaddr*>(&clientAddr), clen);
+                    }
+                }
+            }
+        });
+
+        auto stunResult = NetworkEngine::queryStunServer("127.0.0.1:50989", 1000);
+        mockRunning = false;
+        if (mockThread.joinable()) mockThread.join();
+        closesocket(mockStunSock);
+
+        TEST_ASSERT(stunResult.success);
+        TEST_ASSERT(stunResult.publicIp == "203.0.113.195");
+        TEST_ASSERT(stunResult.publicPort == 54321);
+        TEST_ASSERT(stunResult.rttMs >= 0);
+    }
+
+    // 4. Asynchronous Network Diagnostics & Hot-reconnect
+    {
+        IdentityManager idMgr(98);
+        NetworkEngine engine(idMgr);
+        TEST_ASSERT(engine.start());
+
+        engine.setRelayAddressAndReconnect("127.0.0.1:50988");
+        TEST_ASSERT(idMgr.relayServerAddress() == "127.0.0.1:50988");
+
+        RelayServer testRelay;
+        TEST_ASSERT(testRelay.start(50988));
+
+        engine.startNetworkDiagnostics("127.0.0.1:50988", "127.0.0.1:59999");
+        for (int i = 0; i < 40; ++i) {
+            if (!engine.isNetworkDiagnosticRunning()) break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
+        TEST_ASSERT(!engine.isNetworkDiagnosticRunning());
+
+        RelayProbeResult rRes;
+        StunNatResult sRes;
+        bool gotRes = engine.getNetworkDiagnosticResult(rRes, sRes);
+        TEST_ASSERT(gotRes);
+        TEST_ASSERT(rRes.reachable);
+
+        testRelay.stop();
+        engine.stop();
+    }
+}
+
+void testPerformanceHudMetricsAndTelemetry() {
+    std::cout << "[SUITE 21] Real-Time Performance & Diagnostics HUD Overlay & Telemetry..." << std::endl;
+
+    // 1. Verify ScreenCapturer latency measurements
+    {
+        ScreenCapturer capturer;
+        std::vector<EncodedTile> tiles;
+        bool isKf = false;
+        CursorState cur{};
+        bool ok = capturer.captureDirtyTiles(true, QualityPreset::Balanced, tiles, isKf, cur);
+        TEST_ASSERT(ok);
+        // Verify capture and encode latency values are non-negative and recorded
+        TEST_ASSERT(capturer.lastCaptureLatencyMs() >= 0.0f);
+        TEST_ASSERT(capturer.lastEncodeLatencyMs() >= 0.0f);
+    }
+
+    // 2. Verify PerformanceHudPayload serialization and deserialization
+    {
+        PerformanceHudPayload orig{};
+        orig.captureLatencyMs = 4.25f;
+        orig.encodeLatencyMs = 8.50f;
+        orig.dirtyTilesCount = 14;
+        orig.compressionRatio = 12.8f;
+        orig.hostFps = 59.9f;
+
+        std::vector<uint8_t> buf;
+        serializePerformanceHud(orig, buf);
+        TEST_ASSERT(!buf.empty());
+
+        PerformanceHudPayload parsed{};
+        bool desOk = deserializePerformanceHud(buf.data(), buf.size(), parsed);
+        TEST_ASSERT(desOk);
+        TEST_ASSERT(std::abs(parsed.captureLatencyMs - 4.25f) < 0.01f);
+        TEST_ASSERT(std::abs(parsed.encodeLatencyMs - 8.50f) < 0.01f);
+        TEST_ASSERT(parsed.dirtyTilesCount == 14);
+        TEST_ASSERT(std::abs(parsed.compressionRatio - 12.8f) < 0.01f);
+        TEST_ASSERT(std::abs(parsed.hostFps - 59.9f) < 0.1f);
+    }
+
+    // 3. Verify ViewerSessionStats defaults and telemetry tracking
+    {
+        ViewerSessionStats stats;
+        TEST_ASSERT(stats.captureLatencyMs == 0.0f);
+        TEST_ASSERT(stats.encodeLatencyMs == 0.0f);
+        TEST_ASSERT(stats.decodeLatencyMs == 0.0f);
+        TEST_ASSERT(stats.compressionRatio == 1.0f);
+        TEST_ASSERT(stats.deltaTilesCount == 0);
+        TEST_ASSERT(stats.rttHistory.empty());
+
+        // Test rolling RTT history bounds
+        for (int i = 0; i < 40; ++i) {
+            stats.rttHistory.push_back(static_cast<float>(i * 5));
+            if (stats.rttHistory.size() > 30) {
+                stats.rttHistory.erase(stats.rttHistory.begin());
+            }
+        }
+        TEST_ASSERT(stats.rttHistory.size() == 30);
+        TEST_ASSERT(stats.rttHistory.back() == 195.0f);
+        TEST_ASSERT(stats.rttHistory.front() == 50.0f);
+    }
+
+    // 4. Verify deserialization safety on corrupted or truncated buffers
+    {
+        PerformanceHudPayload parsed{};
+        uint8_t garbage[5] = { 1, 2, 3, 4, 5 };
+        TEST_ASSERT(!deserializePerformanceHud(nullptr, 10, parsed));
+        TEST_ASSERT(!deserializePerformanceHud(garbage, sizeof(garbage), parsed));
+    }
+}
+
+void testRichChatMediaAndClipboardHistoryHub() {
+    std::cout << "[SUITE 22] Rich Chat Media & In-Session Clipboard History Hub..." << std::endl;
+
+    // 1. ChatMediaPayload serialization and deserialization
+    {
+        ChatMediaPayload orig{};
+        orig.senderName = "Host Desk";
+        orig.captionText = "Here is the desktop screenshot";
+        orig.imgWidth = 1920;
+        orig.imgHeight = 1080;
+        orig.jpegData = { 0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 'J', 'F', 'I', 'F', 0x00, 0x01, 0xFF, 0xD9 };
+
+        std::vector<uint8_t> buf;
+        serializeChatMedia(orig, buf);
+        TEST_ASSERT(!buf.empty());
+
+        ChatMediaPayload parsed{};
+        bool ok = deserializeChatMedia(buf.data(), buf.size(), parsed);
+        TEST_ASSERT(ok);
+        TEST_ASSERT(parsed.senderName == "Host Desk");
+        TEST_ASSERT(parsed.captionText == "Here is the desktop screenshot");
+        TEST_ASSERT(parsed.imgWidth == 1920);
+        TEST_ASSERT(parsed.imgHeight == 1080);
+        TEST_ASSERT(parsed.jpegData.size() == orig.jpegData.size());
+        TEST_ASSERT(std::memcmp(parsed.jpegData.data(), orig.jpegData.data(), orig.jpegData.size()) == 0);
+
+        // Deserialization on garbage/truncated buffer
+        ChatMediaPayload failPayload{};
+        TEST_ASSERT(!deserializeChatMedia(nullptr, 10, failPayload));
+        uint8_t shortBuf[3] = { 1, 2, 3 };
+        TEST_ASSERT(!deserializeChatMedia(shortBuf, sizeof(shortBuf), failPayload));
+
+        // Deserialization rejecting oversized payload (> 10MB)
+        ByteWriter oversizedWriter;
+        oversizedWriter.writeString("Sender");
+        oversizedWriter.writeString("Caption");
+        oversizedWriter.writeU32(100);
+        oversizedWriter.writeU32(100);
+        oversizedWriter.writeU64(123456);
+        oversizedWriter.writeU32(11 * 1024 * 1024);
+        auto oversizedBuf = oversizedWriter.takeBuffer();
+        TEST_ASSERT(!deserializeChatMedia(oversizedBuf.data(), oversizedBuf.size(), failPayload));
+    }
+
+    // 2. ClipboardHistoryManager smart classification & storage
+    {
+        ClipboardHistoryManager mgr;
+        TEST_ASSERT(mgr.count() == 0);
+
+        // Test URL
+        mgr.addItem("https://github.com/nmnghia2527/cppdesk", false);
+        // Test Path
+        mgr.addItem("C:\\Windows\\System32\\cmd.exe", false);
+        // Test Code
+        mgr.addItem("class Widget { public: void render(); };", false);
+        // Test Plain Text
+        mgr.addItem("Quick brown fox jumps over lazy dog", true);
+
+        TEST_ASSERT(mgr.count() == 4);
+        auto items = mgr.items();
+        TEST_ASSERT(items.size() == 4);
+
+        // Items are in reverse-chronological order (newest first)
+        TEST_ASSERT(items[0].text == "Quick brown fox jumps over lazy dog");
+        TEST_ASSERT(items[0].typeBadge == "Text");
+        TEST_ASSERT(items[0].isFromRemote == true);
+
+        TEST_ASSERT(items[1].typeBadge == "Code");
+        TEST_ASSERT(items[1].isFromRemote == false);
+
+        TEST_ASSERT(items[2].typeBadge == "Path");
+        TEST_ASSERT(items[3].typeBadge == "URL");
+
+        // Non-duplication of consecutive identical items
+        mgr.addItem("Quick brown fox jumps over lazy dog", true);
+        TEST_ASSERT(mgr.count() == 4);
+
+        // Search filtering
+        auto urlResults = mgr.search("github");
+        TEST_ASSERT(urlResults.size() == 1);
+        TEST_ASSERT(urlResults[0].typeBadge == "URL");
+
+        auto codeResults = mgr.search("Code");
+        TEST_ASSERT(codeResults.size() == 1);
+        TEST_ASSERT(codeResults[0].text.find("Widget") != std::string::npos);
+
+        auto allSearch = mgr.search("");
+        TEST_ASSERT(allSearch.size() == 4);
+
+        // Item deletion
+        uint32_t delId = items[1].id;
+        bool delOk = mgr.deleteItem(delId);
+        TEST_ASSERT(delOk);
+        TEST_ASSERT(mgr.count() == 3);
+
+        // Clear all
+        mgr.clear();
+        TEST_ASSERT(mgr.count() == 0);
+        TEST_ASSERT(mgr.items().empty());
+    }
+
+    // 3. ClipboardManager image extraction and history recording integration
+    {
+        ClipboardManager clip;
+        TEST_ASSERT(clip.history().count() == 0);
+
+        clip.applyRemoteClipboard("https://aerodesk.app/download");
+        TEST_ASSERT(clip.history().count() == 1);
+        auto hist = clip.history().items();
+        TEST_ASSERT(!hist.empty());
+        TEST_ASSERT(hist[0].typeBadge == "URL");
+        TEST_ASSERT(hist[0].isFromRemote == true);
+
+        // Verify copyItemToClipboard roundtrip
+        bool copyOk = clip.history().copyItemToClipboard(hist[0].id);
+        TEST_ASSERT(copyOk);
+        std::string currentClip;
+        for (int retry = 0; retry < 5; ++retry) {
+            currentClip = ClipboardManager::getClipboardUtf8();
+            if (currentClip == "https://aerodesk.app/download") break;
+            Sleep(10);
+        }
+        TEST_ASSERT(currentClip == "https://aerodesk.app/download");
+    }
+
+    // 4. ChatMessageEntry image metadata verification
+    {
+        ChatMessageEntry entry;
+        TEST_ASSERT(!entry.hasImage);
+        TEST_ASSERT(entry.imageJpegData.empty());
+        TEST_ASSERT(entry.imgWidth == 0);
+        TEST_ASSERT(entry.imgHeight == 0);
+
+        entry.hasImage = true;
+        entry.imgWidth = 800;
+        entry.imgHeight = 600;
+        entry.imageJpegData = { 0x11, 0x22, 0x33 };
+        TEST_ASSERT(entry.hasImage);
+        TEST_ASSERT(entry.imgWidth == 800);
+        TEST_ASSERT(entry.imageJpegData.size() == 3);
+    }
+}
+
+void testWindowsServiceAndRemoteRebootReconnect() {
+    std::cout << "[TEST 23] Elevated Windows Service & Remote Reboot-with-Reconnect...\n";
+
+    // 1. Core protocol serialization & deserialization
+    {
+        // 1a. RemoteRebootRequestPayload
+        RemoteRebootRequestPayload reqOriginal{};
+        reqOriginal.countdownSeconds = 10;
+        reqOriginal.rebootMode = 0x01; // safe mode
+        std::vector<uint8_t> reqBuf;
+        serializeRemoteRebootRequest(reqOriginal, reqBuf);
+        TEST_ASSERT(!reqBuf.empty());
+
+        RemoteRebootRequestPayload reqDecoded{};
+        bool reqOk = deserializeRemoteRebootRequest(reqBuf.data(), reqBuf.size(), reqDecoded);
+        TEST_ASSERT(reqOk);
+        TEST_ASSERT(reqDecoded.countdownSeconds == 10);
+        TEST_ASSERT(reqDecoded.rebootMode == 0x01);
+
+        // Corrupt / truncated buffer reject
+        RemoteRebootRequestPayload reqBad{};
+        TEST_ASSERT(!deserializeRemoteRebootRequest(reqBuf.data(), 3, reqBad));
+
+        // 1b. RemoteRebootConfirmPayload
+        RemoteRebootConfirmPayload confOriginal{};
+        confOriginal.countdownSeconds = 5;
+        confOriginal.resumeTokenHex = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        confOriginal.message = "Host rebooting...";
+        std::vector<uint8_t> confBuf;
+        serializeRemoteRebootConfirm(confOriginal, confBuf);
+        TEST_ASSERT(!confBuf.empty());
+
+        RemoteRebootConfirmPayload confDecoded{};
+        bool confOk = deserializeRemoteRebootConfirm(confBuf.data(), confBuf.size(), confDecoded);
+        TEST_ASSERT(confOk);
+        TEST_ASSERT(confDecoded.countdownSeconds == 5);
+        TEST_ASSERT(confDecoded.resumeTokenHex == confOriginal.resumeTokenHex);
+        TEST_ASSERT(confDecoded.message == confOriginal.message);
+
+        // 1c. RemoteRebootReconnectPayload
+        RemoteRebootReconnectPayload recOriginal{};
+        recOriginal.callerDeskId = 123456789ULL;
+        recOriginal.resumeTokenHex = confOriginal.resumeTokenHex;
+        std::vector<uint8_t> recBuf;
+        serializeRemoteRebootReconnect(recOriginal, recBuf);
+        TEST_ASSERT(!recBuf.empty());
+
+        RemoteRebootReconnectPayload recDecoded{};
+        bool recOk = deserializeRemoteRebootReconnect(recBuf.data(), recBuf.size(), recDecoded);
+        TEST_ASSERT(recOk);
+        TEST_ASSERT(recDecoded.callerDeskId == 123456789ULL);
+        TEST_ASSERT(recDecoded.resumeTokenHex == recOriginal.resumeTokenHex);
+    }
+
+    // 2. Reboot token generation, secure disk persistence & single-use consumption
+    {
+        std::string token1 = WindowsServiceManager::generateRebootTokenHex();
+        std::string token2 = WindowsServiceManager::generateRebootTokenHex();
+        TEST_ASSERT(token1.size() == 64);
+        TEST_ASSERT(token2.size() == 64);
+        TEST_ASSERT(token1 != token2);
+
+        std::vector<uint8_t> t1Bytes = CryptoUtils::fromHex(token1);
+        TEST_ASSERT(t1Bytes.size() == 32);
+        TEST_ASSERT(CryptoUtils::toHex(t1Bytes.data(), t1Bytes.size()) == token1);
+
+        uint64_t callerDeskId = 987654321ULL;
+        WindowsServiceManager::clearRebootToken();
+        TEST_ASSERT(!WindowsServiceManager::hasPendingRebootToken());
+
+        // Save token to disk
+        bool saveOk = WindowsServiceManager::saveRebootToken(token1, callerDeskId, 300);
+        TEST_ASSERT(saveOk);
+
+        uint64_t readCaller = 0;
+        TEST_ASSERT(WindowsServiceManager::hasPendingRebootToken(&readCaller));
+        TEST_ASSERT(readCaller == callerDeskId);
+
+        // Validation with wrong desk ID should fail and NOT consume the token
+        TEST_ASSERT(!WindowsServiceManager::validateAndConsumeRebootToken(token1, 111222333ULL));
+        TEST_ASSERT(WindowsServiceManager::hasPendingRebootToken());
+
+        // Validation with wrong token should fail
+        TEST_ASSERT(!WindowsServiceManager::validateAndConsumeRebootToken("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", callerDeskId));
+        TEST_ASSERT(WindowsServiceManager::hasPendingRebootToken());
+
+        // Valid consumption should succeed
+        TEST_ASSERT(WindowsServiceManager::validateAndConsumeRebootToken(token1, callerDeskId));
+
+        // Token must now be consumed (single-use semantics)
+        TEST_ASSERT(!WindowsServiceManager::hasPendingRebootToken());
+        TEST_ASSERT(!WindowsServiceManager::validateAndConsumeRebootToken(token1, callerDeskId));
+    }
+
+    // 3. Service Control Manager queries
+    {
+        bool installed = WindowsServiceManager::isServiceInstalled();
+        bool running = WindowsServiceManager::isServiceRunning();
+        ServiceStatusState state = WindowsServiceManager::getServiceState();
+
+        if (!installed) {
+            TEST_ASSERT(!running);
+            TEST_ASSERT(state == ServiceStatusState::NotInstalled);
+        } else {
+            TEST_ASSERT(state == ServiceStatusState::Running || state == ServiceStatusState::Stopped || state == ServiceStatusState::Pending);
+            if (running) {
+                TEST_ASSERT(state == ServiceStatusState::Running);
+            }
+        }
+    }
+
+    // 4. NetworkEngine token reconnection state & lifecycle
+    {
+        IdentityManager idMgr(100);
+        idMgr.loadOrCreate();
+        NetworkEngine netEng(idMgr);
+
+        TEST_ASSERT(!netEng.isRebootPending());
+        TEST_ASSERT(netEng.rebootCountdown() == 0);
+        TEST_ASSERT(!netEng.isAutoReconnectingWithToken());
+        TEST_ASSERT(netEng.rebootResumeToken().empty());
+
+        netEng.cancelAutoReconnection();
+        TEST_ASSERT(!netEng.isAutoReconnectingWithToken());
+    }
+}
+
 } // namespace
 
 int main() {
@@ -1780,6 +2516,11 @@ int main() {
         testBidirectionalVoiceIntercom(); std::cout << "Test 16 done\n" << std::flush;
         testVirtualDisplayFitAndResolutionMatching(); std::cout << "Test 17 done\n" << std::flush;
         testMultiSessionTabbedManagement(); std::cout << "Test 18 done\n" << std::flush;
+        testNativeClipboardFileTransfer(); std::cout << "Test 19 done\n" << std::flush;
+        testSelfHostedRelayAndStunDiagnostics(); std::cout << "Test 20 done\n" << std::flush;
+        testPerformanceHudMetricsAndTelemetry(); std::cout << "Test 21 done\n" << std::flush;
+        testRichChatMediaAndClipboardHistoryHub(); std::cout << "Test 22 done\n" << std::flush;
+        testWindowsServiceAndRemoteRebootReconnect(); std::cout << "Test 23 done\n" << std::flush;
 
         std::cout << "---------------------------------------------------------\n";
         std::cout << "Assertions Passed: " << g_passed << " | Failed: " << g_failed << "\n";

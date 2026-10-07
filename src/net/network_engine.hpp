@@ -58,6 +58,16 @@ struct ChatMessageEntry {
     std::string text;
     bool        fromLocal = false;
     uint64_t    timestampMs = 0;
+    bool        hasImage = false;
+    std::vector<uint8_t> imageJpegData;
+    uint32_t    imgWidth = 0;
+    uint32_t    imgHeight = 0;
+
+    ChatMessageEntry() = default;
+    ChatMessageEntry(std::string sender, std::string txt, bool local, uint64_t ts,
+                     bool hasImg = false, std::vector<uint8_t> jpeg = {}, uint32_t w = 0, uint32_t h = 0)
+        : senderName(std::move(sender)), text(std::move(txt)), fromLocal(local), timestampMs(ts),
+          hasImage(hasImg), imageJpegData(std::move(jpeg)), imgWidth(w), imgHeight(h) {}
 };
 
 struct PortForwardRule {
@@ -97,6 +107,34 @@ struct ViewerSessionStats {
     bool                  privacyModeEngaged = false;
     bool                  audioMuted = false;
     int                   audioVolume = 100;
+    float                 captureLatencyMs = 0.0f;
+    float                 encodeLatencyMs = 0.0f;
+    float                 decodeLatencyMs = 0.0f;
+    float                 compressionRatio = 1.0f;
+    uint32_t              deltaTilesCount = 0;
+    float                 packetLossPercent = 0.0f;
+    std::vector<float>    rttHistory;
+};
+
+struct StunNatResult {
+    bool        success = false;
+    std::string publicIp;
+    uint16_t    publicPort = 0;
+    std::string natTypeDescription;
+    int         rttMs = -1;
+};
+
+struct RelayProbeResult {
+    bool        reachable = false;
+    int         rttMs = -1;
+    std::string message;
+};
+
+struct NetworkDiagnosticResult {
+    bool             running = false;
+    bool             completed = false;
+    RelayProbeResult relay;
+    StunNatResult    stun;
 };
 
 class RelayServer {
@@ -194,12 +232,20 @@ public:
     void sendKeyEvent(uint16_t vkCode, uint16_t scanCode, bool isDown, bool isExtended);
     void sendReleaseAllModifiers();
     void sendSystemAction(SystemActionType action);
+    bool requestRemoteReboot(bool safeMode = false, uint32_t countdownSeconds = 5);
+    bool isRebootPending() const { return rebootPending_.load(); }
+    uint32_t rebootCountdown() const { return rebootCountdown_.load(); }
+    bool isAutoReconnectingWithToken() const { return autoReconnectingWithToken_.load(); }
+    std::string rebootResumeToken() const;
+    void cancelAutoReconnection();
     void requestVideoSettings(QualityPreset preset, int monitorIndex, bool forceKeyframe, uint8_t targetFps = 0, int adaptiveFps = -1);
     void setSessionFpsConfig(uint8_t targetFps, bool adaptiveFps);
     void selectRemoteMonitor(int monitorIndex);
     void updateQualitySettings(QualityPreset preset, uint8_t targetFps, bool adaptiveFps);
     bool isClipboardSyncEnabled() const { return clipboardSyncEnabled_.load(); }
     void setClipboardSyncEnabled(bool enabled) { clipboardSyncEnabled_.store(enabled); }
+    ClipboardHistoryManager& clipboardHistory() { return clipboardManager_.history(); }
+    const ClipboardHistoryManager& clipboardHistory() const { return clipboardManager_.history(); }
 
     // File transfer, clipboard & live encrypted chat
     uint32_t sendFile(const std::string& filePath,
@@ -211,12 +257,17 @@ public:
     bool cancelFileTransfer(uint32_t transferId);
     void pushLocalClipboardNow();
     bool sendChatMessage(const std::string& text);
+    bool sendChatImage(const std::vector<uint8_t>& jpegData, uint32_t w, uint32_t h, const std::string& caption = "");
     std::vector<ChatMessageEntry> chatMessages() const;
     uint32_t unreadChatCount() const { return unreadChatCount_.load(); }
     void markChatRead() { unreadChatCount_.store(0); }
 
     FileTransferManager& fileTransferManager() { return fileManager_; }
     const FileTransferManager& fileTransferManager() const { return fileManager_; }
+    ClipboardFileTransferManager& clipboardFileTransferManager() { return clipFileMgr_; }
+    const ClipboardFileTransferManager& clipboardFileTransferManager() const { return clipFileMgr_; }
+    ClipboardManager& clipboardManager() { return clipboardManager_; }
+    const ClipboardManager& clipboardManager() const { return clipboardManager_; }
 
     // Audio streaming controls (v2.1.0)
     void setAudioVolume(int percent);
@@ -273,6 +324,14 @@ public:
     bool restoreHostResolution();
     bool isHostResolutionChanged() const;
     void handleIncomingResolutionChangeReq(const uint8_t* payload, size_t len, uint8_t callerPermissions);
+
+    // Relay & STUN Network Diagnostics (v3.2.0 Phase 09)
+    static StunNatResult queryStunServer(const std::string& hostPort, uint32_t timeoutMs = 2000);
+    static RelayProbeResult probeRelayServer(const std::string& hostPort, uint32_t timeoutMs = 2000);
+    void setRelayAddressAndReconnect(const std::string& newAddr);
+    void startNetworkDiagnostics(const std::string& relayAddr, const std::string& stunAddr);
+    bool isNetworkDiagnosticRunning() const;
+    bool getNetworkDiagnosticResult(RelayProbeResult& outRelay, StunNatResult& outStun) const;
 
 private:
     // Background worker loops
@@ -382,6 +441,7 @@ private:
     // Shared FileTransfer, Clipboard & Chat state
     FileTransferManager             fileManager_;
     ClipboardManager                clipboardManager_;
+    ClipboardFileTransferManager    clipFileMgr_;
     std::atomic<bool>               clipboardSyncEnabled_{true};
     mutable std::mutex              chatMutex_;
     std::vector<ChatMessageEntry>   chatHistory_;
@@ -483,6 +543,20 @@ private:
 
     // Virtual Display & Dynamic Resolution Manager (Feature 5)
     DisplayResolutionManager                   displayManager_;
+
+    // Relay & STUN diagnostic worker (v3.2.0 Phase 09)
+    mutable std::mutex                         netDiagMutex_;
+    std::thread                                netDiagThread_;
+    NetworkDiagnosticResult                    netDiagResult_;
+
+    // Remote Reboot with Auto-Reconnect (v3.2.0 Phase 12)
+    std::atomic<bool>                          rebootPending_{false};
+    std::atomic<uint32_t>                      rebootCountdown_{0};
+    std::atomic<bool>                          autoReconnectingWithToken_{false};
+    mutable std::mutex                         rebootTokenMutex_;
+    std::string                                rebootResumeToken_;
+    uint64_t                                   rebootResumeDeskId_ = 0;
+    std::string                                rebootResumeTargetInput_;
 };
 
 } // namespace cppdesk

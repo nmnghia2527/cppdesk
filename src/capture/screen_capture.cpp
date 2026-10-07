@@ -14,6 +14,7 @@
 #include <mutex>
 #include <thread>
 #include <condition_variable>
+#include <chrono>
 
 namespace cppdesk {
 
@@ -784,6 +785,7 @@ bool ScreenCapturer::captureDirtyTiles(
         }
     }
 
+    auto tCapStart = std::chrono::steady_clock::now();
     if (dxgiInitialized_ && dxgiRecoveryState_ == DxgiRecoveryState::Active) {
         captured = captureViaDxgi(dxgiUpdated);
     }
@@ -792,8 +794,11 @@ bool ScreenCapturer::captureDirtyTiles(
             return false;
         }
     }
+    auto tCapEnd = std::chrono::steady_clock::now();
+    lastCaptureLatencyMs_ = std::chrono::duration<float, std::milli>(tCapEnd - tCapStart).count();
 
     outCursor = captureCursorState();
+    auto tEncStart = std::chrono::steady_clock::now();
 
     int cols = (frameW_ + TILE_SIZE - 1) / TILE_SIZE;
     int rows = (frameH_ + TILE_SIZE - 1) / TILE_SIZE;
@@ -827,6 +832,8 @@ bool ScreenCapturer::captureDirtyTiles(
     }
 
     if (dirtyCount == 0) {
+        auto tEncEnd = std::chrono::steady_clock::now();
+        lastEncodeLatencyMs_ = std::chrono::duration<float, std::milli>(tEncEnd - tEncStart).count();
         return true;
     }
 
@@ -896,6 +903,9 @@ bool ScreenCapturer::captureDirtyTiles(
             outTiles.push_back(std::move(t.result));
         }
     }
+
+    auto tEncEnd = std::chrono::steady_clock::now();
+    lastEncodeLatencyMs_ = std::chrono::duration<float, std::milli>(tEncEnd - tEncStart).count();
 
     return true;
 }

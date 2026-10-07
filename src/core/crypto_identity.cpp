@@ -96,6 +96,24 @@ std::string CryptoUtils::toHex(const uint8_t* data, size_t len) {
     return oss.str();
 }
 
+std::vector<uint8_t> CryptoUtils::fromHex(const std::string& hex) {
+    std::vector<uint8_t> bytes;
+    bytes.reserve(hex.size() / 2);
+    auto hexVal = [](char c) -> int {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+        return -1;
+    };
+    for (size_t i = 0; i + 1 < hex.size(); i += 2) {
+        int hi = hexVal(hex[i]);
+        int lo = hexVal(hex[i + 1]);
+        if (hi < 0 || lo < 0) break;
+        bytes.push_back(static_cast<uint8_t>((hi << 4) | lo));
+    }
+    return bytes;
+}
+
 std::string CryptoUtils::sha256Hex(const std::string& text) {
     auto d = sha256(text);
     return toHex(d.data(), d.size());
@@ -396,7 +414,16 @@ bool IdentityManager::loadOrCreate() {
             } else if (key == "unattended_password") {
                 legacyPlainPassword = val;
             } else if (key == "relay_server") {
-                if (!val.empty()) relayServerAddr_ = val;
+                if (!val.empty()) {
+                    relayServerAddr_ = val;
+                    settings_.relayServer = val;
+                }
+            } else if (key == "relay_auth_key") {
+                settings_.relayAuthKey = val;
+            } else if (key == "stun_server") {
+                if (!val.empty()) settings_.stunServer = val;
+            } else if (key == "relay_mode") {
+                try { settings_.relayMode = static_cast<uint8_t>(std::clamp(std::stoi(val), 0, 2)); } catch (...) {}
             } else if (key == "dark_theme") {
                 settings_.darkTheme = (val == "1" || val == "true");
             } else if (key == "target_fps") {
@@ -507,7 +534,10 @@ bool IdentityManager::save() const {
     out << "listen_port=" << listenPort_ << "\n";
     out << "unattended_enabled=" << (unattendedEnabled_ ? "1" : "0") << "\n";
     out << "unattended_verifier=" << unattendedVerifier_ << "\n";
-    out << "relay_server=" << relayServerAddr_ << "\n";
+    out << "relay_server=" << (settings_.relayServer.empty() ? relayServerAddr_ : settings_.relayServer) << "\n";
+    out << "relay_auth_key=" << settings_.relayAuthKey << "\n";
+    out << "stun_server=" << settings_.stunServer << "\n";
+    out << "relay_mode=" << static_cast<int>(settings_.relayMode) << "\n";
     out << "dark_theme=" << (settings_.darkTheme ? "1" : "0") << "\n";
     out << "target_fps=" << static_cast<int>(clampTargetFps(settings_.targetFps)) << "\n";
     out << "adaptive_fps=" << (settings_.adaptiveFps ? "1" : "0") << "\n";
@@ -597,6 +627,7 @@ bool IdentityManager::verifyChallengeResponse(
 
 void IdentityManager::setRelayServerAddress(const std::string& addr) {
     relayServerAddr_ = addr;
+    settings_.relayServer = addr;
     save();
 }
 
@@ -688,11 +719,13 @@ void IdentityManager::updateSettings(const AppSettings& newSettings) {
     settings_ = newSettings;
     settings_.targetFps = clampTargetFps(settings_.targetFps);
     settings_.defaultPermissions &= PERM_ALL;
+    relayServerAddr_ = settings_.relayServer;
     save();
 }
 
 void IdentityManager::resetSettingsToDefault() {
     settings_ = AppSettings{};
+    relayServerAddr_ = settings_.relayServer;
     save();
 }
 

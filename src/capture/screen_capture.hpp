@@ -117,6 +117,10 @@ public:
     const std::vector<uint8_t>& currentFrameBgra() const { return currentFrame_; }
     bool usingDxgi() const { return dxgiInitialized_ && dxgiRecoveryState_ == DxgiRecoveryState::Active; }
 
+    // Telemetry latency metrics
+    float lastCaptureLatencyMs() const { return lastCaptureLatencyMs_; }
+    float lastEncodeLatencyMs() const { return lastEncodeLatencyMs_; }
+
 private:
     bool initDxgiForMonitor(int monitorIndex);
     void releaseDxgi();
@@ -139,6 +143,8 @@ private:
     int                       frameH_ = 0;
     std::vector<uint8_t>      currentFrame_;
     std::vector<uint64_t>     prevTileHashes_;
+    float                     lastCaptureLatencyMs_ = 0.0f;
+    float                     lastEncodeLatencyMs_ = 0.0f;
 };
 
 } // namespace cppdesk

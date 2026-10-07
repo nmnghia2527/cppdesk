@@ -63,6 +63,7 @@ enum class PacketType : uint8_t {
     PROCESS_KILL        = 0x28, // Viewer -> Host: Request process termination
     VOICE_INTERCOM_CHUNK= 0x29, // Bidirectional: VoIP microphone audio stream chunk
     RESOLUTION_CHANGE_REQ=0x2A, // Viewer -> Host: Request host resolution change or aspect fit
+    PERFORMANCE_HUD_METRICS=0x2B, // Host -> Viewer: Real-time capture & encode latency telemetry
 
     // Clipboard, File Transfer & Live Chat
     CLIPBOARD_TEXT      = 0x30,
@@ -72,6 +73,14 @@ enum class PacketType : uint8_t {
     FILE_COMPLETE       = 0x34,
     FILE_CANCEL         = 0x35,
     CHAT_MESSAGE        = 0x36,
+    CLIPBOARD_FILE_LIST    = 0x37, // Host <-> Viewer: Virtual files metadata list on copy
+    CLIPBOARD_FILE_REQUEST = 0x38, // Target -> Source: On-demand request for specific file chunk
+    CLIPBOARD_FILE_CHUNK   = 0x39, // Source -> Target: Chunk payload with SHA-256 block hash
+    CLIPBOARD_FILE_CANCEL  = 0x3A, // Bidirectional: Cancel active clipboard transfer & purge staging
+    CHAT_MEDIA_MESSAGE     = 0x3B, // Bidirectional: Rich chat image/media attachment chunk
+    REMOTE_REBOOT_REQUEST  = 0x3C, // Viewer -> Host: Request reboot (Normal or Safe Mode)
+    REMOTE_REBOOT_CONFIRM  = 0x3D, // Host -> Viewer: Reboot ack with resume token & countdown
+    REMOTE_REBOOT_RECONNECT= 0x3E, // Viewer -> Host: Reconnect handshake with resume token
 
     // Relay & Rendezvous Protocol
     RELAY_REGISTER      = 0x50,
@@ -276,7 +285,47 @@ struct WhiteboardPoint {
     float x; // Normalized 0.0 to 1.0
     float y; // Normalized 0.0 to 1.0
 };
+
+struct ClipboardFileListHeader {
+    uint32_t transferId;
+    uint32_t fileCount;
+    uint64_t totalBytes;
+};
+
+struct ClipboardFileDescHeader {
+    uint32_t fileIndex;
+    uint64_t fileSize;
+    uint32_t fileAttributes;
+    uint16_t nameLengthChars; // Number of wchar_t
+};
+
+struct ClipboardFileRequestHeader {
+    uint32_t transferId;
+    uint32_t fileIndex;
+    uint64_t offset;
+    uint32_t length;
+};
+
+struct ClipboardFileChunkHeader {
+    uint32_t transferId;
+    uint32_t fileIndex;
+    uint64_t offset;
+    uint32_t dataLength;
+    uint8_t  sha256[32];
+};
+
+struct ClipboardFileCancelHeader {
+    uint32_t transferId;
+    uint32_t reasonCode; // 1 = user cancelled, 2 = size limit exceeded, 3 = IO error
+};
 #pragma pack(pop)
+
+struct VirtualFileEntry {
+    uint32_t     fileIndex = 0;
+    std::wstring fileName;
+    uint64_t     fileSize = 0;
+    uint32_t     fileAttributes = 0x80; // FILE_ATTRIBUTE_NORMAL
+};
 
 struct WhiteboardStroke {
     uint32_t strokeId = 0;
@@ -478,6 +527,226 @@ inline bool deserializeSystemDiagnostics(const uint8_t* data, size_t size, Syste
             item.name = r.readString();
             out.processes.push_back(std::move(item));
         }
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+struct PerformanceHudPayload {
+    float    captureLatencyMs = 0.0f;
+    float    encodeLatencyMs = 0.0f;
+    uint32_t dirtyTilesCount = 0;
+    float    compressionRatio = 1.0f;
+    float    hostFps = 0.0f;
+};
+
+inline void serializePerformanceHud(const PerformanceHudPayload& payload, std::vector<uint8_t>& out) {
+    ByteWriter w;
+    w.writeF32(payload.captureLatencyMs);
+    w.writeF32(payload.encodeLatencyMs);
+    w.writeU32(payload.dirtyTilesCount);
+    w.writeF32(payload.compressionRatio);
+    w.writeF32(payload.hostFps);
+    out = w.takeBuffer();
+}
+
+inline bool deserializePerformanceHud(const uint8_t* data, size_t size, PerformanceHudPayload& out) {
+    if (!data || size < (sizeof(float) * 4 + sizeof(uint32_t))) return false;
+    try {
+        ByteReader r(data, size);
+        out.captureLatencyMs = r.readF32();
+        out.encodeLatencyMs = r.readF32();
+        out.dirtyTilesCount = r.readU32();
+        out.compressionRatio = r.readF32();
+        if (r.hasRemaining(sizeof(float))) {
+            out.hostFps = r.readF32();
+        } else {
+            out.hostFps = 0.0f;
+        }
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+struct ChatMediaPayload {
+    std::string senderName;
+    std::string captionText;
+    uint32_t    imgWidth = 0;
+    uint32_t    imgHeight = 0;
+    uint64_t    timestampMs = 0;
+    std::vector<uint8_t> jpegData;
+};
+
+inline void serializeChatMedia(const ChatMediaPayload& payload, std::vector<uint8_t>& out) {
+    ByteWriter w;
+    w.writeString(payload.senderName);
+    w.writeString(payload.captionText);
+    w.writeU32(payload.imgWidth);
+    w.writeU32(payload.imgHeight);
+    w.writeU64(payload.timestampMs);
+    w.writeU32(static_cast<uint32_t>(payload.jpegData.size()));
+    if (!payload.jpegData.empty()) {
+        w.writeBytes(payload.jpegData.data(), payload.jpegData.size());
+    }
+    out = w.takeBuffer();
+}
+
+inline bool deserializeChatMedia(const uint8_t* data, size_t size, ChatMediaPayload& out) {
+    if (!data || size < (2 + 2 + 4 + 4 + 8 + 4)) return false;
+    try {
+        ByteReader r(data, size);
+        out.senderName = r.readString();
+        out.captionText = r.readString();
+        out.imgWidth = r.readU32();
+        out.imgHeight = r.readU32();
+        out.timestampMs = r.readU64();
+        uint32_t len = r.readU32();
+        if (len > 0) {
+            if (len > 10 * 1024 * 1024 || len > r.remaining()) return false;
+            out.jpegData.resize(len);
+            r.readBytes(out.jpegData.data(), len);
+        } else {
+            out.jpegData.clear();
+        }
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+inline void serializeClipboardFileList(uint32_t transferId, const std::vector<VirtualFileEntry>& files, std::vector<uint8_t>& out) {
+    ByteWriter w;
+    ClipboardFileListHeader hdr{};
+    hdr.transferId = transferId;
+    hdr.fileCount = static_cast<uint32_t>(files.size());
+    hdr.totalBytes = 0;
+    for (const auto& f : files) hdr.totalBytes += f.fileSize;
+    w.writeBytes(&hdr, sizeof(hdr));
+
+    for (const auto& f : files) {
+        ClipboardFileDescHeader desc{};
+        desc.fileIndex = f.fileIndex;
+        desc.fileSize = f.fileSize;
+        desc.fileAttributes = f.fileAttributes;
+        desc.nameLengthChars = static_cast<uint16_t>(f.fileName.size());
+        w.writeBytes(&desc, sizeof(desc));
+        if (desc.nameLengthChars > 0) {
+            w.writeBytes(reinterpret_cast<const uint8_t*>(f.fileName.data()), desc.nameLengthChars * sizeof(wchar_t));
+        }
+    }
+    out = w.takeBuffer();
+}
+
+inline bool deserializeClipboardFileList(const uint8_t* data, size_t size, uint32_t& outTransferId, std::vector<VirtualFileEntry>& outFiles) {
+    if (!data || size < sizeof(ClipboardFileListHeader)) return false;
+    try {
+        ByteReader r(data, size);
+        ClipboardFileListHeader hdr{};
+        r.readBytes(&hdr, sizeof(hdr));
+        outTransferId = hdr.transferId;
+        outFiles.clear();
+        outFiles.reserve(hdr.fileCount);
+
+        for (uint32_t i = 0; i < hdr.fileCount; ++i) {
+            if (!r.hasRemaining(sizeof(ClipboardFileDescHeader))) return false;
+            ClipboardFileDescHeader desc{};
+            r.readBytes(&desc, sizeof(desc));
+            size_t nameBytes = static_cast<size_t>(desc.nameLengthChars) * sizeof(wchar_t);
+            if (!r.hasRemaining(nameBytes)) return false;
+
+            VirtualFileEntry entry{};
+            entry.fileIndex = desc.fileIndex;
+            entry.fileSize = desc.fileSize;
+            entry.fileAttributes = desc.fileAttributes;
+            if (desc.nameLengthChars > 0) {
+                entry.fileName.resize(desc.nameLengthChars);
+                std::memcpy(entry.fileName.data(), r.currentPtr(), nameBytes);
+                r.skip(nameBytes);
+            }
+            outFiles.push_back(std::move(entry));
+        }
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+// ---------------- Remote Reboot & Auto-Reconnect Payloads ----------------
+
+struct RemoteRebootRequestPayload {
+    uint8_t  rebootMode = 0; // 0 = Normal, 1 = Safe Mode with Networking
+    uint32_t countdownSeconds = 5;
+};
+
+struct RemoteRebootConfirmPayload {
+    bool        accepted = true;
+    uint32_t    countdownSeconds = 5;
+    std::string resumeTokenHex;
+    std::string message;
+};
+
+struct RemoteRebootReconnectPayload {
+    uint64_t    callerDeskId = 0;
+    std::string resumeTokenHex;
+};
+
+inline void serializeRemoteRebootRequest(const RemoteRebootRequestPayload& payload, std::vector<uint8_t>& out) {
+    ByteWriter w;
+    w.writeU8(payload.rebootMode);
+    w.writeU32(payload.countdownSeconds);
+    out = w.takeBuffer();
+}
+
+inline bool deserializeRemoteRebootRequest(const uint8_t* data, size_t size, RemoteRebootRequestPayload& out) {
+    if (!data || size < (1 + 4)) return false;
+    try {
+        ByteReader r(data, size);
+        out.rebootMode = r.readU8();
+        out.countdownSeconds = r.readU32();
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+inline void serializeRemoteRebootConfirm(const RemoteRebootConfirmPayload& payload, std::vector<uint8_t>& out) {
+    ByteWriter w;
+    w.writeU8(payload.accepted ? 1 : 0);
+    w.writeU32(payload.countdownSeconds);
+    w.writeString(payload.resumeTokenHex);
+    w.writeString(payload.message);
+    out = w.takeBuffer();
+}
+
+inline bool deserializeRemoteRebootConfirm(const uint8_t* data, size_t size, RemoteRebootConfirmPayload& out) {
+    if (!data || size < (1 + 4 + 2 + 2)) return false;
+    try {
+        ByteReader r(data, size);
+        out.accepted = (r.readU8() != 0);
+        out.countdownSeconds = r.readU32();
+        out.resumeTokenHex = r.readString();
+        out.message = r.readString();
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+inline void serializeRemoteRebootReconnect(const RemoteRebootReconnectPayload& payload, std::vector<uint8_t>& out) {
+    ByteWriter w;
+    w.writeU64(payload.callerDeskId);
+    w.writeString(payload.resumeTokenHex);
+    out = w.takeBuffer();
+}
+
+inline bool deserializeRemoteRebootReconnect(const uint8_t* data, size_t size, RemoteRebootReconnectPayload& out) {
+    if (!data || size < (8 + 2)) return false;
+    try {
+        ByteReader r(data, size);
+        out.callerDeskId = r.readU64();
+        out.resumeTokenHex = r.readString();
         return true;
     } catch (...) {
         return false;
