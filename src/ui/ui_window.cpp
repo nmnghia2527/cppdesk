@@ -517,6 +517,10 @@ bool CppDeskWindow::stepAnimations(float dt) {
     float targetRebootModal = showRebootConfirmModal_ ? 1.0f : 0.0f;
     if (stepSpring(rebootModalAnimT_, rebootModalAnimVel_, targetRebootModal, 28.0f, 0.74f, dt)) active = true;
 
+    // 14. Hardware Acceleration Restart Modal Spring (Phase 13)
+    float targetHwAccelModal = showHwAccelRestartModal_ ? 1.0f : 0.0f;
+    if (stepSpring(hwAccelModalAnimT_, hwAccelModalAnimVel_, targetHwAccelModal, 28.0f, 0.74f, dt)) active = true;
+
     // Startup auto-update check timer (queries GitHub 2.0s after launch)
     if (!startupCheckTriggered_) {
         startupUpdateCheckTimer_ -= dt;
@@ -1272,6 +1276,9 @@ void CppDeskWindow::onPaint() {
 
     if (!renderTarget_) {
         D2D1_RENDER_TARGET_PROPERTIES rtProps = D2D1::RenderTargetProperties();
+        rtProps.type = identity_.settings().hardwareAcceleration
+            ? D2D1_RENDER_TARGET_TYPE_DEFAULT
+            : D2D1_RENDER_TARGET_TYPE_SOFTWARE;
         rtProps.dpiX = 96.0f;
         rtProps.dpiY = 96.0f;
         D2D1_HWND_RENDER_TARGET_PROPERTIES hwndProps = D2D1::HwndRenderTargetProperties(
@@ -1367,6 +1374,11 @@ void CppDeskWindow::onPaint() {
     // Remote Reboot & Reconnect Sheet Modal (Phase 12)
     if (rebootModalAnimT_ > 0.004f) {
         drawRebootConfirmModal(width, height, rebootModalAnimT_);
+    }
+
+    // Hardware Acceleration Restart Sheet Modal (Phase 13)
+    if (hwAccelModalAnimT_ > 0.004f) {
+        drawHwAccelRestartModal(width, height, hwAccelModalAnimT_);
     }
 
     // Floating Capsule Toast
@@ -2879,12 +2891,12 @@ void CppDeskWindow::drawSettingsView(const UiRect& bounds, float alpha) {
 
     ly = qualBox.bottom + 10.0f;
 
-    // 4. Session Display
-    UiRect ovBox = { lx, ly, lrx, ly + 86.0f };
+    // 4. Display & Acceleration
+    UiRect ovBox = { lx, ly, lrx, ly + 114.0f };
     fillRoundRect(ovBox, 12.0f, COL_BG_SUBTLE);
     strokeRoundRect(ovBox, 12.0f, COL_BORDER);
 
-    drawText("SESSION DISPLAY", { ovBox.left + 16.0f, ovBox.top + 8.0f, ovBox.right - 16.0f, ovBox.top + 22.0f },
+    drawText("DISPLAY & ACCELERATION", { ovBox.left + 16.0f, ovBox.top + 8.0f, ovBox.right - 16.0f, ovBox.top + 22.0f },
              fmtSmall_, COL_TEXT_ACCENT);
 
     drawToggleSwitch("sett_show_cursor", { ovBox.left + 16.0f, ovBox.top + 26.0f, ovBox.right - 16.0f, ovBox.top + 52.0f },
@@ -2899,6 +2911,15 @@ void CppDeskWindow::drawSettingsView(const UiRect& bounds, float alpha) {
                          AppSettings ns = identity_.settings();
                          ns.showSessionHud = !ns.showSessionHud;
                          identity_.updateSettings(ns);
+                     });
+
+    drawToggleSwitch("sett_hw_accel", { ovBox.left + 16.0f, ovBox.top + 82.0f, ovBox.right - 16.0f, ovBox.top + 108.0f },
+                     s.hardwareAcceleration, "Hardware accelerated rendering (GPU)", [this]() {
+                         AppSettings ns = identity_.settings();
+                         pendingHwAccelChoice_ = !ns.hardwareAcceleration;
+                         ns.hardwareAcceleration = pendingHwAccelChoice_;
+                         identity_.updateSettings(ns);
+                         showHwAccelRestartModal_ = true;
                      });
 
     ly = ovBox.bottom + 10.0f;
@@ -4806,6 +4827,73 @@ void CppDeskWindow::drawRebootConfirmModal(float width, float height, float moda
                    } else {
                        showToast("Failed to request reboot", true);
                    }
+               }, fmtSmall_);
+
+    renderTarget_->SetTransform(D2D1::Matrix3x2F::Identity());
+}
+
+void CppDeskWindow::drawHwAccelRestartModal(float width, float height, float modalProgress) {
+    if (!showHwAccelRestartModal_ && modalProgress <= 0.01f) return;
+
+    float alpha = std::clamp(modalProgress, 0.0f, 1.0f);
+    fillRoundRect({ 0.0f, 0.0f, width, height }, 0.0f, rgba(28, 24, 20, 0.55f * alpha));
+
+    float mw = 490.0f;
+    float mh = 220.0f;
+    UiRect modal = { (width - mw) * 0.5f, (height - mh) * 0.5f, (width + mw) * 0.5f, (height + mh) * 0.5f };
+
+    float scale = 0.90f + 0.10f * modalProgress;
+    renderTarget_->SetTransform(
+        D2D1::Matrix3x2F::Scale(scale, scale, D2D1::Point2F(modal.centerX(), modal.centerY()))
+    );
+
+    drawCardSurface(modal, 18.0f, alpha);
+
+    float mx = modal.left + 26.0f;
+    float mrx = modal.right - 26.0f;
+    float my = modal.top + 22.0f;
+
+    drawText("Restart CppDesk", { mx, my, mrx - 40.0f, my + 26.0f }, fmtHeading_, COL_TEXT_PRIMARY);
+
+    UiRect closeBtn = { mrx - 26.0f, my, mrx, my + 26.0f };
+    drawButton("modal_hwaccel_close", closeBtn, "x",
+               COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 13.0f,
+               [this]() {
+                   showHwAccelRestartModal_ = false;
+                   showToast("Setting saved. Restart CppDesk to apply changes.");
+               }, fmtHeading_);
+    my += 34.0f;
+
+    std::string promptMsg = pendingHwAccelChoice_
+        ? "Hardware accelerated GPU rendering has been enabled. A restart is required to re-initialize graphics pipelines."
+        : "Hardware accelerated GPU rendering has been disabled (switching to CPU software rasterization). A restart is required to re-initialize graphics pipelines.";
+
+    drawText(promptMsg + "\nWould you like to restart CppDesk now?",
+             { mx, my, mrx, my + 54.0f }, fmtSmall_, COL_TEXT_SECONDARY);
+    my += 66.0f;
+
+    // Action buttons
+    float btnW = 135.0f;
+    float btnH = 34.0f;
+    UiRect laterBtn = { mrx - btnW * 2.0f - 10.0f, my, mrx - btnW - 10.0f, my + btnH };
+    UiRect nowBtn   = { mrx - btnW, my, mrx, my + btnH };
+
+    drawButton("modal_hwaccel_later", laterBtn, "Restart Later",
+               COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 8.0f,
+               [this]() {
+                   showHwAccelRestartModal_ = false;
+                   showToast("Setting saved. Restart CppDesk to apply changes.");
+               }, fmtSmall_, true, COL_BORDER);
+
+    drawButton("modal_hwaccel_now", nowBtn, "Restart Now",
+               COL_PRIMARY_ACCENT, COL_PRIMARY_ACCENT_HV, COL_TEXT_ON_ACCENT, 8.0f,
+               [this]() {
+                   showHwAccelRestartModal_ = false;
+                   wchar_t exePath[MAX_PATH]{};
+                   if (GetModuleFileNameW(nullptr, exePath, MAX_PATH) > 0) {
+                       ShellExecuteW(nullptr, L"open", exePath, nullptr, nullptr, SW_SHOWNORMAL);
+                   }
+                   DestroyWindow(hwnd_);
                }, fmtSmall_);
 
     renderTarget_->SetTransform(D2D1::Matrix3x2F::Identity());

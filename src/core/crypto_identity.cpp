@@ -459,6 +459,8 @@ bool IdentityManager::loadOrCreate() {
                 settings_.enableNotificationSounds = (val == "1" || val == "true");
             } else if (key == "minimize_to_tray") {
                 settings_.minimizeToTray = (val == "1" || val == "true");
+            } else if (key == "hardware_acceleration") {
+                settings_.hardwareAcceleration = (val == "1" || val == "true");
             } else if (key == "recent") {
                 // Backward-compatible pipe format:
                 // 3 fields: deskId|hostname|address
@@ -552,6 +554,7 @@ bool IdentityManager::save() const {
     out << "taskbar_flash=" << (settings_.enableTaskbarFlash ? "1" : "0") << "\n";
     out << "notification_sound=" << (settings_.enableNotificationSounds ? "1" : "0") << "\n";
     out << "minimize_to_tray=" << (settings_.minimizeToTray ? "1" : "0") << "\n";
+    out << "hardware_acceleration=" << (settings_.hardwareAcceleration ? "1" : "0") << "\n";
     auto sanitizeIniValue = [](const std::string& in) -> std::string {
         std::string out;
         out.reserve(in.size());

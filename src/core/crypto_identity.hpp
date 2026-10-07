@@ -40,6 +40,9 @@ struct AppSettings {
     std::string   relayAuthKey = "";
     std::string   stunServer = "stun.l.google.com:19302";
     uint8_t       relayMode = 0;                         // 0 = Auto, 1 = Self-Hosted, 2 = Direct LAN
+
+    // Phase 13 Hardware Accelerated Rendering Toggle
+    bool          hardwareAcceleration = true;           // true = GPU (Direct3D 11 / Direct2D default), false = Software (WARP / CPU)
 };
 
 class CryptoUtils {

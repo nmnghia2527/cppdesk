@@ -491,6 +491,7 @@ void testAppSettingsAndAdaptiveFps() {
         s.autoAcceptIncoming = true;
         s.defaultPermissions = PERM_INPUT | PERM_CLIPBOARD;
         s.lockWorkstationOnDisconnect = true;
+        s.hardwareAcceleration = false; // Phase 13: Hardware acceleration toggle
         idSave.updateSettings(s);
     }
     {
@@ -507,6 +508,7 @@ void testAppSettingsAndAdaptiveFps() {
         TEST_ASSERT(loaded.autoAcceptIncoming == true);
         TEST_ASSERT(loaded.defaultPermissions == (PERM_INPUT | PERM_CLIPBOARD));
         TEST_ASSERT(loaded.lockWorkstationOnDisconnect == true);
+        TEST_ASSERT(loaded.hardwareAcceleration == false);
 
         // Reset to defaults and verify
         idLoad.resetSettingsToDefault();
@@ -516,6 +518,7 @@ void testAppSettingsAndAdaptiveFps() {
         TEST_ASSERT(def.adaptiveFps == true);
         TEST_ASSERT(def.defaultQuality == QualityPreset::Balanced);
         TEST_ASSERT(def.defaultPermissions == PERM_ALL);
+        TEST_ASSERT(def.hardwareAcceleration == true);
     }
 }
 

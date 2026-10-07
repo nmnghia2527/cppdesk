@@ -147,6 +147,7 @@ private:
     void drawPerformanceHud(const UiRect& stageRect, float alpha);
     void drawUpdateRequiredModal(float width, float height, float modalProgress);
     void drawRebootConfirmModal(float width, float height, float modalProgress);
+    void drawHwAccelRestartModal(float width, float height, float modalProgress);
     void drawToastBanner(float width, float height, float toastProgress);
     void triggerUpdateCheck(bool manual);
 
@@ -409,6 +410,12 @@ private:
     bool                    rebootSafeModeChoice_ = false;
     float                   rebootModalAnimT_ = 0.0f;
     float                   rebootModalAnimVel_ = 0.0f;
+
+    // Hardware Acceleration Restart Prompt Modal (Phase 13)
+    bool                    showHwAccelRestartModal_ = false;
+    bool                    pendingHwAccelChoice_ = true;
+    float                   hwAccelModalAnimT_ = 0.0f;
+    float                   hwAccelModalAnimVel_ = 0.0f;
 
     // Multi-Session Tabbed Management (Feature 6)
     SessionTabManager       sessionTabs_;
