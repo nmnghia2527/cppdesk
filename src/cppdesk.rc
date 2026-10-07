@@ -1,2 +1,3 @@
 101 ICON "../assets/icon.ico"
+102 RCDATA "../assets/icon.png"
 1 24 "cppdesk.manifest"

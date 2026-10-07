@@ -172,6 +172,7 @@ private:
                        const std::string& value, const std::string& placeholder, bool maskPassword);
     void drawToggleSwitch(const std::string& id, const UiRect& r, bool checked,
                           const std::string& label, std::function<void()> onToggle);
+    void ensureAppIconBitmap();
 
     // Input & interaction handlers
     void onMouseMove(float x, float y);
@@ -207,6 +208,7 @@ private:
     ID2D1HwndRenderTarget*  renderTarget_ = nullptr;
     ID2D1SolidColorBrush*   solidBrush_ = nullptr;
     ID2D1Bitmap*            remoteBitmap_ = nullptr;
+    ID2D1Bitmap*            appIconBitmap_ = nullptr;
     int                     bitmapW_ = 0;
     int                     bitmapH_ = 0;
 
@@ -397,7 +399,7 @@ private:
     float                   updateModalAnimT_ = 0.0f;
     float                   updateModalAnimVel_ = 0.0f;
     bool                    isCheckingUpdates_ = false;
-    std::string             updateStatusText_ = "Version v3.1.0 (Up to date)";
+    std::string             updateStatusText_ = "Version v3.1.1 (Up to date)";
     UpdateInfo              latestUpdateInfo_{};
     float                   startupUpdateCheckTimer_ = 2.0f;
     bool                    startupCheckTriggered_ = false;

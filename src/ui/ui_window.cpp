@@ -1,5 +1,7 @@
 #include "ui_window.hpp"
 #include "../control/windows_service_manager.hpp"
+#include "../capture/screen_capture.hpp"
+#include <gdiplus.h>
 
 #include <windowsx.h>
 #include <dwmapi.h>
@@ -91,65 +93,65 @@ float smoothStepEase(float t) {
     return t * t * (3.0f - 2.0f * t);
 }
 
-// ---------------- Dynamic Light (White & Blue) & Dark (Black & Blue) macOS Palette ----------------
-D2D1_COLOR_F COL_BG_MAIN          = rgba(245, 247, 250);
-D2D1_COLOR_F COL_BG_NAV           = rgba(255, 255, 255);
-D2D1_COLOR_F COL_BG_CARD          = rgba(255, 255, 255);
-D2D1_COLOR_F COL_BG_SUBTLE        = rgba(244, 246, 250);
-D2D1_COLOR_F COL_BG_CARD_ALT      = rgba(239, 246, 255);
-D2D1_COLOR_F COL_BG_INPUT         = rgba(244, 246, 250);
+// ---------------- Dynamic Minimalist Palette (Warm Claude Cream & Terracotta) ----------------
+D2D1_COLOR_F COL_BG_MAIN          = rgba(250, 248, 245); // #FAF8F5 Warm cream linen
+D2D1_COLOR_F COL_BG_NAV           = rgba(245, 240, 234); // #F5F0EA Warm parchment header
+D2D1_COLOR_F COL_BG_CARD          = rgba(255, 255, 255); // #FFFFFF Pure warm white card
+D2D1_COLOR_F COL_BG_SUBTLE        = rgba(243, 238, 230); // #F3EEE6 Warm stone container/input
+D2D1_COLOR_F COL_BG_CARD_ALT      = rgba(249, 243, 236); // #F9F3EC Warm clay tinted card
+D2D1_COLOR_F COL_BG_INPUT         = rgba(243, 238, 230);
 D2D1_COLOR_F COL_BG_INPUT_FOCUS   = rgba(255, 255, 255);
-D2D1_COLOR_F COL_BORDER           = rgba(226, 232, 240);
-D2D1_COLOR_F COL_BORDER_ALT       = rgba(191, 219, 254);
-D2D1_COLOR_F COL_BORDER_FOCUS     = rgba(37, 99, 235);
+D2D1_COLOR_F COL_BORDER           = rgba(228, 222, 212); // #E4DED4 Parchment border
+D2D1_COLOR_F COL_BORDER_ALT       = rgba(224, 198, 185); // #E0C6B9 Warm terracotta border
+D2D1_COLOR_F COL_BORDER_FOCUS     = rgba(217, 119, 87);  // #D97757 Claude terracotta accent
 
-D2D1_COLOR_F COL_PRIMARY_ACCENT      = rgba(37, 99, 235);
-D2D1_COLOR_F COL_PRIMARY_ACCENT_HV   = rgba(29, 78, 216);
-D2D1_COLOR_F COL_SEC_BTN_BG       = rgba(241, 245, 249);
-D2D1_COLOR_F COL_SEC_BTN_HV       = rgba(226, 236, 252);
+D2D1_COLOR_F COL_PRIMARY_ACCENT      = rgba(217, 119, 87);  // #D97757 Claude terracotta clay
+D2D1_COLOR_F COL_PRIMARY_ACCENT_HV   = rgba(193, 95, 60);   // #C15F3C Warm clay hover
+D2D1_COLOR_F COL_SEC_BTN_BG       = rgba(240, 234, 225); // #F0EAE1 Warm secondary button
+D2D1_COLOR_F COL_SEC_BTN_HV       = rgba(230, 222, 210); // #E6DED2 Warm secondary button hover
 
-D2D1_COLOR_F COL_SUCCESS          = rgba(16, 185, 129);
-D2D1_COLOR_F COL_WARNING          = rgba(245, 158, 11);
-D2D1_COLOR_F COL_DANGER           = rgba(220, 38, 38);
-D2D1_COLOR_F COL_DANGER_HV        = rgba(185, 28, 28);
+D2D1_COLOR_F COL_SUCCESS          = rgba(46, 125, 96);   // #2E7D60 Warm sage green
+D2D1_COLOR_F COL_WARNING          = rgba(217, 130, 43);  // #D9822B Warm amber
+D2D1_COLOR_F COL_DANGER           = rgba(199, 62, 58);   // #C73E3A Warm crimson
+D2D1_COLOR_F COL_DANGER_HV        = rgba(173, 50, 47);   // #AD322F
 
-D2D1_COLOR_F COL_TEXT_PRIMARY     = rgba(15, 23, 42);
-D2D1_COLOR_F COL_TEXT_SECONDARY   = rgba(71, 85, 105);
-D2D1_COLOR_F COL_TEXT_MUTED       = rgba(148, 163, 184);
-D2D1_COLOR_F COL_TEXT_ACCENT      = rgba(29, 78, 216);
+D2D1_COLOR_F COL_TEXT_PRIMARY     = rgba(38, 35, 32);    // #262320 Deep warm espresso
+D2D1_COLOR_F COL_TEXT_SECONDARY   = rgba(105, 98, 89);   // #696259 Warm graphite
+D2D1_COLOR_F COL_TEXT_MUTED       = rgba(148, 140, 130); // #948C82 Warm stone grey
+D2D1_COLOR_F COL_TEXT_ACCENT      = rgba(193, 95, 60);   // #C15F3C Claude clay text
 D2D1_COLOR_F COL_TEXT_ON_ACCENT   = rgba(255, 255, 255);
-D2D1_COLOR_F COL_STAGE_BG         = rgba(226, 232, 240);
+D2D1_COLOR_F COL_STAGE_BG         = rgba(235, 229, 219); // #EBE5DB Warm stage canvas
 
 void updateActivePalette(float darkT) {
     darkT = std::clamp(darkT, 0.0f, 1.0f);
 
-    // 60% Dominant Surfaces: Crisp White (#F5F7FA / #FFFFFF) <-> Pitch Black (#05070B / #0B0F17)
-    COL_BG_MAIN        = lerpColor(rgba(245, 247, 250), rgba(5, 7, 11), darkT);
-    COL_BG_NAV         = lerpColor(rgba(255, 255, 255), rgba(9, 13, 21), darkT);
-    COL_BG_CARD        = lerpColor(rgba(255, 255, 255), rgba(11, 16, 26), darkT);
-    COL_BG_SUBTLE      = lerpColor(rgba(244, 246, 250), rgba(16, 23, 38), darkT);
+    // 60% Dominant Surfaces: Cream Linen (#FAF8F5 / #FFFFFF) <-> Roasted Espresso (#1C1B19 / #262522)
+    COL_BG_MAIN        = lerpColor(rgba(250, 248, 245), rgba(28, 27, 25), darkT);
+    COL_BG_NAV         = lerpColor(rgba(245, 240, 234), rgba(34, 33, 30), darkT);
+    COL_BG_CARD        = lerpColor(rgba(255, 255, 255), rgba(38, 37, 34), darkT);
+    COL_BG_SUBTLE      = lerpColor(rgba(243, 238, 230), rgba(46, 44, 40), darkT);
 
-    // 30% Secondary Surfaces & Hairline Borders: Soft Ice Blue <-> Midnight Blue-Black
-    COL_BG_CARD_ALT    = lerpColor(rgba(239, 246, 255), rgba(13, 25, 48), darkT);
-    COL_BG_INPUT       = lerpColor(rgba(244, 246, 250), rgba(8, 12, 20), darkT);
-    COL_BG_INPUT_FOCUS = lerpColor(rgba(255, 255, 255), rgba(15, 22, 36), darkT);
-    COL_BORDER         = lerpColor(rgba(226, 232, 240), rgba(28, 39, 56), darkT);
-    COL_BORDER_ALT     = lerpColor(rgba(191, 219, 254), rgba(30, 58, 138), darkT);
-    COL_BORDER_FOCUS   = lerpColor(rgba(37, 99, 235),   rgba(59, 130, 246), darkT);
+    // 30% Secondary Surfaces & Hairline Borders: Soft Warm Stone <-> Roasted Bronze Espresso
+    COL_BG_CARD_ALT    = lerpColor(rgba(249, 243, 236), rgba(51, 44, 38), darkT);
+    COL_BG_INPUT       = lerpColor(rgba(243, 238, 230), rgba(34, 32, 29), darkT);
+    COL_BG_INPUT_FOCUS = lerpColor(rgba(255, 255, 255), rgba(42, 40, 36), darkT);
+    COL_BORDER         = lerpColor(rgba(228, 222, 212), rgba(59, 56, 51), darkT);
+    COL_BORDER_ALT     = lerpColor(rgba(224, 198, 185), rgba(87, 68, 57), darkT);
+    COL_BORDER_FOCUS   = lerpColor(rgba(217, 119, 87),  rgba(217, 119, 87), darkT);
 
-    // 10% Signature Accent: Royal Blue (#2563EB) <-> Electric Blue (#3B82F6)
-    COL_PRIMARY_ACCENT    = lerpColor(rgba(37, 99, 235),   rgba(59, 130, 246), darkT);
-    COL_PRIMARY_ACCENT_HV = lerpColor(rgba(29, 78, 216),   rgba(96, 165, 250), darkT);
-    COL_SEC_BTN_BG     = lerpColor(rgba(241, 245, 249), rgba(18, 26, 41), darkT);
-    COL_SEC_BTN_HV     = lerpColor(rgba(224, 236, 254), rgba(24, 38, 76), darkT);
+    // 10% Signature Accent: Claude Terracotta Clay (#D97757) <-> Warm Terracotta Ember
+    COL_PRIMARY_ACCENT    = lerpColor(rgba(217, 119, 87), rgba(217, 119, 87), darkT);
+    COL_PRIMARY_ACCENT_HV = lerpColor(rgba(193, 95, 60),  rgba(228, 138, 108), darkT);
+    COL_SEC_BTN_BG     = lerpColor(rgba(240, 234, 225), rgba(44, 42, 38), darkT);
+    COL_SEC_BTN_HV     = lerpColor(rgba(230, 222, 210), rgba(58, 55, 49), darkT);
 
     // Typography Hierarchy (>= 4.5:1 WCAG contrast in both modes)
-    COL_TEXT_PRIMARY   = lerpColor(rgba(15, 23, 42),    rgba(248, 250, 252), darkT);
-    COL_TEXT_SECONDARY = lerpColor(rgba(71, 85, 105),   rgba(148, 163, 184), darkT);
-    COL_TEXT_MUTED     = lerpColor(rgba(130, 144, 165), rgba(100, 116, 139), darkT);
-    COL_TEXT_ACCENT    = lerpColor(rgba(29, 78, 216),   rgba(96, 165, 250), darkT);
+    COL_TEXT_PRIMARY   = lerpColor(rgba(38, 35, 32),    rgba(250, 247, 242), darkT);
+    COL_TEXT_SECONDARY = lerpColor(rgba(105, 98, 89),   rgba(184, 177, 166), darkT);
+    COL_TEXT_MUTED     = lerpColor(rgba(148, 140, 130), rgba(128, 121, 111), darkT);
+    COL_TEXT_ACCENT    = lerpColor(rgba(193, 95, 60),   rgba(228, 138, 108), darkT);
     COL_TEXT_ON_ACCENT = rgba(255, 255, 255);
-    COL_STAGE_BG       = lerpColor(rgba(226, 232, 240), rgba(3, 5, 8), darkT);
+    COL_STAGE_BG       = lerpColor(rgba(235, 229, 219), rgba(20, 19, 18), darkT);
 }
 
 std::wstring utf8ToWide(const std::string& str) {
@@ -332,6 +334,7 @@ bool CppDeskWindow::initGraphics() {
 }
 
 void CppDeskWindow::discardDeviceResources() {
+    if (appIconBitmap_) { appIconBitmap_->Release(); appIconBitmap_ = nullptr; }
     if (remoteBitmap_) { remoteBitmap_->Release(); remoteBitmap_ = nullptr; }
     if (solidBrush_) { solidBrush_->Release(); solidBrush_ = nullptr; }
     if (renderTarget_) { renderTarget_->Release(); renderTarget_ = nullptr; }
@@ -350,6 +353,95 @@ void CppDeskWindow::releaseGraphics() {
     if (fmtMono_) { fmtMono_->Release(); fmtMono_ = nullptr; }
     if (dwriteFactory_) { dwriteFactory_->Release(); dwriteFactory_ = nullptr; }
     if (d2dFactory_) { d2dFactory_->Release(); d2dFactory_ = nullptr; }
+}
+
+void CppDeskWindow::ensureAppIconBitmap() {
+    if (appIconBitmap_ || !renderTarget_) return;
+
+    TileCodec::initGdiPlus();
+
+    Gdiplus::Bitmap* gdiBmp = nullptr;
+    IStream* pStream = nullptr;
+
+    // 1. Embedded RCDATA resource 102
+    HRSRC hRes = FindResourceW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(102), RT_RCDATA);
+    if (hRes) {
+        HGLOBAL hData = LoadResource(GetModuleHandleW(nullptr), hRes);
+        if (hData) {
+            void* pBytes = LockResource(hData);
+            DWORD dwSize = SizeofResource(GetModuleHandleW(nullptr), hRes);
+            if (pBytes && dwSize > 0) {
+                HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, dwSize);
+                if (hMem) {
+                    void* pDest = GlobalLock(hMem);
+                    if (pDest) {
+                        std::memcpy(pDest, pBytes, dwSize);
+                        GlobalUnlock(hMem);
+                        if (CreateStreamOnHGlobal(hMem, TRUE, &pStream) == S_OK) {
+                            gdiBmp = Gdiplus::Bitmap::FromStream(pStream, FALSE);
+                        } else {
+                            GlobalFree(hMem);
+                            pStream = nullptr;
+                        }
+                    } else {
+                        GlobalFree(hMem);
+                    }
+                }
+            }
+        }
+    }
+
+    // 2. Fallback to assets/icon.png on disk
+    if (!gdiBmp || gdiBmp->GetLastStatus() != Gdiplus::Ok) {
+        if (gdiBmp) { delete gdiBmp; gdiBmp = nullptr; }
+        if (pStream) { pStream->Release(); pStream = nullptr; }
+        if (std::filesystem::exists("assets/icon.png")) {
+            gdiBmp = Gdiplus::Bitmap::FromFile(L"assets/icon.png");
+        }
+    }
+
+    // 3. Fallback to Win32 icon 101
+    if (!gdiBmp || gdiBmp->GetLastStatus() != Gdiplus::Ok) {
+        if (gdiBmp) { delete gdiBmp; gdiBmp = nullptr; }
+        if (pStream) { pStream->Release(); pStream = nullptr; }
+        HICON hIcon = (HICON)LoadImageW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(101), IMAGE_ICON, 64, 64, LR_DEFAULTCOLOR);
+        if (hIcon) {
+            gdiBmp = new Gdiplus::Bitmap(hIcon);
+            DestroyIcon(hIcon);
+        }
+    }
+
+    if (!gdiBmp || gdiBmp->GetLastStatus() != Gdiplus::Ok) {
+        if (gdiBmp) delete gdiBmp;
+        if (pStream) pStream->Release();
+        return;
+    }
+
+    UINT w = gdiBmp->GetWidth();
+    UINT h = gdiBmp->GetHeight();
+    if (w > 0 && h > 0) {
+        Gdiplus::Rect lockRect(0, 0, w, h);
+        Gdiplus::BitmapData bdata;
+        if (gdiBmp->LockBits(&lockRect, Gdiplus::ImageLockModeRead, PixelFormat32bppPARGB, &bdata) == Gdiplus::Ok) {
+            D2D1_BITMAP_PROPERTIES props = D2D1::BitmapProperties(
+                D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED)
+            );
+            renderTarget_->CreateBitmap(
+                D2D1::SizeU(w, h),
+                bdata.Scan0,
+                bdata.Stride,
+                &props,
+                &appIconBitmap_
+            );
+            gdiBmp->UnlockBits(&bdata);
+        }
+    }
+
+    delete gdiBmp;
+    if (pStream) {
+        pStream->Release();
+        pStream = nullptr;
+    }
 }
 
 bool CppDeskWindow::stepAnimations(float dt) {
@@ -858,9 +950,9 @@ LRESULT CppDeskWindow::handleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
 void CppDeskWindow::drawCardShadow(const UiRect& r, float radius, float intensity) {
     if (!renderTarget_ || !solidBrush_ || intensity <= 0.01f) return;
     float shadowScale = 1.0f + 2.4f * std::clamp(themeAnimT_, 0.0f, 1.0f);
-    fillRoundRect(r.offset(0.0f, 5.0f).inflate(2.5f, 2.5f), radius + 2.5f, rgba(5, 8, 18, 0.022f * shadowScale * intensity));
-    fillRoundRect(r.offset(0.0f, 2.5f).inflate(1.0f, 1.0f), radius + 1.0f, rgba(5, 8, 18, 0.032f * shadowScale * intensity));
-    fillRoundRect(r.offset(0.0f, 1.0f), radius, rgba(5, 8, 18, 0.028f * shadowScale * intensity));
+    fillRoundRect(r.offset(0.0f, 5.0f).inflate(2.5f, 2.5f), radius + 2.5f, rgba(38, 30, 20, 0.022f * shadowScale * intensity));
+    fillRoundRect(r.offset(0.0f, 2.5f).inflate(1.0f, 1.0f), radius + 1.0f, rgba(38, 30, 20, 0.032f * shadowScale * intensity));
+    fillRoundRect(r.offset(0.0f, 1.0f), radius, rgba(38, 30, 20, 0.028f * shadowScale * intensity));
 }
 
 void CppDeskWindow::drawCardSurface(const UiRect& r, float radius, float alpha, bool /*accentHeader*/) {
@@ -1029,7 +1121,7 @@ void CppDeskWindow::drawButton(
 
     D2D1_COLOR_F curBg = lerpColor(bgColor, hoverColor, std::clamp(hT, 0.0f, 1.0f));
     if (pT > 0.01f) {
-        curBg = lerpColor(curBg, rgba(15, 23, 42, curBg.a), 0.12f * std::clamp(pT, 0.0f, 1.0f));
+        curBg = lerpColor(curBg, rgba(38, 35, 32, curBg.a), 0.12f * std::clamp(pT, 0.0f, 1.0f));
     }
     if (curBg.a > 0.005f) {
         fillRoundRect(animRect, radius, curBg);
@@ -1133,8 +1225,8 @@ void CppDeskWindow::drawToggleSwitch(
     drawText(label, lblRect, fmtBody_, lerpColor(COL_TEXT_PRIMARY, COL_TEXT_ACCENT, hT * 0.55f), DWRITE_TEXT_ALIGNMENT_LEADING);
 
     float tClamped = std::clamp(anim.toggleT, 0.0f, 1.0f);
-    D2D1_COLOR_F offBase = lerpColor(rgba(203, 213, 225), rgba(30, 41, 59), themeAnimT_);
-    D2D1_COLOR_F offHover = lerpColor(rgba(165, 180, 200), rgba(51, 65, 85), themeAnimT_);
+    D2D1_COLOR_F offBase = lerpColor(rgba(220, 213, 202), rgba(55, 52, 47), themeAnimT_);
+    D2D1_COLOR_F offHover = lerpColor(rgba(200, 192, 180), rgba(70, 66, 60), themeAnimT_);
     D2D1_COLOR_F offCol = lerpColor(offBase, offHover, hT);
     D2D1_COLOR_F onCol  = lerpColor(COL_PRIMARY_ACCENT, COL_PRIMARY_ACCENT_HV, hT);
     fillRoundRect(pill, swH * 0.5f, lerpColor(offCol, onCol, tClamped));
@@ -1148,7 +1240,7 @@ void CppDeskWindow::drawToggleSwitch(
     float knobCy = swTop + swH * 0.5f;
 
     UiRect knobRect = { knobCx - knobR - stretch * 0.5f, knobCy - knobR, knobCx + knobR + stretch * 0.5f, knobCy + knobR };
-    fillRoundRect(knobRect.offset(0.0f, 1.2f), knobR, rgba(15, 23, 42, 0.18f));
+    fillRoundRect(knobRect.offset(0.0f, 1.2f), knobR, rgba(38, 35, 32, 0.18f));
     fillRoundRect(knobRect, knobR, rgba(255, 255, 255));
 
     if (onToggle) {
@@ -1230,7 +1322,7 @@ void CppDeskWindow::onPaint() {
     // Floating macOS Side Sheet Drawer
     if (drawerAnimT_ > 0.004f) {
         float scrimAlpha = std::clamp(drawerAnimT_, 0.0f, 1.0f) * 0.18f;
-        fillRoundRect(contentBounds, 0.0f, rgba(5, 8, 15, scrimAlpha));
+        fillRoundRect(contentBounds, 0.0f, rgba(28, 24, 20, scrimAlpha));
 
         float drawerW = std::min(395.0f, width * 0.42f);
         UiRect drawerBounds = { width - drawerW - 14.0f, topOffset + 12.0f, width - 14.0f, height - 14.0f };
@@ -1315,21 +1407,6 @@ void CppDeskWindow::drawTopNavBar(float width, float& outTopOffset) {
     fillRoundRect(navRect, 0.0f, COL_BG_NAV);
     fillRoundRect({ 0.0f, navH - 1.0f, width, navH }, 0.0f, COL_BORDER);
 
-    // Left: Minimal Squircle Brand Badge + Online Dot
-    UiRect logoBadge = { 20.0f, 13.0f, 52.0f, 45.0f };
-    fillRoundRect(logoBadge.offset(0.0f, 2.0f), 9.5f, withAlpha(COL_PRIMARY_ACCENT, 0.22f));
-    fillRoundRect(logoBadge, 9.5f, COL_PRIMARY_ACCENT);
-    drawText("CD", logoBadge, fmtBodyBold_, COL_TEXT_ON_ACCENT, DWRITE_TEXT_ALIGNMENT_CENTER);
-
-    std::string brandTitle = "CppDesk";
-    if (identity_.instanceId() > 1) {
-        brandTitle += " #" + std::to_string(identity_.instanceId());
-    }
-    drawText(brandTitle, { 62.0f, 10.0f, 200.0f, 31.0f }, fmtSubheading_, COL_TEXT_PRIMARY);
-
-    drawPulseDot(67.0f, 39.5f, 3.4f, COL_SUCCESS);
-    drawText("Online", { 76.0f, 30.0f, 180.0f, 48.0f }, fmtSmall_, COL_TEXT_SECONDARY);
-
     // Center: Dead-Center macOS Segmented Control Track + Liquid Spring Pill
     auto vStats = network_.viewerStats();
     bool hasSession = (vStats.state != ViewerConnectionState::Disconnected) || (sessionTabs_.tabCount() > 0);
@@ -1338,7 +1415,7 @@ void CppDeskWindow::drawTopNavBar(float width, float& outTopOffset) {
     float sessW = hasSession ? 172.0f : 0.0f;
     float settW = 102.0f;
     float totalTabsW = dashW + (hasSession ? (sessW + 4.0f) : 0.0f) + 4.0f + settW;
-    float tabStartX = std::max(195.0f, (width - totalTabsW) * 0.5f);
+    float tabStartX = std::max(20.0f, (width - totalTabsW) * 0.5f);
 
     UiRect dashTab = { tabStartX, 12.0f, tabStartX + dashW, 46.0f };
     UiRect sessTab = hasSession
@@ -2384,7 +2461,7 @@ void CppDeskWindow::drawRemoteSessionView(const UiRect& bounds, float alpha) {
 
                 UiRect badge = { canvasDropPos_.x - 85.0f, canvasDropPos_.y + ripRadius + 6.0f,
                                  canvasDropPos_.x + 85.0f, canvasDropPos_.y + ripRadius + 28.0f };
-                fillRoundRect(badge, 6.0f, rgba(15, 23, 42, ripAlpha * 0.92f));
+                fillRoundRect(badge, 6.0f, rgba(28, 27, 25, ripAlpha * 0.92f));
                 strokeRoundRect(badge, 6.0f, withAlpha(COL_PRIMARY_ACCENT, ripAlpha * 0.5f));
                 drawText("Dropped " + std::to_string(canvasDropCount_) + " file(s)", badge, fmtSmall_,
                          withAlpha(COL_TEXT_PRIMARY, ripAlpha), DWRITE_TEXT_ALIGNMENT_CENTER);
@@ -2411,7 +2488,7 @@ void CppDeskWindow::drawRemoteSessionView(const UiRect& bounds, float alpha) {
                                renderedCanvasRect_.right - 16.0f,
                                renderedCanvasRect_.bottom - 16.0f };
 
-            fillRoundRect(hudPill, 9.0f, rgba(12, 16, 24, 0.94f));
+            fillRoundRect(hudPill, 9.0f, rgba(28, 27, 25, 0.94f));
             strokeRoundRect(hudPill, 9.0f, COL_BORDER_ALT);
 
             float pct = (activeItem->totalBytes > 0)
@@ -2451,7 +2528,7 @@ void CppDeskWindow::drawRemoteSessionView(const UiRect& bounds, float alpha) {
                                renderedCanvasRect_.left + 16.0f + recPillW,
                                renderedCanvasRect_.top + 16.0f + recPillH };
 
-            fillRoundRect(recPill, 15.0f, rgba(15, 23, 42, 0.88f));
+            fillRoundRect(recPill, 15.0f, rgba(28, 27, 25, 0.88f));
             strokeRoundRect(recPill, 15.0f, withAlpha(COL_DANGER, 0.65f), 1.2f);
 
             uint64_t tick = GetTickCount64();
@@ -2552,10 +2629,17 @@ void CppDeskWindow::drawSettingsView(const UiRect& bounds, float alpha) {
     drawCardSurface(updateBanner, 14.0f, alpha);
 
     float bPad = 16.0f;
-    // App Emblem "CD"
+    // App Icon
     UiRect iconBadge = { updateBanner.left + bPad, updateBanner.top + 13.0f, updateBanner.left + bPad + 40.0f, updateBanner.top + 53.0f };
-    fillRoundRect(iconBadge, 10.0f, COL_PRIMARY_ACCENT);
-    drawText("CD", iconBadge, fmtSubheading_, COL_TEXT_ON_ACCENT, DWRITE_TEXT_ALIGNMENT_CENTER);
+    ensureAppIconBitmap();
+    if (appIconBitmap_) {
+        drawCardShadow(iconBadge, 10.0f, 0.5f * alpha);
+        D2D1_RECT_F dst = D2D1::RectF(iconBadge.left, iconBadge.top, iconBadge.right, iconBadge.bottom);
+        renderTarget_->DrawBitmap(appIconBitmap_, dst, alpha, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+    } else {
+        fillRoundRect(iconBadge, 10.0f, COL_PRIMARY_ACCENT);
+        drawText("CD", iconBadge, fmtSubheading_, COL_TEXT_ON_ACCENT, DWRITE_TEXT_ALIGNMENT_CENTER);
+    }
 
     // App Name & Product Value Proposition
     float infoX = iconBadge.right + 14.0f;
@@ -3778,7 +3862,7 @@ void CppDeskWindow::drawIncomingApprovalModal(float width, float height, float m
     if (!req.active && modalProgress <= 0.01f) return;
 
     float alpha = std::clamp(modalProgress, 0.0f, 1.0f);
-    fillRoundRect({ 0.0f, 0.0f, width, height }, 0.0f, rgba(5, 8, 15, 0.44f * alpha));
+    fillRoundRect({ 0.0f, 0.0f, width, height }, 0.0f, rgba(28, 24, 20, 0.44f * alpha));
 
     float mw = 440.0f;
     float mh = 326.0f;
@@ -4269,7 +4353,7 @@ void CppDeskWindow::drawShortcutsModal(float width, float height, float modalPro
     if (modalProgress <= 0.005f) return;
 
     float alpha = std::clamp(modalProgress, 0.0f, 1.0f);
-    fillRoundRect({ 0.0f, 0.0f, width, height }, 0.0f, rgba(5, 7, 12, 0.55f * alpha));
+    fillRoundRect({ 0.0f, 0.0f, width, height }, 0.0f, rgba(28, 24, 20, 0.55f * alpha));
 
     // Clicking scrim closes modal
     clickRegions_.push_back({ { 0.0f, 0.0f, width, height }, "modal_sc_scrim", [this]() {
@@ -4346,7 +4430,7 @@ void CppDeskWindow::drawPortForwardModal(float width, float height, float modalP
     if (!showPortForwardModal_ && modalProgress <= 0.01f) return;
 
     float alpha = std::clamp(modalProgress, 0.0f, 1.0f);
-    fillRoundRect({ 0.0f, 0.0f, width, height }, 0.0f, rgba(5, 8, 15, 0.52f * alpha));
+    fillRoundRect({ 0.0f, 0.0f, width, height }, 0.0f, rgba(28, 24, 20, 0.52f * alpha));
 
     float mw = 620.0f;
     float mh = 510.0f;
@@ -4516,7 +4600,7 @@ void CppDeskWindow::drawAddressBookModal(float width, float height, float modalP
     if (!showAddressBookEditModal_ && modalProgress <= 0.01f) return;
 
     float alpha = std::clamp(modalProgress, 0.0f, 1.0f);
-    fillRoundRect({ 0.0f, 0.0f, width, height }, 0.0f, rgba(5, 8, 15, 0.52f * alpha));
+    fillRoundRect({ 0.0f, 0.0f, width, height }, 0.0f, rgba(28, 24, 20, 0.52f * alpha));
 
     float mw = 480.0f;
     float mh = 380.0f;
@@ -4594,7 +4678,7 @@ void CppDeskWindow::drawUpdateRequiredModal(float width, float height, float mod
     if (!showUpdateRequiredModal_ && modalProgress <= 0.01f) return;
 
     float alpha = std::clamp(modalProgress, 0.0f, 1.0f);
-    fillRoundRect({ 0.0f, 0.0f, width, height }, 0.0f, rgba(5, 8, 15, 0.72f * alpha));
+    fillRoundRect({ 0.0f, 0.0f, width, height }, 0.0f, rgba(28, 24, 20, 0.72f * alpha));
 
     float mw = 520.0f;
     float mh = 330.0f;
@@ -4666,7 +4750,7 @@ void CppDeskWindow::drawRebootConfirmModal(float width, float height, float moda
     if (!showRebootConfirmModal_ && modalProgress <= 0.01f) return;
 
     float alpha = std::clamp(modalProgress, 0.0f, 1.0f);
-    fillRoundRect({ 0.0f, 0.0f, width, height }, 0.0f, rgba(5, 8, 15, 0.55f * alpha));
+    fillRoundRect({ 0.0f, 0.0f, width, height }, 0.0f, rgba(28, 24, 20, 0.55f * alpha));
 
     float mw = 480.0f;
     float mh = 250.0f;

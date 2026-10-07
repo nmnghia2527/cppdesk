@@ -1130,8 +1130,8 @@ void testAutoUpdaterAndProtocolV3() {
     TEST_ASSERT(PROTOCOL_MAGIC == 0x43505044); // "CPPD"
     TEST_ASSERT(RELAY_MAGIC == 0x4344534B);    // "CDSK"
     TEST_ASSERT(PROTOCOL_VERSION == 3);
-    TEST_ASSERT(std::string(CPP_DESK_VERSION) == "3.1.0");
-    TEST_ASSERT(CPP_DESK_VERSION_NUM == 0x030100);
+    TEST_ASSERT(std::string(CPP_DESK_VERSION) == "3.1.1");
+    TEST_ASSERT(CPP_DESK_VERSION_NUM == 0x030101);
 
     // 2. Semantic Version Triad Parsing
     int maj = 0, min = 0, pat = 0;

@@ -16,3 +16,5 @@ relay-dotnet/bin/
 relay-dotnet/obj/
 __pycache__/
 *.pyc
+*_running.exe
+*_prev.exe
