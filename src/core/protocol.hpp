@@ -12,8 +12,8 @@ namespace cppdesk {
 constexpr uint32_t PROTOCOL_MAGIC   = 0x43505044; // "CPPD" (CppDesk packet magic)
 constexpr uint32_t RELAY_MAGIC      = 0x4344534B; // "CDSK" (CppDesk relay magic)
 constexpr uint16_t PROTOCOL_VERSION = 3;
-constexpr const char* CPP_DESK_VERSION = "3.1.1";
-constexpr uint32_t CPP_DESK_VERSION_NUM = 0x030101;
+constexpr const char* CPP_DESK_VERSION = "3.1.2";
+constexpr uint32_t CPP_DESK_VERSION_NUM = 0x030102;
 
 constexpr uint16_t DEFAULT_HOST_PORT      = 50990;
 constexpr uint16_t DEFAULT_DISCOVERY_PORT = 50998;
