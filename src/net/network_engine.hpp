@@ -224,7 +224,11 @@ public:
         std::vector<uint8_t>& outBgra,
         int& outW,
         int& outH,
-        CursorState& outCursor) const;
+        CursorState& outCursor,
+        RECT* outDirtyBounds = nullptr) const;
+
+    // Frame notification callback for event-driven 60 FPS viewer rendering
+    void setOnFrameDecodedCallback(std::function<void()> cb);
 
     // Viewer input & session actions
     void sendMouseMove(float normX, float normY);
@@ -338,21 +342,14 @@ public:
     bool isNetworkDiagnosticRunning() const;
     bool getNetworkDiagnosticResult(RelayProbeResult& outRelay, StunNatResult& outStun) const;
 
-private:
-    // Background worker loops
-    void discoveryLoop();
-    void relayRegistrationLoop();
-    void hostAcceptLoop();
-    void runHostSession(uintptr_t clientSock, std::string clientIp);
-    void runViewerSession(std::string targetInput, std::string password);
-
-    // Brute-force protection helpers
-    bool isIpRateLimited(const std::string& ip);
-    void recordAuthResultForIp(const std::string& ip, bool success);
-
-    // Encrypted send helpers for active sessions
-    bool sendHostEncryptedPacket(PacketType type, uint8_t flags, const void* payload, size_t payloadLen);
-    bool sendViewerEncryptedPacket(PacketType type, uint8_t flags, const void* payload, size_t payloadLen);
+    // Socket options and scatter-gather transmission helpers
+    static void setTcpNoDelay(SOCKET s);
+    static bool sendScatterGather(
+        SOCKET s,
+        const void* hdrBuf,
+        size_t hdrLen,
+        const void* payloadBuf = nullptr,
+        size_t payloadLen = 0);
 
     // Socket framing helpers (AES-256-GCM AEAD encryption + tamper verification)
     static bool sendFrame(
@@ -371,6 +368,22 @@ private:
         std::vector<uint8_t>& outPayload,
         AesGcmSessionCipher* cipher = nullptr,
         uint64_t* recvSeq = nullptr);
+
+private:
+    // Background worker loops
+    void discoveryLoop();
+    void relayRegistrationLoop();
+    void hostAcceptLoop();
+    void runHostSession(uintptr_t clientSock, std::string clientIp);
+    void runViewerSession(std::string targetInput, std::string password);
+
+    // Brute-force protection helpers
+    bool isIpRateLimited(const std::string& ip);
+    void recordAuthResultForIp(const std::string& ip, bool success);
+
+    // Encrypted send helpers for active sessions
+    bool sendHostEncryptedPacket(PacketType type, uint8_t flags, const void* payload, size_t payloadLen);
+    bool sendViewerEncryptedPacket(PacketType type, uint8_t flags, const void* payload, size_t payloadLen);
 
     IdentityManager&            identity_;
     std::string                 localIp_ = "127.0.0.1";
@@ -442,6 +455,10 @@ private:
     int                         viewerCanvasH_ = 0;
     uint64_t                    viewerFrameSeq_ = 0;
     CursorState                 viewerCursor_;
+    mutable RECT                viewerDirtyBounds_{0, 0, 0, 0};
+    mutable bool                viewerFullCanvasDirty_ = true;
+    mutable std::mutex          onFrameDecodedMutex_;
+    std::function<void()>       onFrameDecoded_;
 
     // Shared FileTransfer, Clipboard & Chat state
     FileTransferManager             fileManager_;

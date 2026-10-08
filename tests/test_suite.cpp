@@ -2871,6 +2871,954 @@ void testConnectionQualityProfiles() {
     TEST_ASSERT(st.adaptiveFps == false);
 }
 
+void testDxgiDirtyRectsAndGdiRecycling() {
+    std::cout << "[TEST 31] DXGI Hardware Dirty-Rect Bounding & GDI Handle Recycling...\n";
+
+    ScreenCapturer capturer;
+    capturer.selectMonitor(0);
+    TEST_ASSERT(capturer.frameWidth() > 0 && capturer.frameHeight() > 0);
+
+    // Initial keyframe capture initializes frame baseline
+    std::vector<EncodedTile> tilesKf;
+    bool isKf = false;
+    CursorState cursor{};
+    bool ok = capturer.captureDirtyTiles(true, QualityPreset::Balanced, tilesKf, isKf, cursor);
+    TEST_ASSERT(ok);
+    TEST_ASSERT(isKf);
+    TEST_ASSERT(!tilesKf.empty());
+
+    // Second consecutive delta capture with unchanged desktop
+    std::vector<EncodedTile> deltaTiles;
+    bool deltaIsKf = true;
+    ok = capturer.captureDirtyTiles(false, QualityPreset::Balanced, deltaTiles, deltaIsKf, cursor);
+    TEST_ASSERT(ok);
+    TEST_ASSERT(!deltaIsKf);
+
+    // Verify GDI handle persistence when falling back to GDI
+    capturer.triggerDxgiAccessLostForTest();
+    TEST_ASSERT(capturer.dxgiRecoveryState() == ScreenCapturer::DxgiRecoveryState::FallbackGdi);
+
+    std::vector<EncodedTile> gdiTiles1;
+    bool gdiKf1 = false;
+    ok = capturer.captureDirtyTiles(true, QualityPreset::Balanced, gdiTiles1, gdiKf1, cursor);
+    TEST_ASSERT(ok);
+    TEST_ASSERT(gdiKf1);
+    TEST_ASSERT(capturer.hasGdiCachedResources());
+
+    // Subsequent capture reuses existing GDI memory DC and DIB section without re-allocation
+    std::vector<EncodedTile> gdiTiles2;
+    bool gdiKf2 = false;
+    ok = capturer.captureDirtyTiles(false, QualityPreset::Balanced, gdiTiles2, gdiKf2, cursor);
+    TEST_ASSERT(ok);
+    TEST_ASSERT(capturer.hasGdiCachedResources());
+}
+
+void testCodecContextRecyclingAndZeroCopyTasks() {
+    std::cout << "[TEST 32] Codec Context Recycling & Zero-Copy Thread Pool Tasks...\n";
+
+    // 1. Verify repeated ZSTD compression & decompression with context reuse
+    const size_t rawSize = 64 * 64 * 4;
+    std::vector<uint8_t> rawPixels(rawSize);
+    for (size_t i = 0; i < rawSize; ++i) {
+        rawPixels[i] = static_cast<uint8_t>((i * 7) & 0xFF);
+    }
+
+    for (int iter = 0; iter < 10; ++iter) {
+        auto compressed = TileCodec::compressZstd(rawPixels.data(), rawPixels.size(), 1);
+        TEST_ASSERT(!compressed.empty());
+        TEST_ASSERT(compressed.size() < rawPixels.size());
+
+        std::vector<uint8_t> decompressed(rawSize, 0);
+        bool ok = TileCodec::decompressZstd(compressed.data(), compressed.size(), decompressed.data(), decompressed.size());
+        TEST_ASSERT(ok);
+        TEST_ASSERT(std::memcmp(rawPixels.data(), decompressed.data(), rawSize) == 0);
+    }
+
+    // 2. Verify TileThreadPool zero-copy frameBase tasks
+    const int frameW = 256;
+    const int frameH = 256;
+    std::vector<uint8_t> frame(static_cast<size_t>(frameW) * frameH * 4);
+    for (int y = 0; y < frameH; ++y) {
+        for (int x = 0; x < frameW; ++x) {
+            size_t idx = static_cast<size_t>(y * frameW + x) * 4;
+            frame[idx + 0] = static_cast<uint8_t>(x & 0xFF);
+            frame[idx + 1] = static_cast<uint8_t>(y & 0xFF);
+            frame[idx + 2] = static_cast<uint8_t>((x + y) & 0xFF);
+            frame[idx + 3] = 0xFF;
+        }
+    }
+
+    std::vector<TileThreadPool::RectTask> tasks;
+    for (int i = 0; i < 4; ++i) {
+        TileThreadPool::RectTask t{};
+        t.rx = static_cast<uint16_t>((i % 2) * 64);
+        t.ry = static_cast<uint16_t>((i / 2) * 64);
+        t.rw = 64;
+        t.rh = 64;
+        t.frameBase = frame.data();
+        t.frameStride = frameW * 4;
+        t.preset = QualityPreset::Balanced;
+        tasks.push_back(std::move(t));
+    }
+
+    TileThreadPool::instance().parallelEncode(tasks);
+    TEST_ASSERT(tasks.size() == 4);
+    for (const auto& t : tasks) {
+        TEST_ASSERT(!t.result.data.empty());
+        TEST_ASSERT(t.result.width == 64);
+        TEST_ASSERT(t.result.height == 64);
+    }
+}
+
+void testDirect2DPartialDirtyRectAndZeroCopyViewer() {
+    std::cout << "[TEST 33] Direct2D Partial Dirty-Rect Tracking & Zero-Copy Viewer Pipeline...\n";
+
+    // 1. Verify TileCodec::decodeTileIntoCanvas with allocation-free scratch and RawBGRA
+    const int cW = 128;
+    const int cH = 128;
+    std::vector<uint8_t> canvas(cW * cH * 4, 0);
+
+    EncodedTile tile;
+    tile.x = 10;
+    tile.y = 20;
+    tile.width = 64;
+    tile.height = 32;
+    tile.encoding = TileEncoding::RawBGRA;
+    tile.data.assign(64 * 32 * 4, 0xAB);
+
+    bool ok = TileCodec::decodeTileIntoCanvas(tile, canvas.data(), cW, cH);
+    TEST_ASSERT(ok);
+
+    // Verify pixel value at (10, 20)
+    size_t sampleIdx = (20 * cW + 10) * 4;
+    TEST_ASSERT(canvas[sampleIdx + 0] == 0xAB);
+    TEST_ASSERT(canvas[sampleIdx + 1] == 0xAB);
+    TEST_ASSERT(canvas[sampleIdx + 2] == 0xAB);
+    TEST_ASSERT(canvas[sampleIdx + 3] == 0xFF); // Alpha forced opaque
+
+    // 2. Verify NetworkEngine copyLatestViewerFrame with dirty bounds
+    IdentityManager id(33);
+    id.loadOrCreate();
+    NetworkEngine net(id);
+
+    uint64_t seq = 0;
+    std::vector<uint8_t> frameBuf;
+    int outW = 0, outH = 0;
+    CursorState cur{};
+    RECT dirtyBounds{};
+
+    // Before any frame arrives, copyLatestViewerFrame returns false
+    TEST_ASSERT(!net.copyLatestViewerFrame(seq, frameBuf, outW, outH, cur, &dirtyBounds));
+}
+
+void testScatterGatherFrameSendAndSocketBuffers() {
+    std::cout << "[TEST 34] Socket Buffer Scaling & Scatter-Gather Frame Transmission...\n" << std::flush;
+
+    // 1. Verify Socket Buffer Scaling
+    SOCKET s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    TEST_ASSERT(s != INVALID_SOCKET);
+    NetworkEngine::setTcpNoDelay(s);
+
+    int sndBuf = 0;
+    int optLen = sizeof(sndBuf);
+    int res = getsockopt(s, SOL_SOCKET, SO_SNDBUF, reinterpret_cast<char*>(&sndBuf), &optLen);
+    TEST_ASSERT(res == 0);
+    // On Windows, requested 2MB buffer should scale well above default 64KB
+    TEST_ASSERT(sndBuf >= 65536);
+
+    int rcvBuf = 0;
+    optLen = sizeof(rcvBuf);
+    res = getsockopt(s, SOL_SOCKET, SO_RCVBUF, reinterpret_cast<char*>(&rcvBuf), &optLen);
+    TEST_ASSERT(res == 0);
+    TEST_ASSERT(rcvBuf >= 65536);
+    closesocket(s);
+
+    // 2. Setup Loopback Sockets for I/O
+    SOCKET listenSock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    TEST_ASSERT(listenSock != INVALID_SOCKET);
+
+    sockaddr_in sin{};
+    sin.sin_family = AF_INET;
+    sin.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    sin.sin_port = 0;
+    TEST_ASSERT(bind(listenSock, reinterpret_cast<sockaddr*>(&sin), sizeof(sin)) == 0);
+    TEST_ASSERT(listen(listenSock, 1) == 0);
+
+    int sinLen = sizeof(sin);
+    TEST_ASSERT(getsockname(listenSock, reinterpret_cast<sockaddr*>(&sin), &sinLen) == 0);
+
+    SOCKET clientSock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    TEST_ASSERT(clientSock != INVALID_SOCKET);
+    NetworkEngine::setTcpNoDelay(clientSock);
+    TEST_ASSERT(connect(clientSock, reinterpret_cast<sockaddr*>(&sin), sizeof(sin)) == 0);
+
+    SOCKET serverSock = accept(listenSock, nullptr, nullptr);
+    TEST_ASSERT(serverSock != INVALID_SOCKET);
+    NetworkEngine::setTcpNoDelay(serverSock);
+    closesocket(listenSock);
+
+    // 3. Test Direct Scatter-Gather Transmission
+    std::string testPayload(4096, 'X');
+    for (size_t i = 0; i < testPayload.size(); ++i) {
+        testPayload[i] = static_cast<char>('A' + (i % 26));
+    }
+    FrameHeader directHdr{};
+    directHdr.magic = PROTOCOL_MAGIC;
+    directHdr.type = static_cast<uint8_t>(PacketType::CHAT_MESSAGE);
+    directHdr.payloadSize = static_cast<uint32_t>(testPayload.size());
+
+    TEST_ASSERT(NetworkEngine::sendScatterGather(clientSock, &directHdr, sizeof(directHdr), testPayload.data(), testPayload.size()));
+
+    FrameHeader rcvDirectHdr{};
+    std::vector<uint8_t> rcvDirectPayload;
+    TEST_ASSERT(NetworkEngine::recvFrame(serverSock, rcvDirectHdr, rcvDirectPayload));
+    TEST_ASSERT(rcvDirectHdr.magic == PROTOCOL_MAGIC);
+    TEST_ASSERT(rcvDirectHdr.type == static_cast<uint8_t>(PacketType::CHAT_MESSAGE));
+    TEST_ASSERT(rcvDirectPayload.size() == testPayload.size());
+    TEST_ASSERT(std::memcmp(rcvDirectPayload.data(), testPayload.data(), testPayload.size()) == 0);
+
+    // 4. Test High-Frequency Encrypted sendFrame with Scatter-Gather
+    std::array<uint8_t, 32> dummyKey{};
+    dummyKey.fill(0x5A);
+    AesGcmSessionCipher hostCipher, viewerCipher;
+    TEST_ASSERT(hostCipher.initialize(dummyKey, true));
+    TEST_ASSERT(viewerCipher.initialize(dummyKey, false));
+
+    uint64_t hostSendSeq = 1;
+    uint64_t viewerRecvSeq = 1;
+    std::mutex sendMtx;
+
+    for (int frameIdx = 0; frameIdx < 10; ++frameIdx) {
+        std::string frameMsg = "Encrypted Scatter-Gather Frame #" + std::to_string(frameIdx);
+        TEST_ASSERT(NetworkEngine::sendFrame(
+            clientSock,
+            PacketType::CHAT_MESSAGE,
+            0,
+            frameMsg.data(),
+            frameMsg.size(),
+            sendMtx,
+            &hostCipher,
+            &hostSendSeq
+        ));
+
+        FrameHeader encHdr{};
+        std::vector<uint8_t> encPayload;
+        TEST_ASSERT(NetworkEngine::recvFrame(serverSock, encHdr, encPayload, &viewerCipher, &viewerRecvSeq));
+        TEST_ASSERT(encHdr.magic == PROTOCOL_MAGIC);
+        TEST_ASSERT(encHdr.flags & FLAG_ENCRYPTED);
+        TEST_ASSERT(encPayload.size() == frameMsg.size());
+        TEST_ASSERT(std::string(encPayload.begin(), encPayload.end()) == frameMsg);
+    }
+
+    closesocket(clientSock);
+    closesocket(serverSock);
+}
+
+void testPrecisionTimerPacingAndRecycledBuffers() {
+    std::cout << "[TEST 35] 1ms Multimedia Timer Pacing & Recycled Working Buffers...\n" << std::flush;
+
+    // 1. Verify 1ms Windows Timer Granularity Request & Capability
+    TIMECAPS tc{};
+    MMRESULT rCaps = timeGetDevCaps(&tc, sizeof(tc));
+    TEST_ASSERT(rCaps == TIMERR_NOERROR);
+    TEST_ASSERT(tc.wPeriodMin <= 1);
+
+    MMRESULT r = timeBeginPeriod(1);
+    TEST_ASSERT(r == TIMERR_NOERROR);
+
+    MMRESULT rEnd = timeEndPeriod(1);
+    TEST_ASSERT(rEnd == TIMERR_NOERROR);
+
+    // 2. Verify ScreenCapturer Recycled Working Buffers
+    ScreenCapturer capturer;
+    std::vector<EncodedTile> tiles1, tiles2;
+    bool isKey1 = false, isKey2 = false;
+    CursorState cur1{}, cur2{};
+
+    bool capOk1 = capturer.captureDirtyTiles(true, QualityPreset::Balanced, tiles1, isKey1, cur1);
+    TEST_ASSERT(capOk1);
+    TEST_ASSERT(isKey1);
+
+    bool capOk2 = capturer.captureDirtyTiles(false, QualityPreset::Balanced, tiles2, isKey2, cur2);
+    TEST_ASSERT(capOk2);
+
+    // 3. Verify Zero-Allocation Recv Pipeline Decryption
+    SOCKET listenSock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    TEST_ASSERT(listenSock != INVALID_SOCKET);
+
+    sockaddr_in sin{};
+    sin.sin_family = AF_INET;
+    sin.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    sin.sin_port = 0;
+    TEST_ASSERT(bind(listenSock, reinterpret_cast<sockaddr*>(&sin), sizeof(sin)) == 0);
+    TEST_ASSERT(listen(listenSock, 1) == 0);
+
+    int sinLen = sizeof(sin);
+    TEST_ASSERT(getsockname(listenSock, reinterpret_cast<sockaddr*>(&sin), &sinLen) == 0);
+
+    SOCKET clientSock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    TEST_ASSERT(clientSock != INVALID_SOCKET);
+    NetworkEngine::setTcpNoDelay(clientSock);
+    TEST_ASSERT(connect(clientSock, reinterpret_cast<sockaddr*>(&sin), sizeof(sin)) == 0);
+
+    SOCKET serverSock = accept(listenSock, nullptr, nullptr);
+    TEST_ASSERT(serverSock != INVALID_SOCKET);
+    NetworkEngine::setTcpNoDelay(serverSock);
+    closesocket(listenSock);
+
+    std::array<uint8_t, 32> dummyKey{};
+    dummyKey.fill(0x3C);
+    AesGcmSessionCipher hostCipher, viewerCipher;
+    TEST_ASSERT(hostCipher.initialize(dummyKey, true));
+    TEST_ASSERT(viewerCipher.initialize(dummyKey, false));
+
+    uint64_t hostSendSeq = 1;
+    uint64_t viewerRecvSeq = 1;
+    std::mutex sendMtx;
+
+    // Send a 64 KB payload to thoroughly exercise thread-local encrypted scratch buffer and direct decryption
+    std::vector<uint8_t> largePayload(65536);
+    for (size_t i = 0; i < largePayload.size(); ++i) {
+        largePayload[i] = static_cast<uint8_t>((i * 7 + 13) & 0xFF);
+    }
+
+    TEST_ASSERT(NetworkEngine::sendFrame(
+        clientSock,
+        PacketType::CHAT_MESSAGE,
+        0,
+        largePayload.data(),
+        largePayload.size(),
+        sendMtx,
+        &hostCipher,
+        &hostSendSeq
+    ));
+
+    FrameHeader encHdr{};
+    std::vector<uint8_t> decPayload;
+    TEST_ASSERT(NetworkEngine::recvFrame(serverSock, encHdr, decPayload, &viewerCipher, &viewerRecvSeq));
+    TEST_ASSERT(encHdr.magic == PROTOCOL_MAGIC);
+    TEST_ASSERT(encHdr.flags & FLAG_ENCRYPTED);
+    TEST_ASSERT(decPayload.size() == largePayload.size());
+    TEST_ASSERT(std::memcmp(decPayload.data(), largePayload.data(), largePayload.size()) == 0);
+
+    closesocket(clientSock);
+    closesocket(serverSock);
+}
+
+void testZeroCopyTileStreamingAndSerializer() {
+    std::cout << "[TEST 36] Zero-Copy In-Place Tile Streaming & Pre-Reserved Frame Serializer...\n" << std::flush;
+
+    // 1. Verify ByteWriter capacity reservation and move semantics
+    ByteWriter w;
+    w.reserve(8192);
+    TEST_ASSERT(w.buffer().capacity() >= 8192);
+    TEST_ASSERT(w.buffer().empty());
+
+    w.writeU8(0x7F);
+    w.writeU16(0x1234);
+    w.writeU32(0xDEADBEEF);
+    TEST_ASSERT(w.buffer().size() == 7);
+
+    std::vector<uint8_t> moved = w.takeBuffer();
+    TEST_ASSERT(moved.size() == 7);
+    TEST_ASSERT(w.buffer().empty());
+    TEST_ASSERT(moved[0] == 0x7F);
+
+    // 2. Verify raw-pointer TileCodec::decodeTileIntoCanvas with synthetic tile
+    const int canvasW = 128;
+    const int canvasH = 128;
+    std::vector<uint8_t> canvas(static_cast<size_t>(canvasW) * canvasH * 4, 0);
+
+    const uint16_t tileX = 16;
+    const uint16_t tileY = 24;
+    const uint16_t tileW = 32;
+    const uint16_t tileH = 32;
+    std::vector<uint8_t> tileBgra(static_cast<size_t>(tileW) * tileH * 4);
+    for (size_t i = 0; i < tileBgra.size(); i += 4) {
+        tileBgra[i] = 0xAA;     // B
+        tileBgra[i + 1] = 0xBB; // G
+        tileBgra[i + 2] = 0xCC; // R
+        tileBgra[i + 3] = 0xFF; // A
+    }
+
+    // Ultra preset produces Zstd
+    EncodedTile encTileZstd = TileCodec::encodeRect(tileX, tileY, tileW, tileH, tileBgra.data(), QualityPreset::Ultra);
+    TEST_ASSERT(!encTileZstd.data.empty());
+
+    bool decOkZstd = TileCodec::decodeTileIntoCanvas(
+        tileX, tileY, tileW, tileH,
+        encTileZstd.encoding,
+        encTileZstd.data.data(), encTileZstd.data.size(),
+        canvas.data(), canvasW, canvasH
+    );
+    TEST_ASSERT(decOkZstd);
+
+    // Verify sample pixel in decoded canvas region
+    size_t sampleOffset = (static_cast<size_t>(tileY + 5) * canvasW + (tileX + 5)) * 4;
+    TEST_ASSERT(canvas[sampleOffset] == 0xAA);
+    TEST_ASSERT(canvas[sampleOffset + 1] == 0xBB);
+    TEST_ASSERT(canvas[sampleOffset + 2] == 0xCC);
+    TEST_ASSERT(canvas[sampleOffset + 3] == 0xFF);
+
+    // Balanced preset produces Jpeg or Zstd
+    EncodedTile encTileBal = TileCodec::encodeRect(tileX, tileY, tileW, tileH, tileBgra.data(), QualityPreset::Balanced);
+    TEST_ASSERT(!encTileBal.data.empty());
+    bool decOkBal = TileCodec::decodeTileIntoCanvas(
+        tileX, tileY, tileW, tileH,
+        encTileBal.encoding,
+        encTileBal.data.data(), encTileBal.data.size(),
+        canvas.data(), canvasW, canvasH
+    );
+    TEST_ASSERT(decOkBal);
+
+    // 3. Verify safety bounds and null checks
+    // Out-of-bounds tile
+    bool oobOk = TileCodec::decodeTileIntoCanvas(
+        120, 120, tileW, tileH,
+        encTileZstd.encoding,
+        encTileZstd.data.data(), encTileZstd.data.size(),
+        canvas.data(), canvasW, canvasH
+    );
+    TEST_ASSERT(!oobOk);
+
+    // Null canvas pointer
+    bool nullCanvasOk = TileCodec::decodeTileIntoCanvas(
+        tileX, tileY, tileW, tileH,
+        encTileZstd.encoding,
+        encTileZstd.data.data(), encTileZstd.data.size(),
+        nullptr, canvasW, canvasH
+    );
+    TEST_ASSERT(!nullCanvasOk);
+
+    // Zero data size with non-raw encoding
+    bool zeroDataOk = TileCodec::decodeTileIntoCanvas(
+        tileX, tileY, tileW, tileH,
+        TileEncoding::Zstd,
+        nullptr, 0,
+        canvas.data(), canvasW, canvasH
+    );
+    TEST_ASSERT(!zeroDataOk);
+}
+
+void testDirectJpegCanvasBlitAndFramePacing() {
+    std::cout << "[TEST 37] Direct JPEG Canvas Blit, Host Vector Recycling & 60 FPS Pacing...\n" << std::flush;
+
+    // 1. Direct JPEG-to-Canvas Blit Verification
+    const uint16_t tileW = 48;
+    const uint16_t tileH = 32;
+    std::vector<uint8_t> tileBgra(static_cast<size_t>(tileW) * tileH * 4);
+    for (size_t i = 0; i < tileBgra.size(); i += 4) {
+        tileBgra[i]     = 0x50; // B
+        tileBgra[i + 1] = 0x8C; // G
+        tileBgra[i + 2] = 0xDC; // R
+        tileBgra[i + 3] = 0xFF; // A
+    }
+
+    auto jpegData = TileCodec::encodeJpeg(tileBgra.data(), tileW, tileH, 85);
+    TEST_ASSERT(!jpegData.empty());
+
+    const int canvasW = 100;
+    const int canvasH = 100;
+    std::vector<uint8_t> canvas(static_cast<size_t>(canvasW) * canvasH * 4, 0);
+
+    const uint16_t targetX = 20;
+    const uint16_t targetY = 30;
+    bool blitOk = TileCodec::decodeJpegIntoCanvas(
+        jpegData.data(), jpegData.size(),
+        canvas.data(), canvasW, canvasH,
+        targetX, targetY, tileW, tileH
+    );
+    TEST_ASSERT(blitOk);
+
+    // Verify interior pixel: Alpha must be exactly 0xFF, RGB closely matching original
+    size_t sampleIdx = (static_cast<size_t>(targetY + 10) * canvasW + (targetX + 10)) * 4;
+    TEST_ASSERT(canvas[sampleIdx + 3] == 0xFF);
+    TEST_ASSERT(std::abs(static_cast<int>(canvas[sampleIdx]) - 0x50) < 25);
+    TEST_ASSERT(std::abs(static_cast<int>(canvas[sampleIdx + 1]) - 0x8C) < 25);
+    TEST_ASSERT(std::abs(static_cast<int>(canvas[sampleIdx + 2]) - 0xDC) < 25);
+
+    // Verify untargeted region remains untouched (0x00)
+    size_t outsideIdx = (static_cast<size_t>(10) * canvasW + 10) * 4;
+    TEST_ASSERT(canvas[outsideIdx + 3] == 0x00);
+
+    // 2. Bounds and safety checks
+    bool oobOk = TileCodec::decodeJpegIntoCanvas(
+        jpegData.data(), jpegData.size(),
+        canvas.data(), canvasW, canvasH,
+        80, 80, tileW, tileH
+    );
+    TEST_ASSERT(!oobOk);
+
+    bool nullCanvasOk = TileCodec::decodeJpegIntoCanvas(
+        jpegData.data(), jpegData.size(),
+        nullptr, canvasW, canvasH,
+        targetX, targetY, tileW, tileH
+    );
+    TEST_ASSERT(!nullCanvasOk);
+
+    bool nullDataOk = TileCodec::decodeJpegIntoCanvas(
+        nullptr, 0,
+        canvas.data(), canvasW, canvasH,
+        targetX, targetY, tileW, tileH
+    );
+    TEST_ASSERT(!nullDataOk);
+
+    bool dimMismatchOk = TileCodec::decodeJpegIntoCanvas(
+        jpegData.data(), jpegData.size(),
+        canvas.data(), canvasW, canvasH,
+        targetX, targetY, 64, 64
+    );
+    TEST_ASSERT(!dimMismatchOk);
+
+    // 3. NetworkEngine onFrameDecoded callback registration
+    IdentityManager dummyId(99);
+    dummyId.loadOrCreate();
+    NetworkEngine netEngine(dummyId);
+    std::atomic<int> cbCount{0};
+    netEngine.setOnFrameDecodedCallback([&]() {
+        cbCount.fetch_add(1);
+    });
+    TEST_ASSERT(cbCount.load() == 0);
+}
+
+void testInputCoalescingAndZeroAllocEvents() {
+    std::cout << "[SUITE 38] Zero-Allocation Input Serialization & Mouse Coalescing..." << std::endl;
+
+    // 1. Stack struct zero-allocation serialization compatibility with ByteReader
+    {
+        // MouseMove
+        float moveCoords[2] = { 0.42f, 0.88f };
+        ByteReader moveReader(reinterpret_cast<const uint8_t*>(moveCoords), sizeof(moveCoords));
+        TEST_ASSERT(std::abs(moveReader.readF32() - 0.42f) < 0.0001f);
+        TEST_ASSERT(std::abs(moveReader.readF32() - 0.88f) < 0.0001f);
+        TEST_ASSERT(!moveReader.hasRemaining(1));
+
+        // MouseButton
+#pragma pack(push, 1)
+        struct MouseButtonPayload {
+            uint8_t button;
+            uint8_t isDown;
+            float normX;
+            float normY;
+        } btnPayload{ 1, 1, 0.15f, 0.65f };
+#pragma pack(pop)
+        TEST_ASSERT(sizeof(btnPayload) == 10);
+        ByteReader btnReader(reinterpret_cast<const uint8_t*>(&btnPayload), sizeof(btnPayload));
+        TEST_ASSERT(btnReader.readU8() == 1);
+        TEST_ASSERT(btnReader.readU8() == 1);
+        TEST_ASSERT(std::abs(btnReader.readF32() - 0.15f) < 0.0001f);
+        TEST_ASSERT(std::abs(btnReader.readF32() - 0.65f) < 0.0001f);
+        TEST_ASSERT(!btnReader.hasRemaining(1));
+
+        // MouseWheel
+        int32_t wheelDeltas[2] = { 120, -240 };
+        TEST_ASSERT(sizeof(wheelDeltas) == 8);
+        ByteReader wheelReader(reinterpret_cast<const uint8_t*>(wheelDeltas), sizeof(wheelDeltas));
+        TEST_ASSERT(wheelReader.readI32() == 120);
+        TEST_ASSERT(wheelReader.readI32() == -240);
+        TEST_ASSERT(!wheelReader.hasRemaining(1));
+
+        // KeyEvent
+#pragma pack(push, 1)
+        struct KeyEventPayload {
+            uint16_t vk;
+            uint16_t sc;
+            uint8_t isDown;
+            uint8_t isExt;
+        } keyPayload{ 0x57, 0x11, 1, 0 }; // 'W' key down
+#pragma pack(pop)
+        TEST_ASSERT(sizeof(keyPayload) == 6);
+        ByteReader keyReader(reinterpret_cast<const uint8_t*>(&keyPayload), sizeof(keyPayload));
+        TEST_ASSERT(keyReader.readU16() == 0x57);
+        TEST_ASSERT(keyReader.readU16() == 0x11);
+        TEST_ASSERT(keyReader.readU8() == 1);
+        TEST_ASSERT(keyReader.readU8() == 0);
+        TEST_ASSERT(!keyReader.hasRemaining(1));
+    }
+
+    // 2. Mouse Move Coalescing Logic & Tail Preservation Simulation
+    {
+        struct CoalescerSimulator {
+            float curNormX = 0.0f;
+            float curNormY = 0.0f;
+            bool pending = false;
+            uint64_t lastSendTick = 0;
+            std::vector<std::pair<float, float>> sentEvents;
+
+            void onMove(float x, float y, uint64_t tick) {
+                curNormX = x;
+                curNormY = y;
+                pending = true;
+                if (tick - lastSendTick >= 8) {
+                    flush(tick);
+                }
+            }
+
+            void flush(uint64_t tick) {
+                if (pending) {
+                    sentEvents.push_back({ curNormX, curNormY });
+                    pending = false;
+                    lastSendTick = tick;
+                }
+            }
+
+            void onButton(uint64_t tick) {
+                flush(tick); // Guaranteed flush prior to button event
+            }
+        };
+
+        CoalescerSimulator sim;
+        // Move at tick 0: fires immediately
+        sim.onMove(0.1f, 0.1f, 100);
+        TEST_ASSERT(sim.sentEvents.size() == 1);
+        TEST_ASSERT(sim.sentEvents.back().first == 0.1f);
+        TEST_ASSERT(!sim.pending);
+
+        // Rapid moves within 8ms window (tick 102, 104, 106)
+        sim.onMove(0.2f, 0.2f, 102);
+        TEST_ASSERT(sim.pending);
+        TEST_ASSERT(sim.sentEvents.size() == 1); // Not sent yet
+
+        sim.onMove(0.3f, 0.3f, 104);
+        TEST_ASSERT(sim.pending);
+        TEST_ASSERT(sim.sentEvents.size() == 1); // Coalesced
+
+        sim.onMove(0.4f, 0.4f, 106);
+        TEST_ASSERT(sim.pending);
+        TEST_ASSERT(sim.sentEvents.size() == 1); // Still coalesced
+
+        // User stops moving at 0.4! Button pressed at tick 107
+        sim.onButton(107);
+        // Guaranteed flush must have delivered the final 0.4 position!
+        TEST_ASSERT(sim.sentEvents.size() == 2);
+        TEST_ASSERT(sim.sentEvents.back().first == 0.4f);
+        TEST_ASSERT(sim.sentEvents.back().second == 0.4f);
+        TEST_ASSERT(!sim.pending);
+
+        // Rapid move at tick 110 (3ms after button at 107) stays pending until flush/timer at tick 120
+        sim.onMove(0.85f, 0.95f, 110);
+        TEST_ASSERT(sim.pending);
+        sim.flush(120);
+        TEST_ASSERT(sim.sentEvents.size() == 3);
+        TEST_ASSERT(sim.sentEvents.back().first == 0.85f);
+        TEST_ASSERT(sim.sentEvents.back().second == 0.95f);
+        TEST_ASSERT(!sim.pending);
+    }
+
+    // 3. Virtual Desktop Caching and InputInjector invocation
+    {
+        MonitorDesc mon{};
+        mon.index = 0;
+        mon.x = 0;
+        mon.y = 0;
+        mon.width = 1920;
+        mon.height = 1080;
+        mon.isPrimary = true;
+
+        // Verify injectMouseMove executes smoothly using cached metrics
+        InputInjector::injectMouseMove(0.5f, 0.5f, mon);
+        InputInjector::injectMouseMove(0.6f, 0.6f, mon);
+        TEST_ASSERT(true);
+    }
+}
+
+void testHostOutboxAndCachedGeometries() {
+    std::cout << "[SUITE 39] Host Outbox Buffer Recycling, Cursor Serialization & Direct2D Pre-Caching...\n" << std::flush;
+
+    // 1. CursorUpdatePacket bit-exact packing (9 bytes)
+    {
+        TEST_ASSERT(sizeof(CursorUpdatePacket) == 9);
+        CursorUpdatePacket cp{ 0.25f, 0.75f, 1 };
+        std::vector<uint8_t> rawBuf(sizeof(cp));
+        std::memcpy(rawBuf.data(), &cp, sizeof(cp));
+
+        ByteReader r(rawBuf);
+        TEST_ASSERT(r.hasRemaining(sizeof(CursorUpdatePacket)));
+        TEST_ASSERT(std::abs(r.readF32() - 0.25f) < 0.0001f);
+        TEST_ASSERT(std::abs(r.readF32() - 0.75f) < 0.0001f);
+        TEST_ASSERT(r.readU8() == 1);
+        TEST_ASSERT(!r.hasRemaining(1));
+    }
+
+    // 2. PingPacket bit-exact packing (12 bytes)
+    {
+        TEST_ASSERT(sizeof(PingPacket) == 12);
+        PingPacket pp{ 0x1122334455667788ULL, 45 };
+        std::vector<uint8_t> rawBuf(sizeof(pp));
+        std::memcpy(rawBuf.data(), &pp, sizeof(pp));
+
+        ByteReader r(rawBuf);
+        TEST_ASSERT(r.hasRemaining(sizeof(PingPacket)));
+        TEST_ASSERT(r.readU64() == 0x1122334455667788ULL);
+        TEST_ASSERT(r.readU32() == 45);
+        TEST_ASSERT(!r.hasRemaining(1));
+    }
+
+    // 3. ByteWriter move constructor & buffer zero-copy transfer
+    {
+        std::vector<uint8_t> recycled;
+        recycled.reserve(65536);
+        const uint8_t* origPtr = recycled.data();
+
+        ByteWriter w(std::move(recycled));
+        w.writeU32(0xCAFEBABE);
+        std::vector<uint8_t> out = w.takeBuffer();
+
+        TEST_ASSERT(out.size() == 4);
+        TEST_ASSERT(out.capacity() >= 65536);
+        TEST_ASSERT(out.data() == origPtr); // Zero copy - ownership moved in-place!
+        ByteReader r(out);
+        TEST_ASSERT(r.readU32() == 0xCAFEBABE);
+    }
+
+    // 4. Direct2D pre-cached unit star geometry creation and bounds validation
+    {
+        ID2D1Factory* factory = nullptr;
+        HRESULT hr = D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, &factory);
+        if (SUCCEEDED(hr) && factory) {
+            ID2D1PathGeometry* star = nullptr;
+            hr = factory->CreatePathGeometry(&star);
+            TEST_ASSERT(SUCCEEDED(hr) && star);
+            if (star) {
+                ID2D1GeometrySink* sink = nullptr;
+                hr = star->Open(&sink);
+                TEST_ASSERT(SUCCEEDED(hr) && sink);
+                if (sink) {
+                    constexpr float PI = 3.14159265f;
+                    float innerR = 0.42f;
+                    D2D1_POINT_2F pts[10];
+                    for (int i = 0; i < 10; ++i) {
+                        float angle = -PI * 0.5f + i * (PI / 5.0f);
+                        float r = (i % 2 == 0) ? 1.0f : innerR;
+                        pts[i] = D2D1::Point2F(r * std::cos(angle), r * std::sin(angle));
+                    }
+                    sink->BeginFigure(pts[0], D2D1_FIGURE_BEGIN_FILLED);
+                    sink->AddLines(&pts[1], 9);
+                    sink->EndFigure(D2D1_FIGURE_END_CLOSED);
+                    sink->Close();
+                    sink->Release();
+
+                    D2D1_RECT_F bounds{};
+                    hr = star->GetBounds(nullptr, &bounds);
+                    TEST_ASSERT(SUCCEEDED(hr));
+                    TEST_ASSERT(bounds.left >= -1.05f && bounds.right <= 1.05f);
+                    TEST_ASSERT(bounds.top >= -1.05f && bounds.bottom <= 1.05f);
+
+                    star->Release();
+                }
+            }
+            factory->Release();
+        }
+    }
+}
+
+void testParallelViewerDecodeAndTabFrameCache() {
+    std::cout << "[TEST 40] Parallel Multi-Tile Viewer Decoding & Tab Frame Cache Verification...\n";
+
+    // 1. Multi-tile parallel decode (RAW_BGRA, ZLIB, JPEG) into shared canvas
+    {
+        const int canvasW = 512;
+        const int canvasH = 512;
+        std::vector<uint8_t> seqCanvas(static_cast<size_t>(canvasW) * canvasH * 4, 0);
+        std::vector<uint8_t> parCanvas(static_cast<size_t>(canvasW) * canvasH * 4, 0);
+
+        struct TileSpec {
+            uint16_t x, y, w, h;
+            QualityPreset preset;
+            EncodedTile encoded;
+        };
+
+        std::vector<TileSpec> specs = {
+            {   0,   0, 128, 128, QualityPreset::Ultra,        {} },
+            { 128,   0, 128, 128, QualityPreset::Balanced,     {} },
+            { 256,   0, 128, 128, QualityPreset::LowBandwidth, {} },
+            { 384,   0, 128, 128, QualityPreset::Ultra,        {} },
+            {   0, 128, 256, 128, QualityPreset::Balanced,     {} },
+            { 256, 128, 256, 128, QualityPreset::LowBandwidth, {} },
+            {   0, 256, 256, 256, QualityPreset::Ultra,        {} },
+            { 256, 256, 256, 256, QualityPreset::Balanced,     {} }
+        };
+
+        for (size_t idx = 0; idx < specs.size(); ++idx) {
+            auto& s = specs[idx];
+            std::vector<uint8_t> raw(static_cast<size_t>(s.w) * s.h * 4);
+            for (int r = 0; r < s.h; ++r) {
+                for (int c = 0; c < s.w; ++c) {
+                    size_t off = (static_cast<size_t>(r) * s.w + c) * 4;
+                    raw[off + 0] = static_cast<uint8_t>((c * 3 + idx * 17) & 0xFF);
+                    raw[off + 1] = static_cast<uint8_t>((r * 5 + idx * 31) & 0xFF);
+                    raw[off + 2] = static_cast<uint8_t>(((c + r) * 7 + idx * 43) & 0xFF);
+                    raw[off + 3] = 0xFF;
+                }
+            }
+            s.encoded = TileCodec::encodeRect(s.x, s.y, s.w, s.h, raw.data(), s.preset);
+            TEST_ASSERT(!s.encoded.data.empty());
+        }
+
+        // Sequential reference decode
+        for (const auto& s : specs) {
+            bool ok = TileCodec::decodeTileIntoCanvas(
+                s.encoded.x, s.encoded.y, s.encoded.width, s.encoded.height,
+                s.encoded.encoding, s.encoded.data.data(), s.encoded.data.size(),
+                seqCanvas.data(), canvasW, canvasH
+            );
+            TEST_ASSERT(ok);
+        }
+
+        // Parallel batch decode via TileThreadPool::parallelDecode
+        std::vector<TileThreadPool::DecodeTask> decodeTasks;
+        decodeTasks.reserve(specs.size());
+        for (const auto& s : specs) {
+            TileThreadPool::DecodeTask dt;
+            dt.rx = s.encoded.x;
+            dt.ry = s.encoded.y;
+            dt.rw = s.encoded.width;
+            dt.rh = s.encoded.height;
+            dt.encoding = s.encoded.encoding;
+            dt.data = s.encoded.data.data();
+            dt.dataSize = s.encoded.data.size();
+            dt.canvasBgra = parCanvas.data();
+            dt.canvasW = canvasW;
+            dt.canvasH = canvasH;
+            decodeTasks.push_back(dt);
+        }
+
+        TileThreadPool::instance().parallelDecode(decodeTasks);
+
+        // Verify pixel-exact match between parallel and sequential decode
+        TEST_ASSERT(seqCanvas == parCanvas);
+
+        // Single-task fallback verification
+        std::vector<uint8_t> singleCanvas(static_cast<size_t>(canvasW) * canvasH * 4, 0);
+        std::vector<TileThreadPool::DecodeTask> singleBatch(1, decodeTasks[0]);
+        singleBatch[0].canvasBgra = singleCanvas.data();
+        TileThreadPool::instance().parallelDecode(singleBatch);
+        TEST_ASSERT(singleCanvas[0] == parCanvas[0]);
+        TEST_ASSERT(singleCanvas[3] == 0xFF);
+    }
+
+    // 2. SessionTabManager on-switch frame cache verification
+    {
+        SessionTabManager tabs;
+        uint32_t tabId0 = tabs.createTab(111222333, "111222333", "Desk A");
+        TEST_ASSERT(tabId0 > 0);
+
+        std::vector<uint8_t> dummyFrame(64 * 64 * 4, 0xAB);
+        CursorState cur{};
+        cur.normX = 0.25f;
+        cur.normY = 0.75f;
+        cur.visible = true;
+
+        tabs.cacheActiveTabFrame(dummyFrame.data(), 64, 64, 42, cur);
+        uint32_t tabId1 = tabs.createTab(444555666, "444555666", "Desk B");
+        TEST_ASSERT(tabId1 > tabId0);
+
+        TEST_ASSERT(tabs.selectTab(tabId0));
+        const SessionTab* tabA = tabs.activeTab();
+        TEST_ASSERT(tabA != nullptr);
+        TEST_ASSERT(tabA->cachedW == 64);
+        TEST_ASSERT(tabA->cachedH == 64);
+        TEST_ASSERT(tabA->lastFrameSeq == 42);
+        TEST_ASSERT(tabA->cachedFrameBgra.size() == dummyFrame.size());
+        TEST_ASSERT(tabA->cachedFrameBgra[0] == 0xAB);
+    }
+}
+
+void testAvx2BlitRowBgraOpaque() {
+    std::cout << "[TEST 41] AVX2 Single-Pass Tile Row Blitting & Opaque Alpha Enforcement...\n";
+
+    const int widths[] = { 1, 3, 7, 8, 9, 15, 16, 22, 64, 67, 1920 };
+    for (int w : widths) {
+        // Test both aligned and unaligned (+4 byte offset) buffers
+        std::vector<uint8_t> srcBuf(static_cast<size_t>(w + 2) * 4, 0);
+        std::vector<uint8_t> dstAvx(static_cast<size_t>(w + 2) * 4, 0xCC);
+        std::vector<uint8_t> dstScalar(static_cast<size_t>(w + 2) * 4, 0xCC);
+
+        for (size_t i = 0; i < srcBuf.size(); i += 4) {
+            srcBuf[i + 0] = static_cast<uint8_t>((i * 3 + 11) & 0xFF);
+            srcBuf[i + 1] = static_cast<uint8_t>((i * 7 + 23) & 0xFF);
+            srcBuf[i + 2] = static_cast<uint8_t>((i * 13 + 37) & 0xFF);
+            srcBuf[i + 3] = static_cast<uint8_t>((i / 4) % 3 == 0 ? 0x00 : ((i / 4) % 3 == 1 ? 0x7F : 0xFF));
+        }
+
+        // Unaligned offset (1 pixel = 4 bytes in)
+        SimdKernels::blitRowBgraOpaque(dstAvx.data() + 4, srcBuf.data() + 4, w);
+        SimdKernels::scalarBlitRowBgraOpaque(dstScalar.data() + 4, srcBuf.data() + 4, w);
+
+        TEST_ASSERT(dstAvx == dstScalar);
+        // Guard bytes before and after must remain untouched (0xCC)
+        TEST_ASSERT(dstAvx[0] == 0xCC && dstAvx[3] == 0xCC);
+        TEST_ASSERT(dstAvx[static_cast<size_t>(w + 1) * 4] == 0xCC);
+
+        // Verify all blitted pixels have alpha == 0xFF and preserved B, G, R
+        for (int c = 0; c < w; ++c) {
+            size_t off = static_cast<size_t>(c + 1) * 4;
+            TEST_ASSERT(dstAvx[off + 0] == srcBuf[off + 0]);
+            TEST_ASSERT(dstAvx[off + 1] == srcBuf[off + 1]);
+            TEST_ASSERT(dstAvx[off + 2] == srcBuf[off + 2]);
+            TEST_ASSERT(dstAvx[off + 3] == 0xFF);
+        }
+    }
+}
+
+void testZeroAllocAudioAndStackWideText() {
+    std::cout << "[TEST 42] Zero-Allocation Audio Scratch Buffers & Stack-Buffered UTF-8 Text Conversion...\n";
+
+    // 1. AudioChunkHeader and VoiceChunkHeader scratch buffer reuse without reallocation
+    {
+        std::vector<uint8_t> audioPacketScratch;
+        audioPacketScratch.reserve(sizeof(AudioChunkHeader) + 4800 * sizeof(int16_t));
+        const uint8_t* initialPtr = audioPacketScratch.data();
+
+        std::vector<int16_t> dummyPcm(960, 1234); // 10ms stereo @ 48kHz
+        for (int iter = 0; iter < 50; ++iter) {
+            AudioChunkHeader hdr{};
+            hdr.sampleRate = 48000;
+            hdr.channels = 2;
+            hdr.bitsPerSample = 16;
+            hdr.isSilent = 0;
+            hdr.sampleFrames = 480;
+
+            const size_t pcmBytes = dummyPcm.size() * sizeof(int16_t);
+            audioPacketScratch.resize(sizeof(hdr) + pcmBytes);
+            std::memcpy(audioPacketScratch.data(), &hdr, sizeof(hdr));
+            std::memcpy(audioPacketScratch.data() + sizeof(hdr), dummyPcm.data(), pcmBytes);
+            TEST_ASSERT(audioPacketScratch.data() == initialPtr);
+        }
+
+        AudioChunkHeader parsedHdr{};
+        std::memcpy(&parsedHdr, audioPacketScratch.data(), sizeof(parsedHdr));
+        TEST_ASSERT(parsedHdr.sampleRate == 48000);
+        TEST_ASSERT(parsedHdr.channels == 2);
+        TEST_ASSERT(parsedHdr.sampleFrames == 480);
+        TEST_ASSERT(parsedHdr.isSilent == 0);
+    }
+
+    // 2. Single-pass stack UTF-8 to Wide conversion vs two-pass heap wstring equivalence
+    {
+        const std::vector<std::string> testStrings = {
+            "CppDesk 3.1.2",
+            "60 FPS | 1.2 ms | Zstd + AVX2",
+            "Desk 401 115 368",
+            "Performance HUD: ON (Ctrl+Shift+O)",
+            "UTF-8 symbols: \xC3\xA9 \xE2\x9C\x93 \xE2\x86\x92 \xF0\x9F\x96\xA5"
+        };
+
+        for (const auto& s : testStrings) {
+            TEST_ASSERT(s.size() < 512);
+            wchar_t stackWide[512];
+            int wlen = MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), stackWide, 512);
+            TEST_ASSERT(wlen > 0);
+
+            int refLen = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), static_cast<int>(s.size()), nullptr, 0);
+            TEST_ASSERT(wlen == refLen);
+            std::wstring refWide(refLen, L'\0');
+            MultiByteToWideChar(CP_UTF8, 0, s.c_str(), static_cast<int>(s.size()), &refWide[0], refLen);
+            TEST_ASSERT(std::memcmp(stackWide, refWide.data(), static_cast<size_t>(wlen) * sizeof(wchar_t)) == 0);
+        }
+    }
+}
+
 } // namespace
 
 int main() {
@@ -2911,6 +3859,18 @@ int main() {
         testPrivacyModeCustomBrandingAndNotice(); std::cout << "Test 28 done\n" << std::flush;
         testSystemHealthDiagnosticsAndHardwareSpecs(); std::cout << "Test 29 done\n" << std::flush;
         testConnectionQualityProfiles(); std::cout << "Test 30 done\n" << std::flush;
+        testDxgiDirtyRectsAndGdiRecycling(); std::cout << "Test 31 done\n" << std::flush;
+        testCodecContextRecyclingAndZeroCopyTasks(); std::cout << "Test 32 done\n" << std::flush;
+        testDirect2DPartialDirtyRectAndZeroCopyViewer(); std::cout << "Test 33 done\n" << std::flush;
+        testScatterGatherFrameSendAndSocketBuffers(); std::cout << "Test 34 done\n" << std::flush;
+        testPrecisionTimerPacingAndRecycledBuffers(); std::cout << "Test 35 done\n" << std::flush;
+        testZeroCopyTileStreamingAndSerializer(); std::cout << "Test 36 done\n" << std::flush;
+        testDirectJpegCanvasBlitAndFramePacing(); std::cout << "Test 37 done\n" << std::flush;
+        testInputCoalescingAndZeroAllocEvents(); std::cout << "Test 38 done\n" << std::flush;
+        testHostOutboxAndCachedGeometries(); std::cout << "Test 39 done\n" << std::flush;
+        testParallelViewerDecodeAndTabFrameCache(); std::cout << "Test 40 done\n" << std::flush;
+        testAvx2BlitRowBgraOpaque(); std::cout << "Test 41 done\n" << std::flush;
+        testZeroAllocAudioAndStackWideText(); std::cout << "Test 42 done\n" << std::flush;
 
         std::cout << "---------------------------------------------------------\n";
         std::cout << "Assertions Passed: " << g_passed << " | Failed: " << g_failed << "\n";

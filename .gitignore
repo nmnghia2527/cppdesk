@@ -2,6 +2,7 @@
 .planning/
 .claude/
 .gemini/
+graphify-out/
 
 # Compiler / IDE / .NET / Python temporaries
 *.o

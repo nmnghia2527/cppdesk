@@ -72,8 +72,7 @@ void closeWinSock(uintptr_t& s) {
 }
 
 void setTcpNoDelay(SOCKET s) {
-    BOOL flag = TRUE;
-    setsockopt(s, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char*>(&flag), sizeof(flag));
+    NetworkEngine::setTcpNoDelay(s);
 }
 
 void setSocketTimeoutMs(SOCKET s, DWORD timeoutMs) {
@@ -401,6 +400,69 @@ void executeRemoteSystemAction(SystemActionType action) {
 
 // ---------------- Frame IO ----------------
 
+void NetworkEngine::setTcpNoDelay(SOCKET s) {
+    if (s == INVALID_SOCKET) return;
+    BOOL flag = TRUE;
+    setsockopt(s, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char*>(&flag), sizeof(flag));
+
+    // Scale TCP socket send and receive buffers to 2 MB (2,097,152 bytes)
+    // to prevent TCP window throttling on high-bitrate video and data transfer
+    int bufSize = 2 * 1024 * 1024;
+    setsockopt(s, SOL_SOCKET, SO_SNDBUF, reinterpret_cast<const char*>(&bufSize), sizeof(bufSize));
+    setsockopt(s, SOL_SOCKET, SO_RCVBUF, reinterpret_cast<const char*>(&bufSize), sizeof(bufSize));
+}
+
+bool NetworkEngine::sendScatterGather(
+    SOCKET s,
+    const void* hdrBuf,
+    size_t hdrLen,
+    const void* payloadBuf,
+    size_t payloadLen)
+{
+    if (s == INVALID_SOCKET || (!hdrBuf && hdrLen > 0)) return false;
+
+    WSABUF bufs[2];
+    bufs[0].buf = const_cast<char*>(static_cast<const char*>(hdrBuf));
+    bufs[0].len = static_cast<ULONG>(hdrLen);
+
+    DWORD numBufs = 1;
+    if (payloadBuf && payloadLen > 0) {
+        bufs[1].buf = const_cast<char*>(static_cast<const char*>(payloadBuf));
+        bufs[1].len = static_cast<ULONG>(payloadLen);
+        numBufs = 2;
+    }
+
+    size_t totalBytes = hdrLen + ((payloadBuf && payloadLen > 0) ? payloadLen : 0);
+    if (totalBytes == 0) return true;
+    size_t totalSent = 0;
+    DWORD curBufIdx = 0;
+
+    while (totalSent < totalBytes) {
+        DWORD bytesSent = 0;
+        int res = WSASend(s, &bufs[curBufIdx], numBufs - curBufIdx, &bytesSent, 0, nullptr, nullptr);
+        if (res == SOCKET_ERROR || bytesSent == 0) {
+            return false;
+        }
+
+        totalSent += bytesSent;
+        if (totalSent >= totalBytes) break;
+
+        DWORD remainingSent = bytesSent;
+        while (curBufIdx < numBufs && remainingSent > 0) {
+            if (remainingSent >= bufs[curBufIdx].len) {
+                remainingSent -= bufs[curBufIdx].len;
+                bufs[curBufIdx].len = 0;
+                curBufIdx++;
+            } else {
+                bufs[curBufIdx].buf += remainingSent;
+                bufs[curBufIdx].len -= remainingSent;
+                remainingSent = 0;
+            }
+        }
+    }
+    return true;
+}
+
 bool NetworkEngine::sendFrame(
     uintptr_t sock,
     PacketType type,
@@ -428,22 +490,17 @@ bool NetworkEngine::sendFrame(
         // Output layout: [12-byte Nonce][Ciphertext][16-byte Tag]
         hdr.payloadSize = static_cast<uint32_t>(12 + payloadLen + 16);
 
-        std::vector<uint8_t> encrypted;
+        thread_local std::vector<uint8_t> tl_encryptedPayload;
         // Authenticate with AAD = hdr
-        if (!cipher->encrypt(payload, payloadLen, seq, &hdr, sizeof(hdr), encrypted)) {
+        if (!cipher->encrypt(payload, payloadLen, seq, &hdr, sizeof(hdr), tl_encryptedPayload)) {
             return false;
         }
 
-        if (!sendAllBytes(s, &hdr, sizeof(hdr))) return false;
-        return sendAllBytes(s, encrypted.data(), encrypted.size());
+        return sendScatterGather(s, &hdr, sizeof(hdr), tl_encryptedPayload.data(), tl_encryptedPayload.size());
     } else {
         hdr.payloadSize = static_cast<uint32_t>(payloadLen);
         if (sendSeq) (*sendSeq)++;
-        if (!sendAllBytes(s, &hdr, sizeof(hdr))) return false;
-        if (payloadLen > 0 && payload != nullptr) {
-            return sendAllBytes(s, payload, payloadLen);
-        }
-        return true;
+        return sendScatterGather(s, &hdr, sizeof(hdr), payload, payloadLen);
     }
 }
 
@@ -464,26 +521,31 @@ bool NetworkEngine::recvFrame(
         return false;
     }
 
-    outPayload.resize(outHeader.payloadSize);
-    if (outHeader.payloadSize > 0) {
-        if (!recvAllBytes(s, outPayload.data(), outHeader.payloadSize)) {
-            return false;
-        }
-    }
-
     if (cipher && cipher->isInitialized() && recvSeq) {
         // Post-authentication frames must carry FLAG_ENCRYPTED
-        if ((outHeader.flags & FLAG_ENCRYPTED) == 0) {
+        if ((outHeader.flags & FLAG_ENCRYPTED) == 0 || outHeader.payloadSize < 28) {
             return false;
         }
-        std::vector<uint8_t> decrypted;
+
+        thread_local std::vector<uint8_t> tl_encryptedPayload;
+        tl_encryptedPayload.resize(outHeader.payloadSize);
+        if (!recvAllBytes(s, tl_encryptedPayload.data(), outHeader.payloadSize)) {
+            return false;
+        }
+
         uint64_t pktSeq = 0;
-        // Authenticate with AAD = outHeader
-        if (!cipher->decrypt(outPayload.data(), outPayload.size(), &outHeader, sizeof(outHeader), decrypted, &pktSeq)) {
+        // Authenticate with AAD = outHeader and decrypt directly into outPayload
+        if (!cipher->decrypt(tl_encryptedPayload.data(), tl_encryptedPayload.size(), &outHeader, sizeof(outHeader), outPayload, &pktSeq)) {
             return false; // Authentication tag mismatch or replay detected!
         }
         *recvSeq = pktSeq;
-        outPayload = std::move(decrypted);
+    } else {
+        outPayload.resize(outHeader.payloadSize);
+        if (outHeader.payloadSize > 0) {
+            if (!recvAllBytes(s, outPayload.data(), outHeader.payloadSize)) {
+                return false;
+            }
+        }
     }
     return true;
 }
@@ -1613,9 +1675,10 @@ void NetworkEngine::runHostSession(uintptr_t clientSock, std::string clientIp) {
         std::mutex outboxMutex;
         std::condition_variable outboxCv;
         std::deque<HostOutboxItem> outbox;
+        std::vector<std::vector<uint8_t>> outboxBufferPool; // Phase 29: Recycled payload buffers
         uint64_t totalBytesSent = 0;
 
-        auto enqueueHostPacket = [&](PacketType pt, uint8_t flags, std::vector<uint8_t> payload, bool isVideo) {
+        auto enqueueHostPacketMove = [&](PacketType pt, uint8_t flags, std::vector<uint8_t>&& payload, bool isVideo) {
             std::lock_guard<std::mutex> lk(outboxMutex);
             if (isVideo) {
                 for (auto it = outbox.begin(); it != outbox.end(); ++it) {
@@ -1627,6 +1690,26 @@ void NetworkEngine::runHostSession(uintptr_t clientSock, std::string clientIp) {
             }
             outbox.push_back({ pt, flags, std::move(payload), isVideo });
             outboxCv.notify_one();
+        };
+
+        auto enqueueHostPacketRaw = [&](PacketType pt, uint8_t flags, const void* data, size_t size, bool isVideo) {
+            std::vector<uint8_t> payload;
+            {
+                std::lock_guard<std::mutex> lk(outboxMutex);
+                if (!outboxBufferPool.empty()) {
+                    payload = std::move(outboxBufferPool.back());
+                    outboxBufferPool.pop_back();
+                }
+            }
+            payload.resize(size);
+            if (size > 0 && data) {
+                std::memcpy(payload.data(), data, size);
+            }
+            enqueueHostPacketMove(pt, flags, std::move(payload), isVideo);
+        };
+
+        auto enqueueHostPacket = [&](PacketType pt, uint8_t flags, const std::vector<uint8_t>& payload, bool isVideo) {
+            enqueueHostPacketRaw(pt, flags, payload.data(), payload.size(), isVideo);
         };
 
         auto sendPacketHelper = [&](PacketType pt, const std::vector<uint8_t>& buf) -> bool {
@@ -1667,14 +1750,23 @@ void NetworkEngine::runHostSession(uintptr_t clientSock, std::string clientIp) {
                     float cur = avgSendMs.load();
                     avgSendMs.store(cur * 0.78f + sendDur * 0.22f);
                 }
+
+                // Phase 29: Recycle payload buffer back to outboxBufferPool to avoid heap allocator thrashing
+                if (item.payload.capacity() >= 256) {
+                    item.payload.clear();
+                    std::lock_guard<std::mutex> lock(outboxMutex);
+                    if (outboxBufferPool.size() < 4) {
+                        outboxBufferPool.push_back(std::move(item.payload));
+                    }
+                }
             }
         });
 
         // Spawn reader thread for low-latency encrypted input/control handling on Host
         std::thread readerThread([&]() {
+            FrameHeader rhdr{};
+            std::vector<uint8_t> rpay;
             while (sessionAlive.load() && running_.load()) {
-                FrameHeader rhdr{};
-                std::vector<uint8_t> rpay;
                 if (!recvFrame(clientSock, rhdr, rpay, &hostCipher_, &hostRecvSeq)) {
                     sessionAlive.store(false);
                     break;
@@ -1691,9 +1783,7 @@ void NetworkEngine::runHostSession(uintptr_t clientSock, std::string clientIp) {
                             if (r.hasRemaining(4)) {
                                 hostMeasuredRttMs.store(r.readU32());
                             }
-                            ByteWriter pw;
-                            pw.writeU64(ts);
-                            sendHostEncryptedPacket(PacketType::PONG, 0, pw.buffer().data(), pw.buffer().size());
+                            sendHostEncryptedPacket(PacketType::PONG, 0, &ts, sizeof(ts));
                             break;
                         }
                         case PacketType::INPUT_MOUSE_MOVE: {
@@ -2134,6 +2224,8 @@ void NetworkEngine::runHostSession(uintptr_t clientSock, std::string clientIp) {
         uint64_t lastDiagnosticsSend = 0;
         uint64_t lastHudSend = 0;
         CursorState prevCursor{};
+        std::vector<EncodedTile> dirtyTiles;
+        dirtyTiles.reserve(64);
 
         while (sessionAlive.load() && running_.load() && activeHostClientSock_.load() != ~uintptr_t(0)) {
             uint64_t frameStart = nowTickMs();
@@ -2169,7 +2261,7 @@ void NetworkEngine::runHostSession(uintptr_t clientSock, std::string clientIp) {
             }
             bool wantKf = forceKeyframeFlag.exchange(false);
 
-            std::vector<EncodedTile> dirtyTiles;
+            dirtyTiles.clear();
             bool isKf = false;
             CursorState curState{};
 
@@ -2186,7 +2278,20 @@ void NetworkEngine::runHostSession(uintptr_t clientSock, std::string clientIp) {
                 }
 
                 if (!dirtyTiles.empty()) {
-                    ByteWriter w;
+                    size_t estCap = 6;
+                    for (const auto& t : dirtyTiles) {
+                        estCap += sizeof(TileHeader) + t.data.size();
+                    }
+                    std::vector<uint8_t> recycledBuf;
+                    {
+                        std::lock_guard<std::mutex> lk(outboxMutex);
+                        if (!outboxBufferPool.empty()) {
+                            recycledBuf = std::move(outboxBufferPool.back());
+                            outboxBufferPool.pop_back();
+                        }
+                    }
+                    ByteWriter w(std::move(recycledBuf));
+                    w.reserve(estCap);
                     w.writeU16(static_cast<uint16_t>(capturer.frameWidth()));
                     w.writeU16(static_cast<uint16_t>(capturer.frameHeight()));
                     w.writeU16(static_cast<uint16_t>(dirtyTiles.size()));
@@ -2204,7 +2309,7 @@ void NetworkEngine::runHostSession(uintptr_t clientSock, std::string clientIp) {
                         }
                     }
                     uint8_t flags = isKf ? FLAG_KEYFRAME : FLAG_NONE;
-                    enqueueHostPacket(PacketType::VIDEO_FRAME_TILES, flags, w.buffer(), true);
+                    enqueueHostPacketMove(PacketType::VIDEO_FRAME_TILES, flags, w.takeBuffer(), true);
 
                     // Send real-time Performance HUD telemetry (throttled to 250ms)
                     if (frameStart - lastHudSend >= 250) {
@@ -2223,7 +2328,7 @@ void NetworkEngine::runHostSession(uintptr_t clientSock, std::string clientIp) {
                         hudPayload.hostFps = static_cast<float>(effectiveFps);
                         std::vector<uint8_t> hudBytes;
                         serializePerformanceHud(hudPayload, hudBytes);
-                        enqueueHostPacket(PacketType::PERFORMANCE_HUD_METRICS, 0, hudBytes, false);
+                        enqueueHostPacketMove(PacketType::PERFORMANCE_HUD_METRICS, 0, std::move(hudBytes), false);
                     }
                 } else {
                     float cur = avgSendMs.load();
@@ -2234,11 +2339,8 @@ void NetworkEngine::runHostSession(uintptr_t clientSock, std::string clientIp) {
                     std::abs(curState.normY - prevCursor.normY) > 0.001f ||
                     curState.visible != prevCursor.visible) {
                     prevCursor = curState;
-                    ByteWriter cw;
-                    cw.writeF32(curState.normX);
-                    cw.writeF32(curState.normY);
-                    cw.writeU8(curState.visible ? 1 : 0);
-                    enqueueHostPacket(PacketType::CURSOR_UPDATE, 0, cw.buffer(), false);
+                    CursorUpdatePacket cp{ curState.normX, curState.normY, static_cast<uint8_t>(curState.visible ? 1 : 0) };
+                    enqueueHostPacketRaw(PacketType::CURSOR_UPDATE, 0, &cp, sizeof(cp), false);
                 }
             }
 
@@ -2252,9 +2354,9 @@ void NetworkEngine::runHostSession(uintptr_t clientSock, std::string clientIp) {
                 if (clipboardManager_.pollLocalChange(newClip)) {
                     ByteWriter clipW;
                     clipW.writeString(newClip);
-                    enqueueHostPacket(PacketType::CLIPBOARD_TEXT, 0, clipW.buffer(), false);
+                    enqueueHostPacketMove(PacketType::CLIPBOARD_TEXT, 0, clipW.takeBuffer(), false);
                 }
-                clipFileMgr_.pollLocalClipboardFiles([this, &enqueueHostPacket](PacketType t, const std::vector<uint8_t>& p) {
+                clipFileMgr_.pollLocalClipboardFiles([&enqueueHostPacket](PacketType t, const std::vector<uint8_t>& p) {
                     enqueueHostPacket(t, 0, p, false);
                     return true;
                 });
@@ -2342,6 +2444,11 @@ void NetworkEngine::disconnectViewer() {
             viewerStats_.statusMessage = "Disconnected";
         }
     }
+    {
+        std::lock_guard<std::mutex> lock(viewerFrameMutex_);
+        viewerFullCanvasDirty_ = true;
+        viewerDirtyBounds_ = RECT{0, 0, 0, 0};
+    }
 }
 
 ViewerSessionStats NetworkEngine::viewerStats() const {
@@ -2358,7 +2465,8 @@ bool NetworkEngine::copyLatestViewerFrame(
     std::vector<uint8_t>& outBgra,
     int& outW,
     int& outH,
-    CursorState& outCursor) const
+    CursorState& outCursor,
+    RECT* outDirtyBounds) const
 {
     std::lock_guard<std::mutex> lock(viewerFrameMutex_);
     outCursor = viewerCursor_;
@@ -2368,11 +2476,43 @@ bool NetworkEngine::copyLatestViewerFrame(
     if (viewerFrameSeq_ == inOutSeq && outW == viewerCanvasW_ && outH == viewerCanvasH_) {
         return false;
     }
+
+    bool resChanged = (outW != viewerCanvasW_ || outH != viewerCanvasH_ || outBgra.size() != viewerCanvasBgra_.size());
     inOutSeq = viewerFrameSeq_;
     outW = viewerCanvasW_;
     outH = viewerCanvasH_;
-    outBgra = viewerCanvasBgra_;
+
+    if (resChanged || viewerFullCanvasDirty_) {
+        outBgra = viewerCanvasBgra_;
+        if (outDirtyBounds) {
+            *outDirtyBounds = RECT{0, 0, static_cast<LONG>(outW), static_cast<LONG>(outH)};
+        }
+        viewerFullCanvasDirty_ = false;
+    } else {
+        RECT r = viewerDirtyBounds_;
+        r.left = std::clamp(r.left, 0L, static_cast<LONG>(outW));
+        r.right = std::clamp(r.right, 0L, static_cast<LONG>(outW));
+        r.top = std::clamp(r.top, 0L, static_cast<LONG>(outH));
+        r.bottom = std::clamp(r.bottom, 0L, static_cast<LONG>(outH));
+        if (r.right > r.left && r.bottom > r.top) {
+            int stride = outW * 4;
+            int copyBytes = (r.right - r.left) * 4;
+            for (int y = r.top; y < r.bottom; ++y) {
+                const uint8_t* srcRow = viewerCanvasBgra_.data() + static_cast<size_t>(y) * stride + static_cast<size_t>(r.left) * 4;
+                uint8_t* dstRow = outBgra.data() + static_cast<size_t>(y) * stride + static_cast<size_t>(r.left) * 4;
+                std::memcpy(dstRow, srcRow, static_cast<size_t>(copyBytes));
+            }
+        }
+        if (outDirtyBounds) {
+            *outDirtyBounds = r;
+        }
+    }
     return true;
+}
+
+void NetworkEngine::setOnFrameDecodedCallback(std::function<void()> cb) {
+    std::lock_guard<std::mutex> lk(onFrameDecodedMutex_);
+    onFrameDecoded_ = std::move(cb);
 }
 
 void NetworkEngine::runViewerSession(std::string targetInput, std::string password) {
@@ -2794,10 +2934,8 @@ void NetworkEngine::runViewerSession(std::string targetInput, std::string passwo
                         std::lock_guard<std::mutex> lock(viewerStatsMutex_);
                         curRtt = viewerStats_.rttMs;
                     }
-                    ByteWriter pw;
-                    pw.writeU64(now);
-                    pw.writeU32(curRtt);
-                    sendViewerEncryptedPacket(PacketType::PING, 0, pw.buffer().data(), pw.buffer().size());
+                    PingPacket pp{ now, curRtt };
+                    sendViewerEncryptedPacket(PacketType::PING, 0, &pp, sizeof(pp));
 
                     std::string newClip;
                     if (clipboardSyncEnabled_.load() && clipboardManager_.pollLocalChange(newClip)) {
@@ -2906,34 +3044,67 @@ void NetworkEngine::runViewerSession(std::string targetInput, std::string passwo
                             uint16_t fh = r.readU16();
                             uint16_t tileCount = r.readU16();
 
-                            std::vector<EncodedTile> tiles;
-                            tiles.reserve(tileCount);
-                            for (uint16_t i = 0; i < tileCount; ++i) {
-                                TileHeader th{};
-                                r.readBytes(&th, sizeof(th));
-                                EncodedTile et;
-                                et.x = th.x;
-                                et.y = th.y;
-                                et.width = th.width;
-                                et.height = th.height;
-                                et.encoding = static_cast<TileEncoding>(th.encoding);
-                                et.data.resize(th.dataSize);
-                                if (th.dataSize > 0) {
-                                    r.readBytes(et.data.data(), th.dataSize);
-                                }
-                                tiles.push_back(std::move(et));
-                            }
-
                             auto decStart = std::chrono::steady_clock::now();
                             {
                                 std::lock_guard<std::mutex> lock(viewerFrameMutex_);
-                                if (viewerCanvasW_ != fw || viewerCanvasH_ != fh) {
+                                bool resChanged = (viewerCanvasW_ != fw || viewerCanvasH_ != fh);
+                                if (resChanged) {
                                     viewerCanvasW_ = fw;
                                     viewerCanvasH_ = fh;
                                     viewerCanvasBgra_.assign(static_cast<size_t>(fw) * fh * 4, 0);
+                                    viewerFullCanvasDirty_ = true;
+                                    viewerDirtyBounds_ = RECT{0, 0, static_cast<LONG>(fw), static_cast<LONG>(fh)};
                                 }
-                                for (const auto& t : tiles) {
-                                    TileCodec::decodeTileIntoCanvas(t, viewerCanvasBgra_.data(), viewerCanvasW_, viewerCanvasH_);
+                                if (tileCount > 0) {
+                                    thread_local std::vector<TileThreadPool::DecodeTask> decodeTasks;
+                                    decodeTasks.clear();
+                                    if (decodeTasks.capacity() < tileCount) {
+                                        decodeTasks.reserve(tileCount);
+                                    }
+                                    int minX = fw, minY = fh, maxX = 0, maxY = 0;
+                                    for (uint16_t i = 0; i < tileCount; ++i) {
+                                        if (!r.hasRemaining(sizeof(TileHeader))) break;
+                                        TileHeader th{};
+                                        r.readBytes(&th, sizeof(th));
+                                        if (!r.hasRemaining(th.dataSize)) break;
+                                        const uint8_t* tileDataPtr = r.currentPtr();
+                                        r.skip(th.dataSize);
+
+                                        TileThreadPool::DecodeTask dt;
+                                        dt.rx = th.x;
+                                        dt.ry = th.y;
+                                        dt.rw = th.width;
+                                        dt.rh = th.height;
+                                        dt.encoding = static_cast<TileEncoding>(th.encoding);
+                                        dt.data = tileDataPtr;
+                                        dt.dataSize = th.dataSize;
+                                        dt.canvasBgra = viewerCanvasBgra_.data();
+                                        dt.canvasW = viewerCanvasW_;
+                                        dt.canvasH = viewerCanvasH_;
+                                        decodeTasks.push_back(dt);
+
+                                        minX = std::min(minX, static_cast<int>(th.x));
+                                        minY = std::min(minY, static_cast<int>(th.y));
+                                        maxX = std::max(maxX, static_cast<int>(th.x + th.width));
+                                        maxY = std::max(maxY, static_cast<int>(th.y + th.height));
+                                    }
+                                    TileThreadPool::instance().parallelDecode(decodeTasks);
+                                    if (!resChanged) {
+                                        if (viewerFullCanvasDirty_) {
+                                            viewerDirtyBounds_ = RECT{0, 0, static_cast<LONG>(fw), static_cast<LONG>(fh)};
+                                        } else {
+                                            if (maxX > minX && maxY > minY) {
+                                                viewerDirtyBounds_ = RECT{
+                                                    static_cast<LONG>(std::clamp(minX, 0, static_cast<int>(fw))),
+                                                    static_cast<LONG>(std::clamp(minY, 0, static_cast<int>(fh))),
+                                                    static_cast<LONG>(std::clamp(maxX, 0, static_cast<int>(fw))),
+                                                    static_cast<LONG>(std::clamp(maxY, 0, static_cast<int>(fh)))
+                                                };
+                                            } else {
+                                                viewerDirtyBounds_ = RECT{0, 0, 0, 0};
+                                            }
+                                        }
+                                    }
                                 }
                                 viewerFrameSeq_++;
                             }
@@ -2943,6 +3114,15 @@ void NetworkEngine::runViewerSession(std::string targetInput, std::string passwo
                                 std::lock_guard<std::mutex> lock(viewerStatsMutex_);
                                 viewerStats_.decodeLatencyMs = decMs;
                                 viewerStats_.deltaTilesCount = tileCount;
+                            }
+
+                            std::function<void()> frameCb;
+                            {
+                                std::lock_guard<std::mutex> lk(onFrameDecodedMutex_);
+                                frameCb = onFrameDecoded_;
+                            }
+                            if (frameCb) {
+                                frameCb();
                             }
 
                             framesInWindow++;
@@ -2987,18 +3167,22 @@ void NetworkEngine::runViewerSession(std::string targetInput, std::string passwo
                             break;
                         }
                         case PacketType::CURSOR_UPDATE: {
-                            float cx = r.readF32();
-                            float cy = r.readF32();
-                            bool cvis = (r.readU8() != 0);
-                            {
-                                std::lock_guard<std::mutex> lock(viewerFrameMutex_);
-                                viewerCursor_.normX = cx;
-                                viewerCursor_.normY = cy;
-                                viewerCursor_.visible = cvis;
-                            }
-                            {
-                                std::lock_guard<std::mutex> lock(viewerStatsMutex_);
-                                viewerStats_.remoteCursor = { cx, cy, cvis };
+                            if (r.hasRemaining(sizeof(CursorUpdatePacket))) {
+                                CursorUpdatePacket cp{};
+                                r.readBytes(&cp, sizeof(cp));
+                                float cx = cp.normX;
+                                float cy = cp.normY;
+                                bool cvis = (cp.visible != 0);
+                                {
+                                    std::lock_guard<std::mutex> lock(viewerFrameMutex_);
+                                    viewerCursor_.normX = cx;
+                                    viewerCursor_.normY = cy;
+                                    viewerCursor_.visible = cvis;
+                                }
+                                {
+                                    std::lock_guard<std::mutex> lock(viewerStatsMutex_);
+                                    viewerStats_.remoteCursor = { cx, cy, cvis };
+                                }
                             }
                             break;
                         }
@@ -3295,35 +3479,37 @@ void NetworkEngine::runViewerSession(std::string targetInput, std::string passwo
 // ---------------- Viewer Action Senders ----------------
 
 void NetworkEngine::sendMouseMove(float normX, float normY) {
-    ByteWriter w;
-    w.writeF32(normX);
-    w.writeF32(normY);
-    sendViewerEncryptedPacket(PacketType::INPUT_MOUSE_MOVE, 0, w.buffer().data(), w.buffer().size());
+    float coords[2] = { normX, normY };
+    sendViewerEncryptedPacket(PacketType::INPUT_MOUSE_MOVE, 0, coords, sizeof(coords));
 }
 
 void NetworkEngine::sendMouseButton(MouseButtonId button, bool isDown, float normX, float normY) {
-    ByteWriter w;
-    w.writeU8(static_cast<uint8_t>(button));
-    w.writeU8(isDown ? 1 : 0);
-    w.writeF32(normX);
-    w.writeF32(normY);
-    sendViewerEncryptedPacket(PacketType::INPUT_MOUSE_BUTTON, 0, w.buffer().data(), w.buffer().size());
+#pragma pack(push, 1)
+    struct MouseButtonPayload {
+        uint8_t button;
+        uint8_t isDown;
+        float normX;
+        float normY;
+    } p{ static_cast<uint8_t>(button), static_cast<uint8_t>(isDown ? 1 : 0), normX, normY };
+#pragma pack(pop)
+    sendViewerEncryptedPacket(PacketType::INPUT_MOUSE_BUTTON, 0, &p, sizeof(p));
 }
 
 void NetworkEngine::sendMouseWheel(int32_t verticalDelta, int32_t horizontalDelta) {
-    ByteWriter w;
-    w.writeI32(verticalDelta);
-    w.writeI32(horizontalDelta);
-    sendViewerEncryptedPacket(PacketType::INPUT_MOUSE_WHEEL, 0, w.buffer().data(), w.buffer().size());
+    int32_t deltas[2] = { verticalDelta, horizontalDelta };
+    sendViewerEncryptedPacket(PacketType::INPUT_MOUSE_WHEEL, 0, deltas, sizeof(deltas));
 }
 
 void NetworkEngine::sendKeyEvent(uint16_t vkCode, uint16_t scanCode, bool isDown, bool isExtended) {
-    ByteWriter w;
-    w.writeU16(vkCode);
-    w.writeU16(scanCode);
-    w.writeU8(isDown ? 1 : 0);
-    w.writeU8(isExtended ? 1 : 0);
-    sendViewerEncryptedPacket(PacketType::INPUT_KEY_EVENT, 0, w.buffer().data(), w.buffer().size());
+#pragma pack(push, 1)
+    struct KeyEventPayload {
+        uint16_t vk;
+        uint16_t sc;
+        uint8_t isDown;
+        uint8_t isExt;
+    } p{ vkCode, scanCode, static_cast<uint8_t>(isDown ? 1 : 0), static_cast<uint8_t>(isExtended ? 1 : 0) };
+#pragma pack(pop)
+    sendViewerEncryptedPacket(PacketType::INPUT_KEY_EVENT, 0, &p, sizeof(p));
 }
 
 void NetworkEngine::sendReleaseAllModifiers() {
@@ -3824,6 +4010,8 @@ void NetworkEngine::hostAudioCaptureLoop() {
 
     std::vector<int16_t> convertedPcm;
     std::vector<int16_t> resampledPcm;
+    std::vector<uint8_t> audioPacketScratch;
+    audioPacketScratch.reserve(sizeof(AudioChunkHeader) + 4800 * sizeof(int16_t));
 
     while (hostAudioActive_.load() && running_.load() && activeHostClientSock_.load() != ~uintptr_t(0)) {
         UINT32 packetLength = 0;
@@ -3856,9 +4044,7 @@ void NetworkEngine::hostAudioCaptureLoop() {
                 hdr.isSilent = 1;
                 hdr.sampleFrames = numFramesRead;
 
-                ByteWriter w;
-                w.writeBytes(&hdr, sizeof(hdr));
-                sendHostEncryptedPacket(PacketType::AUDIO_STREAM_CHUNK, 0, w.buffer().data(), w.buffer().size());
+                sendHostEncryptedPacket(PacketType::AUDIO_STREAM_CHUNK, 0, &hdr, sizeof(hdr));
             } else if (pData) {
                 convertedPcm.resize(numFramesRead * 2);
                 if (isFloat) {
@@ -3912,10 +4098,11 @@ void NetworkEngine::hostAudioCaptureLoop() {
                     hdr.isSilent = 0;
                     hdr.sampleFrames = finalFrames;
 
-                    ByteWriter w;
-                    w.writeBytes(&hdr, sizeof(hdr));
-                    w.writeBytes(pcmToSend, finalFrames * 2 * sizeof(int16_t));
-                    sendHostEncryptedPacket(PacketType::AUDIO_STREAM_CHUNK, 0, w.buffer().data(), w.buffer().size());
+                    const size_t pcmBytes = static_cast<size_t>(finalFrames) * 2 * sizeof(int16_t);
+                    audioPacketScratch.resize(sizeof(hdr) + pcmBytes);
+                    std::memcpy(audioPacketScratch.data(), &hdr, sizeof(hdr));
+                    std::memcpy(audioPacketScratch.data() + sizeof(hdr), pcmToSend, pcmBytes);
+                    sendHostEncryptedPacket(PacketType::AUDIO_STREAM_CHUNK, 0, audioPacketScratch.data(), audioPacketScratch.size());
                 }
             }
         }
@@ -3971,6 +4158,9 @@ void NetworkEngine::shutdownViewerAudioPlayback() {
 
 void NetworkEngine::enqueueViewerAudioChunk(const uint8_t* payload, size_t len) {
     if (!hWaveOut_ || len < sizeof(AudioChunkHeader)) return;
+    if (audioMuted_.load()) return;
+    int volPercent = audioVolumePercent_.load();
+    if (volPercent <= 0) return;
 
     AudioChunkHeader hdr{};
     std::memcpy(&hdr, payload, sizeof(hdr));
@@ -3984,10 +4174,6 @@ void NetworkEngine::enqueueViewerAudioChunk(const uint8_t* payload, size_t len) 
 
     std::lock_guard<std::mutex> lk(audioPlaybackMutex_);
     if (!hWaveOut_) return;
-
-    bool isMuted = audioMuted_.load();
-    int volPercent = audioVolumePercent_.load();
-    float volScale = isMuted ? 0.0f : (volPercent / 100.0f);
 
     WAVEHDR& curHdr = waveHeaders_[currentWaveIdx_];
     if (curHdr.dwFlags & WHDR_PREPARED) {
@@ -4003,9 +4189,14 @@ void NetworkEngine::enqueueViewerAudioChunk(const uint8_t* payload, size_t len) 
     }
 
     int16_t* outSamples = reinterpret_cast<int16_t*>(waveBuffers_[currentWaveIdx_].data());
-    for (size_t i = 0; i < sampleCount; ++i) {
-        float s = static_cast<float>(inSamples[i]) * volScale;
-        outSamples[i] = static_cast<int16_t>(std::clamp(s, -32768.0f, 32767.0f));
+    if (volPercent == 100) {
+        std::memcpy(outSamples, inSamples, pcmBytes);
+    } else {
+        float volScale = volPercent / 100.0f;
+        for (size_t i = 0; i < sampleCount; ++i) {
+            float s = static_cast<float>(inSamples[i]) * volScale;
+            outSamples[i] = static_cast<int16_t>(std::clamp(s, -32768.0f, 32767.0f));
+        }
     }
 
     curHdr.lpData = reinterpret_cast<LPSTR>(outSamples);
@@ -4024,21 +4215,25 @@ bool NetworkEngine::startVoiceIntercom() {
     voiceIntercom_.startPlayback(48000, 1);
 
     return voiceIntercom_.startCapture([this](const uint8_t* pcm, size_t bytes, uint32_t sampleRate, uint8_t channels) {
+        uint8_t safeCh = std::max<uint8_t>(1, channels);
         VoiceChunkHeader hdr{};
         hdr.sampleRate = sampleRate;
-        hdr.channels = channels;
+        hdr.channels = safeCh;
         hdr.bitsPerSample = 16;
         hdr.flags = 0x00;
-        hdr.sampleFrames = static_cast<uint32_t>(bytes / (channels * sizeof(int16_t)));
+        hdr.sampleFrames = static_cast<uint32_t>(bytes / (safeCh * sizeof(int16_t)));
 
-        ByteWriter w;
-        w.writeBytes(&hdr, sizeof(hdr));
-        w.writeBytes(pcm, bytes);
+        thread_local std::vector<uint8_t> tl_voicePacketScratch;
+        tl_voicePacketScratch.resize(sizeof(hdr) + bytes);
+        std::memcpy(tl_voicePacketScratch.data(), &hdr, sizeof(hdr));
+        if (bytes > 0 && pcm) {
+            std::memcpy(tl_voicePacketScratch.data() + sizeof(hdr), pcm, bytes);
+        }
 
         if (viewerActive_.load()) {
-            sendViewerEncryptedPacket(PacketType::VOICE_INTERCOM_CHUNK, 0, w.buffer().data(), w.buffer().size());
+            sendViewerEncryptedPacket(PacketType::VOICE_INTERCOM_CHUNK, 0, tl_voicePacketScratch.data(), tl_voicePacketScratch.size());
         } else if (activeHostClientSock_.load() != ~uintptr_t(0)) {
-            sendHostEncryptedPacket(PacketType::VOICE_INTERCOM_CHUNK, 0, w.buffer().data(), w.buffer().size());
+            sendHostEncryptedPacket(PacketType::VOICE_INTERCOM_CHUNK, 0, tl_voicePacketScratch.data(), tl_voicePacketScratch.size());
         }
     }, 48000, 1);
 }

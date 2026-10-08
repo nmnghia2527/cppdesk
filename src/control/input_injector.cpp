@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cmath>
 #include <mutex>
+#include <atomic>
 
 namespace cppdesk {
 
@@ -22,6 +23,37 @@ void ensureDesktopSynced() {
     }
 }
 
+static std::atomic<uint64_t> s_lastMetricsTick{0};
+static std::atomic<int> s_vLeft{0};
+static std::atomic<int> s_vTop{0};
+static std::atomic<int> s_vWidth{1};
+static std::atomic<int> s_vHeight{1};
+
+inline void getCachedVirtualDesktopMetrics(int& outLeft, int& outTop, int& outWidth, int& outHeight) {
+    uint64_t now = GetTickCount64();
+    uint64_t last = s_lastMetricsTick.load(std::memory_order_relaxed);
+    if (last == 0 || (now - last > 1000)) {
+        int l = GetSystemMetrics(SM_XVIRTUALSCREEN);
+        int t = GetSystemMetrics(SM_YVIRTUALSCREEN);
+        int w = std::max(1, GetSystemMetrics(SM_CXVIRTUALSCREEN));
+        int h = std::max(1, GetSystemMetrics(SM_CYVIRTUALSCREEN));
+        s_vLeft.store(l, std::memory_order_relaxed);
+        s_vTop.store(t, std::memory_order_relaxed);
+        s_vWidth.store(w, std::memory_order_relaxed);
+        s_vHeight.store(h, std::memory_order_relaxed);
+        s_lastMetricsTick.store(now, std::memory_order_release);
+        outLeft = l;
+        outTop = t;
+        outWidth = w;
+        outHeight = h;
+    } else {
+        outLeft = s_vLeft.load(std::memory_order_relaxed);
+        outTop = s_vTop.load(std::memory_order_relaxed);
+        outWidth = s_vWidth.load(std::memory_order_relaxed);
+        outHeight = s_vHeight.load(std::memory_order_relaxed);
+    }
+}
+
 void mapNormalizedToVirtualDesktop(float normX, float normY, const MonitorDesc& mon, LONG& outDx, LONG& outDy) {
     normX = std::clamp(normX, 0.0f, 1.0f);
     normY = std::clamp(normY, 0.0f, 1.0f);
@@ -29,10 +61,8 @@ void mapNormalizedToVirtualDesktop(float normX, float normY, const MonitorDesc& 
     double targetX = mon.x + normX * std::max(1, mon.width - 1);
     double targetY = mon.y + normY * std::max(1, mon.height - 1);
 
-    int vLeft   = GetSystemMetrics(SM_XVIRTUALSCREEN);
-    int vTop    = GetSystemMetrics(SM_YVIRTUALSCREEN);
-    int vWidth  = std::max(1, GetSystemMetrics(SM_CXVIRTUALSCREEN));
-    int vHeight = std::max(1, GetSystemMetrics(SM_CYVIRTUALSCREEN));
+    int vLeft = 0, vTop = 0, vWidth = 1, vHeight = 1;
+    getCachedVirtualDesktopMetrics(vLeft, vTop, vWidth, vHeight);
 
     outDx = static_cast<LONG>(((targetX - vLeft) * 65535.0) / std::max(1, vWidth - 1));
     outDy = static_cast<LONG>(((targetY - vTop) * 65535.0) / std::max(1, vHeight - 1));

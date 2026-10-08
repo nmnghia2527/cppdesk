@@ -12,6 +12,7 @@
 #include <windows.h>
 #include <shellapi.h>
 #include <objbase.h>
+#include <timeapi.h>
 
 #include <string>
 #include <vector>
@@ -20,6 +21,12 @@
 #include <thread>
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPSTR /*lpCmdLine*/, int nCmdShow) {
+    // Request 1ms scheduler timer resolution for precise 60 FPS frame pacing and jitter-free sleep
+    struct MultimediaTimerScope {
+        MultimediaTimerScope() { timeBeginPeriod(1); }
+        ~MultimediaTimerScope() { timeEndPeriod(1); }
+    } mmTimerScope;
+
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     OleInitialize(nullptr);
 

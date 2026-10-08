@@ -26,6 +26,7 @@
 namespace cppdesk {
 
 static constexpr UINT WM_DESK_UPDATE_CHECK_DONE = WM_USER + 102;
+static constexpr UINT WM_APP_FRAME_READY        = WM_APP + 101;
 
 enum class ActiveTab : uint8_t {
     Dashboard     = 0,
@@ -214,6 +215,7 @@ private:
     ID2D1SolidColorBrush*   solidBrush_ = nullptr;
     ID2D1Bitmap*            remoteBitmap_ = nullptr;
     ID2D1Bitmap*            appIconBitmap_ = nullptr;
+    ID2D1PathGeometry*      geoUnitStar_ = nullptr;
     int                     bitmapW_ = 0;
     int                     bitmapH_ = 0;
 
@@ -429,6 +431,15 @@ private:
 
     // Multi-Session Tabbed Management (Feature 6)
     SessionTabManager       sessionTabs_;
+
+    // Event-driven 60 FPS viewer frame presentation (Phase 27)
+    std::atomic<bool>       frameRedrawPending_{false};
+
+    // Mouse Motion Coalescing & Tail Preservation (Phase 28)
+    void                    flushPendingMouseMove();
+    float                   coalescedMouseNormX_ = 0.0f;
+    float                   coalescedMouseNormY_ = 0.0f;
+    bool                    hasPendingMouseMove_ = false;
 };
 
 } // namespace cppdesk

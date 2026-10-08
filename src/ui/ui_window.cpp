@@ -235,8 +235,12 @@ void CppDeskWindow::switchTab(ActiveTab newTab) {
     tabEnterStaggerVel_ = 0.0f;
     if (newTab == ActiveTab::RemoteSession) {
         focusedField_ = FocusedField::RemoteCanvas;
-    } else if (newTab == ActiveTab::Dashboard && focusedField_ == FocusedField::RemoteCanvas) {
-        focusedField_ = FocusedField::RemoteId;
+        if (hwnd_) SetTimer(hwnd_, 1, 16, nullptr);
+    } else {
+        if (hwnd_) SetTimer(hwnd_, 1, 32, nullptr);
+        if (newTab == ActiveTab::Dashboard && focusedField_ == FocusedField::RemoteCanvas) {
+            focusedField_ = FocusedField::RemoteId;
+        }
     }
     InvalidateRect(hwnd_, nullptr, FALSE);
 }
@@ -291,6 +295,14 @@ bool CppDeskWindow::create(HINSTANCE hInstance, int nCmdShow) {
     notificationMgr_ = std::make_unique<NotificationManager>();
     notificationMgr_->init(hwnd_, hInstance, title);
 
+    network_.setOnFrameDecodedCallback([this]() {
+        if (!frameRedrawPending_.exchange(true)) {
+            if (hwnd_) {
+                PostMessageW(hwnd_, WM_APP_FRAME_READY, 0, 0);
+            }
+        }
+    });
+
     ShowWindow(hwnd_, nCmdShow);
     UpdateWindow(hwnd_);
 
@@ -341,6 +353,32 @@ bool CppDeskWindow::initGraphics() {
     createFmt(L"Segoe UI", DWRITE_FONT_WEIGHT_SEMI_BOLD, 11.5f, &fmtSmall_);
     createFmt(L"Consolas", DWRITE_FONT_WEIGHT_BOLD, 14.0f, &fmtMono_);
 
+    // Phase 29: Pre-cache unit star geometry for zero-allocation UI rendering
+    if (d2dFactory_) {
+        ID2D1PathGeometry* star = nullptr;
+        if (SUCCEEDED(d2dFactory_->CreatePathGeometry(&star)) && star) {
+            ID2D1GeometrySink* sink = nullptr;
+            if (SUCCEEDED(star->Open(&sink)) && sink) {
+                constexpr float PI = 3.14159265f;
+                float innerR = 0.42f;
+                D2D1_POINT_2F pts[10];
+                for (int i = 0; i < 10; ++i) {
+                    float angle = -PI * 0.5f + i * (PI / 5.0f);
+                    float r = (i % 2 == 0) ? 1.0f : innerR;
+                    pts[i] = D2D1::Point2F(r * std::cos(angle), r * std::sin(angle));
+                }
+                sink->BeginFigure(pts[0], D2D1_FIGURE_BEGIN_FILLED);
+                sink->AddLines(&pts[1], 9);
+                sink->EndFigure(D2D1_FIGURE_END_CLOSED);
+                sink->Close();
+                sink->Release();
+                geoUnitStar_ = star;
+            } else {
+                star->Release();
+            }
+        }
+    }
+
     return true;
 }
 
@@ -355,6 +393,7 @@ void CppDeskWindow::discardDeviceResources() {
 
 void CppDeskWindow::releaseGraphics() {
     discardDeviceResources();
+    if (geoUnitStar_) { geoUnitStar_->Release(); geoUnitStar_ = nullptr; }
     if (fmtHeroId_) { fmtHeroId_->Release(); fmtHeroId_ = nullptr; }
     if (fmtHeading_) { fmtHeading_->Release(); fmtHeading_ = nullptr; }
     if (fmtSubheading_) { fmtSubheading_->Release(); fmtSubheading_ = nullptr; }
@@ -855,6 +894,10 @@ LRESULT CppDeskWindow::handleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
                                  network_.hostSessionStatus().active ||
                                  pending.active;
 
+            if (hasPendingMouseMove_) {
+                flushPendingMouseMove();
+            }
+
             static uint32_t idleTickCounter = 0;
             ++idleTickCounter;
             if (inLiveSession || toastActive || (idleTickCounter % 4 == 0)) {
@@ -952,6 +995,15 @@ LRESULT CppDeskWindow::handleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
             return 0;
         }
 
+        case WM_APP_FRAME_READY: {
+            frameRedrawPending_.store(false);
+            if (hasPendingMouseMove_) {
+                flushPendingMouseMove();
+            }
+            InvalidateRect(hwnd_, nullptr, FALSE);
+            return 0;
+        }
+
         case WM_DESTROY:
             KillTimer(hwnd_, 1);
             PostQuitMessage(0);
@@ -1012,7 +1064,27 @@ void CppDeskWindow::drawSparkline(const UiRect& r, const float* values, size_t c
 }
 
 void CppDeskWindow::drawIconStar(float cx, float cy, float radius, bool filled, D2D1_COLOR_F color) {
-    if (!renderTarget_ || !solidBrush_ || !d2dFactory_) return;
+    if (!renderTarget_ || !solidBrush_) return;
+
+    if (geoUnitStar_) {
+        D2D1_MATRIX_3X2_F oldXform;
+        renderTarget_->GetTransform(&oldXform);
+        D2D1_MATRIX_3X2_F starXform = D2D1::Matrix3x2F::Scale(radius, radius) *
+                                      D2D1::Matrix3x2F::Translation(cx, cy) *
+                                      oldXform;
+        renderTarget_->SetTransform(starXform);
+
+        solidBrush_->SetColor(color);
+        if (filled) {
+            renderTarget_->FillGeometry(geoUnitStar_, solidBrush_);
+        }
+        float strokeThick = (radius > 0.001f) ? (1.3f / radius) : 1.3f;
+        renderTarget_->DrawGeometry(geoUnitStar_, solidBrush_, strokeThick);
+        renderTarget_->SetTransform(oldXform);
+        return;
+    }
+
+    if (!d2dFactory_) return;
     ID2D1PathGeometry* geo = nullptr;
     if (FAILED(d2dFactory_->CreatePathGeometry(&geo)) || !geo) return;
 
@@ -1100,9 +1172,18 @@ void CppDeskWindow::drawText(
     fmt->SetTextAlignment(hAlign);
     fmt->SetParagraphAlignment(vAlign);
     solidBrush_->SetColor(color);
-    std::wstring w = utf8ToWide(utf8);
     D2D1_RECT_F dr = D2D1::RectF(r.left, r.top, r.right, r.bottom);
-    renderTarget_->DrawText(w.c_str(), static_cast<UINT32>(w.size()), fmt, dr, solidBrush_, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+
+    if (utf8.size() < 512) {
+        wchar_t stackWide[512];
+        int wlen = MultiByteToWideChar(CP_UTF8, 0, utf8.data(), static_cast<int>(utf8.size()), stackWide, 512);
+        if (wlen > 0) {
+            renderTarget_->DrawText(stackWide, static_cast<UINT32>(wlen), fmt, dr, solidBrush_, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+        }
+    } else {
+        std::wstring w = utf8ToWide(utf8);
+        renderTarget_->DrawText(w.c_str(), static_cast<UINT32>(w.size()), fmt, dr, solidBrush_, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+    }
 }
 
 void CppDeskWindow::drawButton(
@@ -2433,8 +2514,8 @@ void CppDeskWindow::drawRemoteSessionView(const UiRect& bounds, float alpha) {
     // Remote Desktop Canvas Stage
     fillRoundRect(stageRect, 0.0f, COL_STAGE_BG);
 
-    if (network_.copyLatestViewerFrame(displayedFrameSeq_, frameBufferBgra_, frameBufferW_, frameBufferH_, remoteCursor_)) {
-        sessionTabs_.cacheActiveTabFrame(frameBufferBgra_.data(), frameBufferW_, frameBufferH_, displayedFrameSeq_, remoteCursor_);
+    RECT dirtyBounds{};
+    if (network_.copyLatestViewerFrame(displayedFrameSeq_, frameBufferBgra_, frameBufferW_, frameBufferH_, remoteCursor_, &dirtyBounds)) {
         if (frameBufferW_ > 0 && frameBufferH_ > 0 && renderTarget_) {
             if (sessionRecorder_.isRecording()) {
                 sessionRecorder_.pushFrame(frameBufferBgra_.data(), frameBufferW_, frameBufferH_);
@@ -2454,8 +2535,21 @@ void CppDeskWindow::drawRemoteSessionView(const UiRect& bounds, float alpha) {
                 bitmapW_ = frameBufferW_;
                 bitmapH_ = frameBufferH_;
             } else {
-                D2D1_RECT_U dstU = D2D1::RectU(0, 0, static_cast<UINT32>(frameBufferW_), static_cast<UINT32>(frameBufferH_));
-                remoteBitmap_->CopyFromMemory(&dstU, frameBufferBgra_.data(), static_cast<UINT32>(frameBufferW_ * 4));
+                LONG clLeft = std::clamp(dirtyBounds.left, 0L, static_cast<LONG>(frameBufferW_));
+                LONG clRight = std::clamp(dirtyBounds.right, 0L, static_cast<LONG>(frameBufferW_));
+                LONG clTop = std::clamp(dirtyBounds.top, 0L, static_cast<LONG>(frameBufferH_));
+                LONG clBottom = std::clamp(dirtyBounds.bottom, 0L, static_cast<LONG>(frameBufferH_));
+                if (clRight > clLeft && clBottom > clTop) {
+                    UINT32 pitch = static_cast<UINT32>(frameBufferW_ * 4);
+                    D2D1_RECT_U dstU = D2D1::RectU(
+                        static_cast<UINT32>(clLeft),
+                        static_cast<UINT32>(clTop),
+                        static_cast<UINT32>(clRight),
+                        static_cast<UINT32>(clBottom)
+                    );
+                    const uint8_t* pSubData = frameBufferBgra_.data() + static_cast<size_t>(clTop) * pitch + static_cast<size_t>(clLeft) * 4;
+                    remoteBitmap_->CopyFromMemory(&dstU, pSubData, pitch);
+                }
             }
         }
     }
@@ -5681,6 +5775,16 @@ std::string* CppDeskWindow::activeFocusedTextBuffer() {
     return nullptr;
 }
 
+void CppDeskWindow::flushPendingMouseMove() {
+    if (hasPendingMouseMove_) {
+        hasPendingMouseMove_ = false;
+        lastMouseSendTick_ = GetTickCount64();
+        if (remoteInputEnabled_ && activeTab_ == ActiveTab::RemoteSession) {
+            network_.sendMouseMove(coalescedMouseNormX_, coalescedMouseNormY_);
+        }
+    }
+}
+
 void CppDeskWindow::onMouseMove(float x, float y) {
     mouseX_ = x;
     mouseY_ = y;
@@ -5723,10 +5827,12 @@ void CppDeskWindow::onMouseMove(float x, float y) {
                     InvalidateRect(hwnd_, nullptr, FALSE);
                 }
             } else if (remoteInputEnabled_) {
+                coalescedMouseNormX_ = nx;
+                coalescedMouseNormY_ = ny;
+                hasPendingMouseMove_ = true;
                 uint64_t now = GetTickCount64();
-                if (now - lastMouseSendTick_ >= 10) {
-                    lastMouseSendTick_ = now;
-                    network_.sendMouseMove(nx, ny);
+                if (now - lastMouseSendTick_ >= 8) {
+                    flushPendingMouseMove();
                 }
             }
         }
@@ -5843,6 +5949,7 @@ void CppDeskWindow::onMouseButton(MouseButtonId btn, bool isDown, float x, float
                 return;
             }
             if (remoteInputEnabled_) {
+                flushPendingMouseMove();
                 network_.sendMouseButton(btn, isDown, nx, ny);
             }
         }
@@ -5881,6 +5988,7 @@ void CppDeskWindow::onMouseWheel(int delta) {
         renderedCanvasRect_.contains(mouseX_, mouseY_)) {
         float nx = 0.0f, ny = 0.0f;
         if (mapCanvasPointToNormalized(mouseX_, mouseY_, nx, ny)) {
+            flushPendingMouseMove();
             network_.sendMouseWheel(delta, 0);
         }
     }
@@ -6104,6 +6212,7 @@ void CppDeskWindow::onKeyEvent(uint16_t vk, uint16_t scan, bool isDown, bool isE
     }
 
     if (activeTab_ == ActiveTab::RemoteSession && focusedField_ == FocusedField::RemoteCanvas && remoteInputEnabled_) {
+        flushPendingMouseMove();
         network_.sendKeyEvent(vk, scan, isDown, isExtended);
     }
 }

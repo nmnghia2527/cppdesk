@@ -301,6 +301,17 @@ struct PrivacyModeConfigPayload {
     char    brandName[64];     // null-terminated UTF-8 branding name
 };
 
+struct CursorUpdatePacket {
+    float   normX;
+    float   normY;
+    uint8_t visible;
+};
+
+struct PingPacket {
+    uint64_t timestamp;
+    uint32_t rttMs;
+};
+
 struct ResolutionChangePayload {
     uint32_t targetWidth;   // Desired width or 0 to restore original
     uint32_t targetHeight;  // Desired height or 0 to restore original
@@ -430,6 +441,7 @@ class ByteWriter {
 public:
     ByteWriter() : bufRef_(ownedBuf_) {}
     explicit ByteWriter(std::vector<uint8_t>& externalBuf) : bufRef_(externalBuf) {}
+    explicit ByteWriter(std::vector<uint8_t>&& movableBuf) : ownedBuf_(std::move(movableBuf)), bufRef_(ownedBuf_) {}
 
     void writeU8(uint8_t v) { bufRef_.push_back(v); }
     void writeU16(uint16_t v) { writeBytes(&v, sizeof(v)); }
@@ -451,6 +463,7 @@ public:
         bufRef_.insert(bufRef_.end(), p, p + len);
     }
 
+    void reserve(size_t cap) { bufRef_.reserve(cap); }
     const std::vector<uint8_t>& buffer() const { return bufRef_; }
     std::vector<uint8_t> takeBuffer() { return std::move(bufRef_); }
     std::string toString() const {

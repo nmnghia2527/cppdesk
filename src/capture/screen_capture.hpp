@@ -1,5 +1,10 @@
 #pragma once
 
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+
 #include "../core/protocol.hpp"
 
 #include <cstdint>
@@ -40,11 +45,24 @@ public:
         int canvasW,
         int canvasH);
 
+    // Raw-pointer zero-copy overload decoding directly from network stream without intermediate EncodedTile allocations
+    static bool decodeTileIntoCanvas(
+        uint16_t x, uint16_t y, uint16_t width, uint16_t height,
+        TileEncoding encoding,
+        const uint8_t* tileData, size_t dataSize,
+        uint8_t* canvasBgra,
+        int canvasW,
+        int canvasH);
+
     // Compress/decompress helpers exposed for testing
     static std::vector<uint8_t> compressZstd(const void* src, size_t srcLen, int level = 1);
     static bool decompressZstd(const void* src, size_t srcLen, void* dst, size_t dstCapacity);
     static std::vector<uint8_t> encodeJpeg(const uint8_t* bgra, int width, int height, int quality);
     static bool decodeJpeg(const uint8_t* jpegData, size_t jpegLen, std::vector<uint8_t>& outBgra, int& outW, int& outH);
+    static bool decodeJpegIntoCanvas(
+        const uint8_t* jpegData, size_t jpegLen,
+        uint8_t* canvasBgra, int canvasW, int canvasH,
+        uint16_t x, uint16_t y, uint16_t width, uint16_t height);
 };
 
 // ---------------- TileThreadPool (Option 2A) ----------------
@@ -65,11 +83,27 @@ public:
         uint16_t rw = 0;
         uint16_t rh = 0;
         std::vector<uint8_t> bgraPixels;
+        const uint8_t* frameBase = nullptr;
+        int frameStride = 0;
         QualityPreset preset = QualityPreset::Balanced;
         EncodedTile result;
     };
 
+    struct DecodeTask {
+        uint16_t rx = 0;
+        uint16_t ry = 0;
+        uint16_t rw = 0;
+        uint16_t rh = 0;
+        TileEncoding encoding = TileEncoding::RawBGRA;
+        const uint8_t* data = nullptr;
+        size_t dataSize = 0;
+        uint8_t* canvasBgra = nullptr;
+        int canvasW = 0;
+        int canvasH = 0;
+    };
+
     void parallelEncode(std::vector<RectTask>& tasks);
+    void parallelDecode(std::vector<DecodeTask>& tasks);
 
 private:
     void workerLoop();
@@ -82,6 +116,7 @@ private:
     std::atomic<bool>        stop_{false};
 
     std::vector<RectTask*>   activeBatch_;
+    std::vector<DecodeTask*> activeDecodeBatch_;
     std::atomic<size_t>      nextTaskIdx_{0};
     std::atomic<size_t>      remainingTasks_{0};
 };
@@ -120,11 +155,13 @@ public:
     // Telemetry latency metrics
     float lastCaptureLatencyMs() const { return lastCaptureLatencyMs_; }
     float lastEncodeLatencyMs() const { return lastEncodeLatencyMs_; }
+    bool hasGdiCachedResources() const { return gdiMemDC_ != nullptr && gdiSection_ != nullptr; }
 
 private:
     bool initDxgiForMonitor(int monitorIndex);
     void releaseDxgi();
-    bool captureViaDxgi(bool& outFrameUpdated);
+    void releaseGdiResources();
+    bool captureViaDxgi(bool& outFrameUpdated, std::vector<RECT>& outDirtyRects, bool& outHasExplicitDirtyRects);
     bool captureViaGdi();
     CursorState captureCursorState() const;
 
@@ -134,6 +171,13 @@ private:
     DxgiRecoveryState         dxgiRecoveryState_ = DxgiRecoveryState::Active;
     uint64_t                  lastDxgiAttemptTick_ = 0;
     bool                      hasValidFrame_ = false;
+
+    // GDI handle recycling cache
+    HDC                       gdiMemDC_ = nullptr;
+    HBITMAP                   gdiSection_ = nullptr;
+    void*                     gdiBits_ = nullptr;
+    int                       gdiWidth_ = 0;
+    int                       gdiHeight_ = 0;
 
     std::vector<MonitorDesc>  monitors_;
     int                       activeMonitorIdx_ = 0;
@@ -145,6 +189,11 @@ private:
     std::vector<uint64_t>     prevTileHashes_;
     float                     lastCaptureLatencyMs_ = 0.0f;
     float                     lastEncodeLatencyMs_ = 0.0f;
+
+    // Reusable working vectors avoiding per-frame heap churn
+    std::vector<uint8_t>                  reusableDirtyMask_;
+    std::vector<uint8_t>                  reusableCandidateTiles_;
+    std::vector<TileThreadPool::RectTask> reusableTasks_;
 };
 
 } // namespace cppdesk

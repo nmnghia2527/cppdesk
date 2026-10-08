@@ -2,6 +2,8 @@
 
 #include <cstdint>
 #include <cstddef>
+#include <cstring>
+#include <immintrin.h>
 
 #if defined(__GNUC__) || defined(__clang__)
 #include <cpuid.h>
@@ -55,6 +57,32 @@ public:
     static bool hasAvx2() {
         static const bool detected = detectAvx2Cpu();
         return detected;
+    }
+
+    static void scalarBlitRowBgraOpaque(uint8_t* dstRow, const uint8_t* srcRow, int widthPixels) {
+        if (!dstRow || !srcRow || widthPixels <= 0) return;
+        for (int c = 0; c < widthPixels; ++c) {
+            uint32_t px = 0;
+            std::memcpy(&px, srcRow + static_cast<size_t>(c) * 4, sizeof(uint32_t));
+            px |= 0xFF000000u;
+            std::memcpy(dstRow + static_cast<size_t>(c) * 4, &px, sizeof(uint32_t));
+        }
+    }
+
+    static void blitRowBgraOpaque(uint8_t* dstRow, const uint8_t* srcRow, int widthPixels) {
+        if (!dstRow || !srcRow || widthPixels <= 0) return;
+        int c = 0;
+#if defined(__AVX2__)
+        if (hasAvx2() && widthPixels >= 8) {
+            const __m256i alphaMask = _mm256_set1_epi32(static_cast<int>(0xFF000000u));
+            for (; c + 8 <= widthPixels; c += 8) {
+                __m256i px = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(srcRow + static_cast<size_t>(c) * 4));
+                px = _mm256_or_si256(px, alphaMask);
+                _mm256_storeu_si256(reinterpret_cast<__m256i*>(dstRow + static_cast<size_t>(c) * 4), px);
+            }
+        }
+#endif
+        scalarBlitRowBgraOpaque(dstRow + static_cast<size_t>(c) * 4, srcRow + static_cast<size_t>(c) * 4, widthPixels - c);
     }
 
     static bool scalarTileDiff(
