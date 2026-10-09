@@ -118,4 +118,4 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1 -Test
 
 ## License
 
-Licensed under the [MIT License](LICENSE). Copyright (c) 2026 nmnghia2527.
+Licensed under the [MIT License](LICENSE). Copyright (c) 2026 CppDesk.
