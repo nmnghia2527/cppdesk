@@ -571,6 +571,15 @@ bool CppDeskWindow::stepAnimations(float dt) {
     float targetHwAccelModal = showHwAccelRestartModal_ ? 1.0f : 0.0f;
     if (stepSpring(hwAccelModalAnimT_, hwAccelModalAnimVel_, targetHwAccelModal, 28.0f, 0.74f, dt)) active = true;
 
+    // 15. Settings Tab Smooth Scroll Spring
+    if (!draggingSettingsScrollbar_) {
+        settingsScrollTarget_ = std::clamp(settingsScrollTarget_, 0.0f, settingsMaxScroll_);
+        if (stepSpring(settingsScrollOffset_, settingsScrollVel_, settingsScrollTarget_, 32.0f, 0.88f, dt, 0.15f)) {
+            settingsScrollOffset_ = std::clamp(settingsScrollOffset_, 0.0f, settingsMaxScroll_);
+            active = true;
+        }
+    }
+
     // Startup auto-update check timer (queries GitHub 2.0s after launch)
     if (!startupCheckTriggered_) {
         startupUpdateCheckTimer_ -= dt;
@@ -644,6 +653,7 @@ LRESULT CppDeskWindow::handleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
         }
         case WM_KILLFOCUS: {
             mouseLeftDown_ = false;
+            draggingSettingsScrollbar_ = false;
             pressedWidgetId_.clear();
             network_.sendReleaseAllModifiers();
             InvalidateRect(hwnd_, nullptr, FALSE);
@@ -2838,9 +2848,26 @@ void CppDeskWindow::drawSettingsView(const UiRect& bounds, float alpha) {
     float staggerR = (1.0f - sR) * 14.0f;
 
     float pad = 20.0f;
+    float minCardsH = 808.0f;
+    float availCardsH = bounds.height() - (pad + 66.0f + 12.0f + pad);
+    float cardsH = std::max(minCardsH, availCardsH);
+    float totalContentH = pad + 66.0f + 12.0f + cardsH + pad;
+
+    settingsMaxScroll_ = std::max(0.0f, totalContentH - bounds.height());
+    settingsScrollTarget_ = std::clamp(settingsScrollTarget_, 0.0f, settingsMaxScroll_);
+    settingsScrollOffset_ = std::clamp(settingsScrollOffset_, 0.0f, settingsMaxScroll_);
+
+    float scrollY = -settingsScrollOffset_;
+    float rightPad = (settingsMaxScroll_ > 0.5f) ? (pad + 10.0f) : pad;
+    size_t settingsClickStart = clickRegions_.size();
+
+    renderTarget_->PushAxisAlignedClip(
+        D2D1::RectF(bounds.left, bounds.top, bounds.right, bounds.bottom),
+        D2D1_ANTIALIAS_MODE_PER_PRIMITIVE
+    );
 
     // ---------------- TOP HERO BANNER: SOFTWARE UPDATE & VERSION (v3.0.0) ----------------
-    UiRect updateBanner = UiRect{ bounds.left + pad, bounds.top + pad, bounds.right - pad, bounds.top + pad + 66.0f }.offset(0.0f, staggerL);
+    UiRect updateBanner = UiRect{ bounds.left + pad, bounds.top + pad + scrollY, bounds.right - rightPad, bounds.top + pad + 66.0f + scrollY }.offset(0.0f, staggerL);
     drawCardShadow(updateBanner, 14.0f, alpha);
     drawCardSurface(updateBanner, 14.0f, alpha);
 
@@ -2896,12 +2923,12 @@ void CppDeskWindow::drawSettingsView(const UiRect& bounds, float alpha) {
                }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
 
     // ---------------- TWO-COLUMN SETTINGS BODY ----------------
-    float totalW = bounds.width() - pad * 2.0f;
+    float totalW = (bounds.right - rightPad) - (bounds.left + pad);
     float colW = (totalW - pad) * 0.5f;
-    float cardTop = updateBanner.bottom + 12.0f;
+    float cardTop = bounds.top + pad + 66.0f + 12.0f + scrollY;
 
-    UiRect leftCard  = UiRect{ bounds.left + pad, cardTop, bounds.left + pad + colW, bounds.bottom - pad }.offset(0.0f, staggerL);
-    UiRect rightCard = UiRect{ leftCard.right + pad, cardTop, bounds.right - pad, bounds.bottom - pad }.offset(0.0f, staggerR);
+    UiRect leftCard  = UiRect{ bounds.left + pad, cardTop, bounds.left + pad + colW, cardTop + cardsH }.offset(0.0f, staggerL);
+    UiRect rightCard = UiRect{ leftCard.right + pad, cardTop, bounds.right - rightPad, cardTop + cardsH }.offset(0.0f, staggerR);
 
     const AppSettings s = identity_.settings();
 
@@ -3652,6 +3679,41 @@ void CppDeskWindow::drawSettingsView(const UiRect& bounds, float alpha) {
                        showToast("Settings restored to defaults");
                    }, fmtSmall_, true, COL_BORDER, COL_TEXT_ON_ACCENT);
     }
+
+    // Clamp hit-test regions inside Settings viewport so scrolled controls never overlap top navbar
+    for (size_t i = settingsClickStart; i < clickRegions_.size(); ++i) {
+        clickRegions_[i].rect.top = std::max(clickRegions_[i].rect.top, bounds.top);
+        clickRegions_[i].rect.bottom = std::min(clickRegions_[i].rect.bottom, bounds.bottom);
+        if (clickRegions_[i].rect.bottom <= clickRegions_[i].rect.top) {
+            clickRegions_[i].rect = { -10000.0f, -10000.0f, -10000.0f, -10000.0f };
+        }
+    }
+
+    // Vertical Scrollbar Track & Draggable Thumb when content overflows viewport
+    if (settingsMaxScroll_ > 0.5f) {
+        UiRect trackRect = { bounds.right - 11.0f, bounds.top + 12.0f, bounds.right - 4.0f, bounds.bottom - 12.0f };
+        float visRatio = std::clamp(bounds.height() / totalContentH, 0.12f, 1.0f);
+        float thumbH = std::max(36.0f, trackRect.height() * visRatio);
+        float scrollFrac = std::clamp(settingsScrollOffset_ / settingsMaxScroll_, 0.0f, 1.0f);
+        float thumbTop = trackRect.top + (trackRect.height() - thumbH) * scrollFrac;
+        UiRect thumbRect = { trackRect.left, thumbTop, trackRect.right, thumbTop + thumbH };
+
+        settingsScrollTrackRect_ = trackRect;
+        settingsScrollThumbRect_ = thumbRect;
+
+        bool hoverTrack = trackRect.inflate(4.0f, 2.0f).contains(mouseX_, mouseY_);
+        fillRoundRect(trackRect, 3.5f, withAlpha(COL_BORDER, (hoverTrack || draggingSettingsScrollbar_) ? 0.38f * alpha : 0.18f * alpha));
+
+        D2D1_COLOR_F thumbCol = (draggingSettingsScrollbar_ || hoverTrack)
+            ? withAlpha(COL_PRIMARY_ACCENT, 0.85f * alpha)
+            : withAlpha(COL_TEXT_MUTED, 0.55f * alpha);
+        fillRoundRect(thumbRect, 3.5f, thumbCol);
+    } else {
+        settingsScrollTrackRect_ = {};
+        settingsScrollThumbRect_ = {};
+    }
+
+    renderTarget_->PopAxisAlignedClip();
 }
 
 // ---------------- Floating macOS Side Sheet Drawer ----------------
@@ -5800,6 +5862,24 @@ void CppDeskWindow::onMouseMove(float x, float y) {
         }
     }
 
+    if (draggingSettingsScrollbar_) {
+        if (!mouseLeftDown_ || !(GetAsyncKeyState(VK_LBUTTON) & 0x8000)) {
+            draggingSettingsScrollbar_ = false;
+            ReleaseCapture();
+            InvalidateRect(hwnd_, nullptr, FALSE);
+        } else if (activeTab_ == ActiveTab::Settings && settingsMaxScroll_ > 0.5f) {
+            float thumbH = settingsScrollThumbRect_.height();
+            float availTrack = std::max(1.0f, settingsScrollTrackRect_.height() - thumbH);
+            float newThumbTop = std::clamp(y - settingsScrollbarGrabOffset_, settingsScrollTrackRect_.top, settingsScrollTrackRect_.bottom - thumbH);
+            float frac = (newThumbTop - settingsScrollTrackRect_.top) / availTrack;
+            settingsScrollTarget_ = frac * settingsMaxScroll_;
+            settingsScrollOffset_ = settingsScrollTarget_;
+            settingsScrollVel_ = 0.0f;
+            InvalidateRect(hwnd_, nullptr, FALSE);
+            return;
+        }
+    }
+
     std::string newHover;
     bool newIsText = false;
     for (auto it = clickRegions_.rbegin(); it != clickRegions_.rend(); ++it) {
@@ -5848,6 +5928,14 @@ void CppDeskWindow::onMouseButton(MouseButtonId btn, bool isDown, float x, float
     mouseY_ = y;
     mouseInsideClient_ = true;
 
+    if (btn == MouseButtonId::Left && !isDown && draggingSettingsScrollbar_) {
+        mouseLeftDown_ = false;
+        draggingSettingsScrollbar_ = false;
+        ReleaseCapture();
+        InvalidateRect(hwnd_, nullptr, FALSE);
+        return;
+    }
+
     // If Mandatory Update Modal is active, intercept clicks and only allow update_modal_* buttons
     if (showUpdateRequiredModal_) {
         if (btn == MouseButtonId::Left) {
@@ -5887,6 +5975,26 @@ void CppDeskWindow::onMouseButton(MouseButtonId btn, bool isDown, float x, float
     if (btn == MouseButtonId::Left) {
         mouseLeftDown_ = isDown;
         if (isDown) {
+            if (activeTab_ == ActiveTab::Settings && settingsMaxScroll_ > 0.5f && !insideDrawer &&
+                settingsScrollTrackRect_.inflate(5.0f, 2.0f).contains(x, y)) {
+                float thumbH = settingsScrollThumbRect_.height();
+                float availTrack = std::max(1.0f, settingsScrollTrackRect_.height() - thumbH);
+                if (settingsScrollThumbRect_.inflate(5.0f, 2.0f).contains(x, y)) {
+                    settingsScrollbarGrabOffset_ = y - settingsScrollThumbRect_.top;
+                } else {
+                    float newThumbTop = std::clamp(y - thumbH * 0.5f, settingsScrollTrackRect_.top, settingsScrollTrackRect_.bottom - thumbH);
+                    float frac = (newThumbTop - settingsScrollTrackRect_.top) / availTrack;
+                    settingsScrollTarget_ = frac * settingsMaxScroll_;
+                    settingsScrollOffset_ = settingsScrollTarget_;
+                    settingsScrollVel_ = 0.0f;
+                    settingsScrollbarGrabOffset_ = thumbH * 0.5f;
+                }
+                draggingSettingsScrollbar_ = true;
+                SetCapture(hwnd_);
+                InvalidateRect(hwnd_, nullptr, FALSE);
+                return;
+            }
+
             for (auto it = clickRegions_.rbegin(); it != clickRegions_.rend(); ++it) {
                 if (it->rect.contains(x, y)) {
                     pressedWidgetId_ = it->id;
@@ -5984,6 +6092,13 @@ void CppDeskWindow::onMouseWheel(int delta) {
         }
     }
 
+    if (activeTab_ == ActiveTab::Settings && settingsMaxScroll_ > 0.5f) {
+        float step = (static_cast<float>(delta) / 120.0f) * 84.0f;
+        settingsScrollTarget_ = std::clamp(settingsScrollTarget_ - step, 0.0f, settingsMaxScroll_);
+        InvalidateRect(hwnd_, nullptr, FALSE);
+        return;
+    }
+
     if (activeTab_ == ActiveTab::RemoteSession && remoteInputEnabled_ &&
         renderedCanvasRect_.contains(mouseX_, mouseY_)) {
         float nx = 0.0f, ny = 0.0f;
@@ -6075,6 +6190,20 @@ void CppDeskWindow::onCharInput(wchar_t ch) {
 
 void CppDeskWindow::onKeyEvent(uint16_t vk, uint16_t scan, bool isDown, bool isExtended) {
     if (isDown) {
+        if (activeTab_ == ActiveTab::Settings && settingsMaxScroll_ > 0.5f && !showFileDrawer_) {
+            float scrollDelta = (vk == VK_NEXT) ? 320.0f : (vk == VK_PRIOR) ? -320.0f : 0.0f;
+            if (focusedField_ == FocusedField::None && scrollDelta == 0.0f) {
+                if (vk == VK_DOWN) scrollDelta = 84.0f;
+                else if (vk == VK_UP) scrollDelta = -84.0f;
+                else if (vk == VK_HOME) scrollDelta = -settingsMaxScroll_;
+                else if (vk == VK_END) scrollDelta = settingsMaxScroll_;
+            }
+            if (scrollDelta != 0.0f) {
+                settingsScrollTarget_ = std::clamp(settingsScrollTarget_ + scrollDelta, 0.0f, settingsMaxScroll_);
+                InvalidateRect(hwnd_, nullptr, FALSE);
+                return;
+            }
+        }
         if (vk == VK_F1 || (vk == 0xBF /* VK_OEM_2 /? */ && (GetKeyState(VK_SHIFT) & 0x8000))) {
             toggleShortcutsModal();
             return;

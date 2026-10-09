@@ -366,6 +366,16 @@ private:
     // Remote Hardware Diagnostics & Process Telemetry UI state (Feature 1)
     float                   diagnosticsScrollOffset_ = 0.0f;
 
+    // Settings Tab vertical scroll & scrollbar state
+    float                   settingsScrollOffset_ = 0.0f;
+    float                   settingsScrollTarget_ = 0.0f;
+    float                   settingsScrollVel_ = 0.0f;
+    float                   settingsMaxScroll_ = 0.0f;
+    bool                    draggingSettingsScrollbar_ = false;
+    float                   settingsScrollbarGrabOffset_ = 0.0f;
+    UiRect                  settingsScrollTrackRect_{};
+    UiRect                  settingsScrollThumbRect_{};
+
     // Direct Canvas Drag-and-Drop File Drop UI state (Feature 2)
     bool                    canvasDropEffectActive_ = false;
     D2D1_POINT_2F           canvasDropPos_{ 0.0f, 0.0f };
@@ -412,7 +422,7 @@ private:
     float                   updateModalAnimT_ = 0.0f;
     float                   updateModalAnimVel_ = 0.0f;
     bool                    isCheckingUpdates_ = false;
-    std::string             updateStatusText_ = "Version v3.2.0 (Up to date)";
+    std::string             updateStatusText_ = "Version v3.2.1 (Up to date)";
     UpdateInfo              latestUpdateInfo_{};
     float                   startupUpdateCheckTimer_ = 2.0f;
     bool                    startupCheckTriggered_ = false;
