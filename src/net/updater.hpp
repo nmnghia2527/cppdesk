@@ -16,9 +16,13 @@ struct UpdateInfo {
     std::string latestVersion;
     std::string downloadUrl = "https://github.com/nmnghia2527/cppdesk/releases/latest";
     std::string releaseUrl = "https://github.com/nmnghia2527/cppdesk/releases/latest"; // Compatibility alias
+    std::string directDownloadUrl; // Direct URL to CppDesk.exe asset
     std::string releaseNotes;
     std::string errorMessage;
+    uint64_t assetSizeBytes = 0;
 };
+
+using UpdateProgressCallback = std::function<void(uint64_t downloadedBytes, uint64_t totalBytes, double speedBps)>;
 
 class AutoUpdater {
 public:
@@ -52,6 +56,25 @@ public:
 
     // Simple JSON value extractor helper
     static std::string extractJsonString(const std::string& json, const std::string& key);
+
+    // Extract direct asset download URL from release JSON
+    static std::string extractAssetDownloadUrl(const std::string& json, const std::string& assetName = "CppDesk.exe", uint64_t* outSize = nullptr);
+
+    // Asynchronous asset downloader with progress reporting
+    static void downloadUpdateAssetAsync(
+        const std::string& downloadUrl,
+        const std::wstring& targetPath,
+        UpdateProgressCallback onProgress,
+        std::function<void(bool success, const std::string& error)> onComplete);
+
+    // Validates PE binary integrity (DOS and NT headers)
+    static bool validatePeBinary(const std::wstring& filePath);
+
+    // Builds helper command for detached replacement
+    static std::wstring buildSelfUpdateCommand(const std::wstring& newExePath, const std::wstring& currentExePath);
+
+    // Spawns detached helper and triggers process replacement
+    static bool launchSelfUpdate(const std::wstring& newExePath, const std::wstring& currentExePath);
 };
 
 } // namespace cppdesk
