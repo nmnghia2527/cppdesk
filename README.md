@@ -7,7 +7,8 @@
   <a href="#how-to-build-from-source">Build</a> •
   <a href="#project-structure">Structure</a> •
   <a href="assets/CppDeskShowcase.mp4">Video Demo</a> •
-  <a href="https://github.com/nmnghia2527/cppdesk/releases">Releases</a>
+  <a href="https://github.com/nmnghia2527/cppdesk/releases">Releases</a> •
+  <a href="#issues--support">Issues</a>
 </p>
 
 <p align="center">
@@ -113,6 +114,21 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1 -Test
 ├── scripts/                      # Verification and benchmark scripts
 └── tests/                        # Automated test suite
 ```
+
+---
+
+## Issues & Support
+
+If you run into any bugs, unexpected behavior, connection issues, or have feature ideas:
+
+- **Report a Bug or Request a Feature**: [Open a New Issue](https://github.com/nmnghia2527/cppdesk/issues/new)
+- **Browse Existing Reports**: [GitHub Issues](https://github.com/nmnghia2527/cppdesk/issues)
+
+When opening an issue, include:
+- Windows version (e.g. Windows 11 23H2 x64)
+- CppDesk version (e.g. v3.3.1)
+- Connection topology (Direct LAN, STUN NAT traversal, or Relay)
+- Steps to reproduce the issue along with any displayed status text or error messages
 
 ---
 
