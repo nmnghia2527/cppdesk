@@ -3509,10 +3509,19 @@ void NetworkEngine::runViewerSession(std::string targetInput, std::string passwo
                                     viewerCursor_.normX = cx;
                                     viewerCursor_.normY = cy;
                                     viewerCursor_.visible = cvis;
+                                    viewerFrameSeq_++;
                                 }
                                 {
                                     std::lock_guard<std::mutex> lock(viewerStatsMutex_);
                                     viewerStats_.remoteCursor = { cx, cy, cvis };
+                                }
+                                std::function<void()> frameCb;
+                                {
+                                    std::lock_guard<std::mutex> lk(onFrameDecodedMutex_);
+                                    frameCb = onFrameDecoded_;
+                                }
+                                if (frameCb) {
+                                    frameCb();
                                 }
                             }
                             break;

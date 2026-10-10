@@ -768,6 +768,7 @@ LRESULT CppDeskWindow::handleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
                 D2D1_SIZE_U sz = D2D1::SizeU(rc.right - rc.left, rc.bottom - rc.top);
                 renderTarget_->Resize(sz);
             }
+            sessionHudScrollOffset_ = std::clamp(sessionHudScrollOffset_, 0.0f, sessionHudMaxScroll_);
             navPillInit_ = false;
             InvalidateRect(hwnd_, nullptr, FALSE);
             return 0;
@@ -2227,6 +2228,7 @@ void CppDeskWindow::drawRemoteSessionView(const UiRect& bounds, float alpha) {
 
         float barH = 48.0f;
         UiRect hudBar = { bounds.left, bounds.top + tabBarH, bounds.right, bounds.top + tabBarH + barH };
+        sessionHudBarRect_ = hudBar;
         fillRoundRect(hudBar, 0.0f, COL_BG_CARD);
         fillRoundRect({ hudBar.left, hudBar.bottom - 1.0f, hudBar.right, hudBar.bottom }, 0.0f, COL_BORDER);
 
@@ -2265,9 +2267,8 @@ void CppDeskWindow::drawRemoteSessionView(const UiRect& bounds, float alpha) {
                        }
                    }, fmtSmall_);
 
-        // Viewport for all other session controls
+        // Viewport and container bounds for session controls
         float statusRight = bx + (appSett.showSessionHud ? 175.0f : 120.0f);
-        UiRect stripViewport = { statusRight + 12.0f, hudBar.top + 6.0f, discBtn.left - 10.0f, hudBar.bottom - 6.0f };
 
         struct SessionHudButtonDef {
             std::string id;
@@ -2502,17 +2503,15 @@ void CppDeskWindow::drawRemoteSessionView(const UiRect& bounds, float alpha) {
             voiceActive ? (voiceMuted ? COL_TEXT_PRIMARY : COL_TEXT_ON_ACCENT) : COL_TEXT_PRIMARY,
             !voiceActive || voiceMuted, COL_BORDER,
             (voiceActive && !voiceMuted) ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT,
-            [this, voiceActive, voiceMuted]() {
+            [this, voiceActive]() {
                 if (!voiceActive) {
                     if (network_.startVoiceIntercom()) showToast("Voice Intercom active (Mic live)");
                     else showToast("Failed to open microphone", true);
-                } else if (!voiceMuted) {
-                    network_.setVoiceIntercomMicMuted(true);
-                    showToast("Intercom Mic muted");
                 } else {
                     network_.stopVoiceIntercom();
                     showToast("Voice Intercom stopped");
                 }
+                InvalidateRect(hwnd_, nullptr, FALSE);
             }
         });
 
@@ -2591,25 +2590,48 @@ void CppDeskWindow::drawRemoteSessionView(const UiRect& bounds, float alpha) {
             totalHudButtonsW += hudButtons[i].width;
         }
 
-        sessionHudMaxScroll_ = std::max(0.0f, totalHudButtonsW - stripViewport.width());
+        // Constrain horizontal menu container to display ~5 buttons at a time (~460px)
+        float availW = (discBtn.left - 14.0f) - (statusRight + 12.0f);
+        float containerW = std::min(460.0f, std::max(120.0f, availW));
+        UiRect containerRect = { statusRight + 12.0f, hudBar.top + 5.0f, statusRight + 12.0f + containerW, hudBar.bottom - 5.0f };
+
+        fillRoundRect(containerRect, 8.0f, rgba(255, 255, 255, 0.03f));
+        strokeRoundRect(containerRect, 8.0f, rgba(255, 255, 255, 0.07f), 1.0f);
+
+        UiRect stripViewport = { containerRect.left + 4.0f, containerRect.top + 1.0f, containerRect.right - 4.0f, containerRect.bottom - 1.0f };
+        bool canScroll = (totalHudButtonsW > stripViewport.width());
+        sessionHudMaxScroll_ = std::max(0.0f, totalHudButtonsW - (stripViewport.width() - (canScroll ? 52.0f : 0.0f)));
         sessionHudScrollOffset_ = std::clamp(sessionHudScrollOffset_, 0.0f, sessionHudMaxScroll_);
 
-        // Render scroll chevrons if overflowing
-        if (sessionHudMaxScroll_ > 2.0f) {
-            if (sessionHudScrollOffset_ > 2.0f) {
-                UiRect lBtn = { stripViewport.left, stripViewport.top + 2.0f, stripViewport.left + 22.0f, stripViewport.bottom - 2.0f };
-                drawButton("sess_hud_scroll_left", lBtn, "◀", COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 6.0f, [this]() {
-                    sessionHudScrollOffset_ = std::clamp(sessionHudScrollOffset_ - 140.0f, 0.0f, sessionHudMaxScroll_);
-                }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
-                stripViewport.left += 26.0f;
-            }
-            if (sessionHudScrollOffset_ < sessionHudMaxScroll_ - 2.0f) {
-                UiRect rBtn = { stripViewport.right - 22.0f, stripViewport.top + 2.0f, stripViewport.right, stripViewport.bottom - 2.0f };
-                drawButton("sess_hud_scroll_right", rBtn, "▶", COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 6.0f, [this]() {
-                    sessionHudScrollOffset_ = std::clamp(sessionHudScrollOffset_ + 140.0f, 0.0f, sessionHudMaxScroll_);
-                }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
-                stripViewport.right -= 26.0f;
-            }
+        if (canScroll) {
+            UiRect lBtn = { containerRect.left + 3.0f, containerRect.top + 2.0f, containerRect.left + 23.0f, containerRect.bottom - 2.0f };
+            bool hasLeft = sessionHudScrollOffset_ > 2.0f;
+            drawButton("sess_hud_scroll_left", lBtn, "<",
+                       hasLeft ? COL_SEC_BTN_BG : rgba(255, 255, 255, 0.02f),
+                       hasLeft ? COL_SEC_BTN_HV : rgba(255, 255, 255, 0.02f),
+                       hasLeft ? COL_TEXT_PRIMARY : rgba(255, 255, 255, 0.25f),
+                       6.0f, [this, hasLeft]() {
+                           if (hasLeft) {
+                               sessionHudScrollOffset_ = std::clamp(sessionHudScrollOffset_ - 110.0f, 0.0f, sessionHudMaxScroll_);
+                               InvalidateRect(hwnd_, nullptr, FALSE);
+                           }
+                       }, fmtSmall_, true, COL_BORDER, hasLeft ? COL_TEXT_ACCENT : rgba(255, 255, 255, 0.25f));
+
+            UiRect rBtn = { containerRect.right - 23.0f, containerRect.top + 2.0f, containerRect.right - 3.0f, containerRect.bottom - 2.0f };
+            bool hasRight = sessionHudScrollOffset_ < sessionHudMaxScroll_ - 2.0f;
+            drawButton("sess_hud_scroll_right", rBtn, ">",
+                       hasRight ? COL_SEC_BTN_BG : rgba(255, 255, 255, 0.02f),
+                       hasRight ? COL_SEC_BTN_HV : rgba(255, 255, 255, 0.02f),
+                       hasRight ? COL_TEXT_PRIMARY : rgba(255, 255, 255, 0.25f),
+                       6.0f, [this, hasRight]() {
+                           if (hasRight) {
+                               sessionHudScrollOffset_ = std::clamp(sessionHudScrollOffset_ + 110.0f, 0.0f, sessionHudMaxScroll_);
+                               InvalidateRect(hwnd_, nullptr, FALSE);
+                           }
+                       }, fmtSmall_, true, COL_BORDER, hasRight ? COL_TEXT_ACCENT : rgba(255, 255, 255, 0.25f));
+
+            stripViewport.left += 26.0f;
+            stripViewport.right -= 26.0f;
         }
 
         renderTarget_->PushAxisAlignedClip(
@@ -2623,6 +2645,10 @@ void CppDeskWindow::drawRemoteSessionView(const UiRect& bounds, float alpha) {
             if (btnRect.right > stripViewport.left && btnRect.left < stripViewport.right) {
                 drawButton(btn.id, btnRect, btn.label, btn.bgColor, btn.hoverColor, btn.textColor,
                            7.5f, btn.onClick, fmtSmall_, btn.hasBorder, btn.borderColor, btn.hoverTextColor);
+                if (!clickRegions_.empty() && clickRegions_.back().id == btn.id) {
+                    clickRegions_.back().rect.left = std::max(clickRegions_.back().rect.left, stripViewport.left);
+                    clickRegions_.back().rect.right = std::min(clickRegions_.back().rect.right, stripViewport.right);
+                }
             }
             curBtnX += btn.width + 6.0f;
         }
@@ -2854,38 +2880,47 @@ void CppDeskWindow::drawRemoteSessionView(const UiRect& bounds, float alpha) {
 
         // Screen Recording Live Watermark Pill (Feature 3)
         if (sessionRecorder_.isRecording()) {
-            float recPillW = 120.0f;
-            float recPillH = 30.0f;
+            float recPillW = 148.0f;
+            float recPillH = 32.0f;
             UiRect recPill = { renderedCanvasRect_.left + 16.0f,
                                renderedCanvasRect_.top + 16.0f,
                                renderedCanvasRect_.left + 16.0f + recPillW,
                                renderedCanvasRect_.top + 16.0f + recPillH };
 
-            fillRoundRect(recPill, 15.0f, rgba(28, 27, 25, 0.88f));
-            strokeRoundRect(recPill, 15.0f, withAlpha(COL_DANGER, 0.65f), 1.2f);
+            fillRoundRect(recPill, 16.0f, rgba(20, 20, 24, 0.94f));
+            strokeRoundRect(recPill, 16.0f, withAlpha(COL_DANGER, 0.75f), 1.2f);
 
             uint64_t tick = GetTickCount64();
             float pulse = 0.5f + 0.5f * std::sin(static_cast<float>(tick % 1000) / 1000.0f * 6.28318f);
             D2D1_COLOR_F dotColor = D2D1::ColorF(0.95f, 0.2f, 0.2f, 0.5f + 0.5f * pulse);
             solidBrush_->SetColor(dotColor);
-            renderTarget_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(recPill.left + 16.0f, (recPill.top + recPill.bottom) * 0.5f), 5.0f, 5.0f), solidBrush_);
+            renderTarget_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(recPill.left + 16.0f, recPill.centerY()), 5.0f, 5.0f), solidBrush_);
 
             uint64_t durSec = sessionRecorder_.durationSeconds();
             char recTimeBuf[32];
             std::snprintf(recTimeBuf, sizeof(recTimeBuf), "REC %02llu:%02llu",
                           (unsigned long long)(durSec / 60), (unsigned long long)(durSec % 60));
 
-            UiRect recTextRect = { recPill.left + 28.0f, recPill.top, recPill.right - 8.0f, recPill.bottom };
-            drawText(recTimeBuf, recTextRect, fmtSmall_, COL_TEXT_PRIMARY, DWRITE_TEXT_ALIGNMENT_LEADING);
+            UiRect recTextRect = { recPill.left + 28.0f, recPill.top, recPill.right - 30.0f, recPill.bottom };
+            drawText(recTimeBuf, recTextRect, fmtSmall_, rgba(255, 255, 255, 0.95f), DWRITE_TEXT_ALIGNMENT_LEADING);
+
+            // Interactive stop / dismiss button on pill
+            UiRect recStopBtn = { recPill.right - 26.0f, recPill.top + 4.0f, recPill.right - 6.0f, recPill.bottom - 4.0f };
+            drawButton("rec_pill_stop", recStopBtn, "x",
+                       rgba(255, 255, 255, 0.08f), rgba(239, 68, 68, 0.85f), rgba(255, 255, 255, 0.90f),
+                       10.0f, [this]() {
+                           toggleScreenRecording();
+                           InvalidateRect(hwnd_, nullptr, FALSE);
+                       }, fmtSmall_);
         }
 
         // Voice Intercom Live In-Canvas Pill (Feature 4)
         if (network_.isVoiceIntercomActive()) {
             float topY = sessionRecorder_.isRecording()
-                ? (renderedCanvasRect_.top + 16.0f + 30.0f + 8.0f)
+                ? (renderedCanvasRect_.top + 16.0f + 32.0f + 8.0f)
                 : (renderedCanvasRect_.top + 16.0f);
-            float icomW = 120.0f;
-            float icomH = 30.0f;
+            float icomW = 152.0f;
+            float icomH = 32.0f;
             UiRect icomPill = { renderedCanvasRect_.left + 16.0f,
                                 topY,
                                 renderedCanvasRect_.left + 16.0f + icomW,
@@ -2894,18 +2929,28 @@ void CppDeskWindow::drawRemoteSessionView(const UiRect& bounds, float alpha) {
             bool isMuted = network_.isVoiceIntercomMicMuted();
             D2D1_COLOR_F accentCol = isMuted ? rgba(239, 68, 68, 0.9f) : rgba(16, 185, 129, 0.9f);
 
-            fillRoundRect(icomPill, 15.0f, rgba(15, 23, 42, 0.88f));
-            strokeRoundRect(icomPill, 15.0f, withAlpha(accentCol, 0.65f), 1.2f);
+            fillRoundRect(icomPill, 16.0f, rgba(15, 23, 42, 0.94f));
+            strokeRoundRect(icomPill, 16.0f, withAlpha(accentCol, 0.75f), 1.2f);
 
             // Audio level indicator dot with size responding to RMS volume
             float lvl = network_.voiceIntercomInputLevel();
             float dotRadius = 4.0f + std::min(lvl * 12.0f, 4.0f);
             solidBrush_->SetColor(accentCol);
-            renderTarget_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(icomPill.left + 16.0f, (icomPill.top + icomPill.bottom) * 0.5f), dotRadius, dotRadius), solidBrush_);
+            renderTarget_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(icomPill.left + 16.0f, icomPill.centerY()), dotRadius, dotRadius), solidBrush_);
 
             std::string icomText = isMuted ? "Mic: Muted" : "Voice: Live";
-            UiRect icomTextRect = { icomPill.left + 28.0f, icomPill.top, icomPill.right - 8.0f, icomPill.bottom };
-            drawText(icomText, icomTextRect, fmtSmall_, COL_TEXT_PRIMARY, DWRITE_TEXT_ALIGNMENT_LEADING);
+            UiRect icomTextRect = { icomPill.left + 28.0f, icomPill.top, icomPill.right - 30.0f, icomPill.bottom };
+            drawText(icomText, icomTextRect, fmtSmall_, rgba(255, 255, 255, 0.95f), DWRITE_TEXT_ALIGNMENT_LEADING);
+
+            // Interactive stop / dismiss button on pill
+            UiRect icomStopBtn = { icomPill.right - 26.0f, icomPill.top + 4.0f, icomPill.right - 6.0f, icomPill.bottom - 4.0f };
+            drawButton("icom_pill_stop", icomStopBtn, "x",
+                       rgba(255, 255, 255, 0.08f), rgba(239, 68, 68, 0.85f), rgba(255, 255, 255, 0.90f),
+                       10.0f, [this]() {
+                           network_.stopVoiceIntercom();
+                           showToast("Voice Intercom stopped");
+                           InvalidateRect(hwnd_, nullptr, FALSE);
+                       }, fmtSmall_);
         }
     } else {
         renderedCanvasRect_ = {};
@@ -7358,9 +7403,10 @@ void CppDeskWindow::onMouseWheel(int delta) {
 
     // Horizontal scroll for RemoteSession windowed HUD bar
     if (activeTab_ == ActiveTab::RemoteSession && !isFullscreen_) {
-        float tabBarH = (sessionTabs_.tabCount() > 0) ? 36.0f : 0.0f;
-        if (mouseY_ >= tabBarH && mouseY_ <= tabBarH + 48.0f && sessionHudMaxScroll_ > 0.5f) {
-            float step = (static_cast<float>(delta) / 120.0f) * 80.0f;
+        if (mouseY_ >= sessionHudBarRect_.top && mouseY_ <= sessionHudBarRect_.bottom &&
+            mouseX_ >= sessionHudBarRect_.left && mouseX_ <= sessionHudBarRect_.right &&
+            sessionHudMaxScroll_ > 0.5f) {
+            float step = (static_cast<float>(delta) / 120.0f) * 90.0f;
             sessionHudScrollOffset_ = std::clamp(sessionHudScrollOffset_ - step, 0.0f, sessionHudMaxScroll_);
             InvalidateRect(hwnd_, nullptr, FALSE);
             return;
@@ -7975,6 +8021,7 @@ void CppDeskWindow::toggleScreenRecording() {
 
         std::string fname = std::filesystem::path(path).filename().string();
         showToast("Recording saved: " + fname + " (" + szBuf + ") • Review in Player");
+        InvalidateRect(hwnd_, nullptr, FALSE);
     } else {
         if (frameBufferBgra_.empty() || frameBufferW_ <= 0 || frameBufferH_ <= 0) {
             showToast("No active remote video stream to record", true);
@@ -7996,6 +8043,7 @@ void CppDeskWindow::toggleScreenRecording() {
         if (sessionRecorder_.startRecording(fullPath.string(), frameBufferW_, frameBufferH_, 30)) {
             sessionRecorder_.pushFrame(frameBufferBgra_.data(), frameBufferW_, frameBufferH_);
             showToast("Screen recording started");
+            InvalidateRect(hwnd_, nullptr, FALSE);
         } else {
             showToast("Failed to start screen recording", true);
         }

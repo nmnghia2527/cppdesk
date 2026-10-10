@@ -100,6 +100,8 @@ thread_local ThreadZstdContext tl_zstd;
 
 // ---------------- TileCodec ----------------
 
+static std::mutex g_gdiplusCodecMutex;
+
 void TileCodec::initGdiPlus() {
     std::call_once(g_gdiplusInitFlag, []() {
         Gdiplus::GdiplusStartupInput input;
@@ -136,6 +138,7 @@ bool TileCodec::decompressZstd(const void* src, size_t srcLen, void* dst, size_t
 }
 
 std::vector<uint8_t> TileCodec::encodeJpeg(const uint8_t* bgra, int width, int height, int quality) {
+    std::lock_guard<std::mutex> gdiLock(g_gdiplusCodecMutex);
     initGdiPlus();
     if (!g_hasJpegClsid || !bgra || width <= 0 || height <= 0) return {};
 
@@ -178,6 +181,7 @@ std::vector<uint8_t> TileCodec::encodeJpeg(const uint8_t* bgra, int width, int h
 }
 
 bool TileCodec::decodeJpeg(const uint8_t* jpegData, size_t jpegLen, std::vector<uint8_t>& outBgra, int& outW, int& outH) {
+    std::lock_guard<std::mutex> gdiLock(g_gdiplusCodecMutex);
     initGdiPlus();
     if (!jpegData || jpegLen == 0) return false;
 
@@ -214,6 +218,7 @@ bool TileCodec::decodeJpegIntoCanvas(
     uint8_t* canvasBgra, int canvasW, int canvasH,
     uint16_t x, uint16_t y, uint16_t width, uint16_t height)
 {
+    std::lock_guard<std::mutex> gdiLock(g_gdiplusCodecMutex);
     initGdiPlus();
     if (!jpegData || jpegLen == 0 || !canvasBgra || width == 0 || height == 0) return false;
     if (static_cast<int>(x) + width > canvasW || static_cast<int>(y) + height > canvasH) return false;
@@ -510,7 +515,7 @@ void TileThreadPool::parallelEncode(std::vector<RectTask>& tasks) {
         remainingTasks_.store(tasks.size());
         cvTask_.notify_all();
 
-        cvDone_.wait(lock, [&]() {
+        cvDone_.wait_for(lock, std::chrono::milliseconds(250), [&]() {
             return remainingTasks_.load() == 0 || stop_.load();
         });
         activeBatch_.clear();
@@ -546,7 +551,7 @@ void TileThreadPool::parallelDecode(std::vector<DecodeTask>& tasks) {
         remainingTasks_.store(tasks.size());
         cvTask_.notify_all();
 
-        cvDone_.wait(lock, [&]() {
+        cvDone_.wait_for(lock, std::chrono::milliseconds(250), [&]() {
             return remainingTasks_.load() == 0 || stop_.load();
         });
         activeDecodeBatch_.clear();
