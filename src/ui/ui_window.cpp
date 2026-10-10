@@ -2246,10 +2246,8 @@ void CppDeskWindow::drawRemoteSessionView(const UiRect& bounds, float alpha) {
             drawText("Connected", { bx + 13.0f, hudBar.top, bx + 110.0f, hudBar.bottom }, fmtSmall_, COL_TEXT_SECONDARY);
         }
 
-        // Right-aligned session controls
-        float rx = hudBar.right - 14.0f;
-
-        UiRect discBtn = { rx - 88.0f, hudBar.top + 8.0f, rx, hudBar.bottom - 8.0f };
+        // Pinned Disconnect Button on far right
+        UiRect discBtn = { hudBar.right - 98.0f, hudBar.top + 8.0f, hudBar.right - 14.0f, hudBar.bottom - 8.0f };
         drawButton("sess_disconnect", discBtn, "Disconnect",
                    COL_DANGER, COL_DANGER_HV, COL_TEXT_ON_ACCENT, 7.5f, [this]() {
                        if (sessionRecorder_.isRecording()) {
@@ -2266,43 +2264,259 @@ void CppDeskWindow::drawRemoteSessionView(const UiRect& bounds, float alpha) {
                            showToast("Disconnected");
                        }
                    }, fmtSmall_);
-        rx = discBtn.left - 6.0f;
 
-        UiRect fsBtn = { rx - 84.0f, hudBar.top + 8.0f, rx, hudBar.bottom - 8.0f };
-        drawButton("sess_fullscreen", fsBtn, "Fullscreen",
-                   COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 7.5f, [this]() {
-                       toggleFullscreen();
-                   }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
-        rx = fsBtn.left - 6.0f;
+        // Viewport for all other session controls
+        float statusRight = bx + (appSett.showSessionHud ? 175.0f : 120.0f);
+        UiRect stripViewport = { statusRight + 12.0f, hudBar.top + 6.0f, discBtn.left - 10.0f, hudBar.bottom - 6.0f };
 
-        uint32_t unreadChat = network_.unreadChatCount();
-        bool chatOpen = (showFileDrawer_ && drawerTab_ == DrawerTab::LiveChat);
-        std::string chatLabel = (unreadChat > 0) ? ("Chat (" + std::to_string(unreadChat) + ")") : "Chat";
-        UiRect chatBtn = { rx - 76.0f, hudBar.top + 8.0f, rx, hudBar.bottom - 8.0f };
-        drawButton("sess_chat", chatBtn, chatLabel,
-                   (chatOpen || unreadChat > 0) ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
-                   (chatOpen || unreadChat > 0) ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
-                   (chatOpen || unreadChat > 0) ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
-                   7.5f, [this, chatOpen]() {
-                       if (chatOpen) {
-                           showFileDrawer_ = false;
-                       } else {
-                           showFileDrawer_ = true;
-                           drawerTab_ = DrawerTab::LiveChat;
-                           network_.markChatRead();
-                           focusedField_ = FocusedField::ChatInput;
-                       }
-                   }, fmtSmall_, !(chatOpen || unreadChat > 0), COL_BORDER,
-                   (chatOpen || unreadChat > 0) ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
-        rx = chatBtn.left - 6.0f;
+        struct SessionHudButtonDef {
+            std::string id;
+            std::string label;
+            float width;
+            D2D1_COLOR_F bgColor;
+            D2D1_COLOR_F hoverColor;
+            D2D1_COLOR_F textColor;
+            bool hasBorder;
+            D2D1_COLOR_F borderColor;
+            D2D1_COLOR_F hoverTextColor;
+            std::function<void()> onClick;
+        };
 
-        UiRect shotBtn = { rx - 80.0f, hudBar.top + 8.0f, rx, hudBar.bottom - 8.0f };
-        drawButton("sess_screenshot", shotBtn, "Screenshot",
-                   COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 7.5f, [this]() {
-                       saveRemoteScreenshot();
-                   }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
-        rx = shotBtn.left - 6.0f;
+        std::vector<SessionHudButtonDef> hudButtons;
 
+        // 1. Performance HUD
+        bool hudOn = showPerformanceHud_;
+        hudButtons.push_back({
+            "sess_hud_btn", hudOn ? "HUD: ON" : "HUD", 72.0f,
+            hudOn ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
+            hudOn ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
+            hudOn ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
+            !hudOn, COL_BORDER, hudOn ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT,
+            [this]() {
+                showPerformanceHud_ = !showPerformanceHud_;
+                showToast(showPerformanceHud_ ? "Performance HUD: ON" : "Performance HUD: OFF");
+            }
+        });
+
+        // 2. Whiteboard
+        bool wbOn = whiteboardActive_;
+        hudButtons.push_back({
+            "sess_whiteboard_btn", wbOn ? "Board: ON" : "Board", 78.0f,
+            wbOn ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
+            wbOn ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
+            wbOn ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
+            !wbOn, COL_BORDER, wbOn ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT,
+            [this]() {
+                whiteboardActive_ = !whiteboardActive_;
+                showToast(whiteboardActive_ ? "Whiteboard active" : "Whiteboard hidden");
+            }
+        });
+
+        // 3. Tunnels
+        bool tunnelsOn = showPortForwardModal_;
+        hudButtons.push_back({
+            "sess_tunnels_btn", "Tunnels", 76.0f,
+            tunnelsOn ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
+            tunnelsOn ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
+            tunnelsOn ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
+            !tunnelsOn, COL_BORDER, tunnelsOn ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT,
+            [this]() {
+                showPortForwardModal_ = !showPortForwardModal_;
+            }
+        });
+
+        // 4. Privacy Mode Blank Screen
+        bool privacyOn = stats.privacyModeEngaged;
+        hudButtons.push_back({
+            "sess_privacy_btn", privacyOn ? "Blank: ON" : "Blank Screen", 94.0f,
+            privacyOn ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
+            privacyOn ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
+            privacyOn ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
+            !privacyOn, COL_BORDER, privacyOn ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT,
+            [this]() {
+                network_.requestTogglePrivacyMode();
+            }
+        });
+
+        // 5. Audio / Volume
+        bool isMuted = network_.isAudioMuted();
+        int vol = network_.audioVolume();
+        std::string audioLabel = isMuted ? "Audio: Mute" : ("Vol: " + std::to_string(vol) + "%");
+        hudButtons.push_back({
+            "sess_audio_btn", audioLabel, 88.0f,
+            isMuted ? COL_SEC_BTN_BG : COL_PRIMARY_ACCENT,
+            isMuted ? COL_SEC_BTN_HV : COL_PRIMARY_ACCENT_HV,
+            isMuted ? COL_TEXT_PRIMARY : COL_TEXT_ON_ACCENT,
+            isMuted, COL_BORDER, isMuted ? COL_TEXT_ACCENT : COL_TEXT_ON_ACCENT,
+            [this]() {
+                showAudioVolumePopup_ = !showAudioVolumePopup_;
+            }
+        });
+
+        // 6. Input Control / View Only
+        bool canControl = (stats.grantedPermissions & PERM_INPUT) != 0;
+        bool inputActive = canControl && remoteInputEnabled_;
+        std::string inputLabel = !canControl ? "View Only" : (inputActive ? "Control: ON" : "View Only");
+        hudButtons.push_back({
+            "sess_input_toggle", inputLabel, 98.0f,
+            inputActive ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
+            inputActive ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
+            inputActive ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
+            !inputActive, COL_BORDER, inputActive ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT,
+            [this, canControl]() {
+                if (canControl) {
+                    remoteInputEnabled_ = !remoteInputEnabled_;
+                    if (!remoteInputEnabled_) network_.sendReleaseAllModifiers();
+                    showToast(remoteInputEnabled_ ? "Control enabled" : "View-only mode");
+                } else {
+                    showToast("Remote control disabled by host", true);
+                }
+            }
+        });
+
+        // 7. Profile Preset
+        ConnectionProfile curProf = stats.connectionProfile;
+        std::string profLabel = (curProf == ConnectionProfile::LowBandwidth) ? "Profile: Low BW" :
+                                (curProf == ConnectionProfile::UltraLAN) ? "Profile: Ultra LAN" :
+                                (curProf == ConnectionProfile::Balanced) ? "Profile: Balanced" : "Profile: Custom";
+        hudButtons.push_back({
+            "sess_profile", profLabel, 116.0f,
+            (curProf == ConnectionProfile::UltraLAN) ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
+            (curProf == ConnectionProfile::UltraLAN) ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
+            (curProf == ConnectionProfile::UltraLAN) ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
+            curProf != ConnectionProfile::UltraLAN, COL_BORDER,
+            (curProf == ConnectionProfile::UltraLAN) ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT,
+            [this, curProf]() {
+                ConnectionProfile nextProf;
+                if (curProf == ConnectionProfile::UltraLAN) nextProf = ConnectionProfile::Balanced;
+                else if (curProf == ConnectionProfile::Balanced) nextProf = ConnectionProfile::LowBandwidth;
+                else nextProf = ConnectionProfile::UltraLAN;
+                network_.applyConnectionProfile(nextProf);
+                AppSettings ns = identity_.settings();
+                ns.connectionProfile = nextProf;
+                QualityPreset qp; uint8_t fps; bool adap;
+                getProfileSettings(nextProf, qp, fps, adap);
+                ns.defaultQuality = qp;
+                ns.targetFps = fps;
+                ns.adaptiveFps = adap;
+                identity_.updateSettings(ns);
+                showToast(std::string("Switched Profile: ") + connectionProfileName(nextProf));
+            }
+        });
+
+        // 8. Match Resolution
+        hudButtons.push_back({
+            "sess_match_res", "Match Res", 84.0f,
+            COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY,
+            true, COL_BORDER, COL_TEXT_ACCENT,
+            [this, bounds]() {
+                float targetW = bounds.width();
+                float targetH = std::max(480.0f, bounds.height() - 48.0f);
+                network_.requestHostResolution(static_cast<uint32_t>(targetW), static_cast<uint32_t>(targetH), 2);
+                showToast("Requested host resolution match (" + std::to_string(static_cast<int>(targetW)) + "x" + std::to_string(static_cast<int>(targetH)) + ")");
+            }
+        });
+
+        // 9. Scale Mode
+        std::string scaleLabel = (scaleMode_ == ScaleMode::FitAspect) ? "Scale: Fit" :
+                                 (scaleMode_ == ScaleMode::FillAspect) ? "Scale: Fill" :
+                                 (scaleMode_ == ScaleMode::Stretch) ? "Scale: Stretch" : "Scale: 1:1";
+        hudButtons.push_back({
+            "sess_scale", scaleLabel, 88.0f,
+            (scaleMode_ == ScaleMode::FillAspect) ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
+            (scaleMode_ == ScaleMode::FillAspect) ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
+            (scaleMode_ == ScaleMode::FillAspect) ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
+            (scaleMode_ != ScaleMode::FillAspect), COL_BORDER,
+            (scaleMode_ == ScaleMode::FillAspect) ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT,
+            [this]() {
+                if (scaleMode_ == ScaleMode::FitAspect) scaleMode_ = ScaleMode::FillAspect;
+                else if (scaleMode_ == ScaleMode::FillAspect) scaleMode_ = ScaleMode::Stretch;
+                else if (scaleMode_ == ScaleMode::Stretch) scaleMode_ = ScaleMode::Original;
+                else scaleMode_ = ScaleMode::FitAspect;
+            }
+        });
+
+        // 10. Multi-Monitor Display Selector
+        if (stats.monitorCount > 1) {
+            std::string monLabel = (stats.activeMonitorIndex == -1) ? "All Displays" : ("Display " + std::to_string(stats.activeMonitorIndex + 1));
+            hudButtons.push_back({
+                "sess_monitor", monLabel, 88.0f,
+                stats.activeMonitorIndex == -1 ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
+                stats.activeMonitorIndex == -1 ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
+                stats.activeMonitorIndex == -1 ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
+                stats.activeMonitorIndex != -1, COL_BORDER,
+                stats.activeMonitorIndex == -1 ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT,
+                [this, stats]() {
+                    int nextMon = 0;
+                    if (stats.activeMonitorIndex >= 0 && stats.activeMonitorIndex + 1 < stats.monitorCount) {
+                        nextMon = stats.activeMonitorIndex + 1;
+                    } else if (stats.activeMonitorIndex >= 0) {
+                        nextMon = -1;
+                    } else {
+                        nextMon = 0;
+                    }
+                    network_.selectRemoteMonitor(nextMon);
+                    showToast(nextMon == -1 ? "Switched to All Displays (Grid View)" : ("Switched to Display " + std::to_string(nextMon + 1)));
+                }
+            });
+        }
+
+        // 11. Task Manager Drawer
+        bool diagOpen = (showFileDrawer_ && drawerTab_ == DrawerTab::Diagnostics);
+        hudButtons.push_back({
+            "sess_taskmgr", "Task Mgr", 76.0f,
+            diagOpen ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
+            diagOpen ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
+            diagOpen ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
+            !diagOpen, COL_BORDER, diagOpen ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT,
+            [this, diagOpen]() {
+                if (diagOpen) {
+                    network_.setDiagnosticsActive(false);
+                    showFileDrawer_ = false;
+                } else {
+                    showFileDrawer_ = true;
+                    drawerTab_ = DrawerTab::Diagnostics;
+                    network_.setDiagnosticsActive(true);
+                }
+            }
+        });
+
+        // 12. Voice Intercom
+        bool voiceActive = network_.isVoiceIntercomActive();
+        bool voiceMuted = network_.isVoiceIntercomMicMuted();
+        std::string voiceLabel;
+        if (!voiceActive) {
+            voiceLabel = "Intercom";
+        } else if (voiceMuted) {
+            voiceLabel = "Mic: Muted";
+        } else {
+            float lvl = network_.voiceIntercomInputLevel();
+            if (lvl > 0.35f) voiceLabel = "Talk [|||]";
+            else if (lvl > 0.08f) voiceLabel = "Talk [||.]";
+            else voiceLabel = "Talk [|..]";
+        }
+        hudButtons.push_back({
+            "sess_voice_intercom", voiceLabel, 80.0f,
+            voiceActive ? (voiceMuted ? COL_SEC_BTN_BG : rgba(16, 185, 129, 0.95f)) : COL_SEC_BTN_BG,
+            voiceActive ? (voiceMuted ? COL_SEC_BTN_HV : rgba(5, 150, 105, 0.95f)) : COL_SEC_BTN_HV,
+            voiceActive ? (voiceMuted ? COL_TEXT_PRIMARY : COL_TEXT_ON_ACCENT) : COL_TEXT_PRIMARY,
+            !voiceActive || voiceMuted, COL_BORDER,
+            (voiceActive && !voiceMuted) ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT,
+            [this, voiceActive, voiceMuted]() {
+                if (!voiceActive) {
+                    if (network_.startVoiceIntercom()) showToast("Voice Intercom active (Mic live)");
+                    else showToast("Failed to open microphone", true);
+                } else if (!voiceMuted) {
+                    network_.setVoiceIntercomMicMuted(true);
+                    showToast("Intercom Mic muted");
+                } else {
+                    network_.stopVoiceIntercom();
+                    showToast("Voice Intercom stopped");
+                }
+            }
+        });
+
+        // 13. Screen Recording
         bool isRec = sessionRecorder_.isRecording();
         std::string recLabel;
         if (isRec) {
@@ -2315,246 +2529,105 @@ void CppDeskWindow::drawRemoteSessionView(const UiRect& bounds, float alpha) {
             recLabel = "Record";
         }
         float recBtnWidth = isRec ? 92.0f : 68.0f;
-        UiRect recBtn = { rx - recBtnWidth, hudBar.top + 8.0f, rx, hudBar.bottom - 8.0f };
-        drawButton("sess_record", recBtn, recLabel,
-                   isRec ? COL_DANGER : COL_SEC_BTN_BG,
-                   isRec ? COL_DANGER_HV : COL_SEC_BTN_HV,
-                   isRec ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
-                   7.5f, [this]() {
-                       toggleScreenRecording();
-                   }, fmtSmall_, !isRec, isRec ? COL_DANGER : COL_BORDER,
-                   isRec ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
-        rx = recBtn.left - 6.0f;
+        hudButtons.push_back({
+            "sess_record", recLabel, recBtnWidth,
+            isRec ? COL_DANGER : COL_SEC_BTN_BG,
+            isRec ? COL_DANGER_HV : COL_SEC_BTN_HV,
+            isRec ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
+            !isRec, isRec ? COL_DANGER : COL_BORDER,
+            isRec ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT,
+            [this]() {
+                toggleScreenRecording();
+            }
+        });
 
-        bool voiceActive = network_.isVoiceIntercomActive();
-        bool voiceMuted = network_.isVoiceIntercomMicMuted();
-        std::string voiceLabel;
-        if (!voiceActive) {
-            voiceLabel = "Intercom";
-        } else if (voiceMuted) {
-            voiceLabel = "Mic: Muted";
-        } else {
-            float lvl = network_.voiceIntercomInputLevel();
-            if (lvl > 0.35f) {
-                voiceLabel = "Talk [|||]";
-            } else if (lvl > 0.08f) {
-                voiceLabel = "Talk [||.]";
-            } else {
-                voiceLabel = "Talk [|..]";
+        // 14. Screenshot
+        hudButtons.push_back({
+            "sess_screenshot", "Screenshot", 80.0f,
+            COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY,
+            true, COL_BORDER, COL_TEXT_ACCENT,
+            [this]() {
+                saveRemoteScreenshot();
+            }
+        });
+
+        // 15. Chat Drawer
+        uint32_t unreadChat = network_.unreadChatCount();
+        bool chatOpen = (showFileDrawer_ && drawerTab_ == DrawerTab::LiveChat);
+        std::string chatLabel = (unreadChat > 0) ? ("Chat (" + std::to_string(unreadChat) + ")") : "Chat";
+        hudButtons.push_back({
+            "sess_chat", chatLabel, (unreadChat > 0 ? 82.0f : 68.0f),
+            (chatOpen || unreadChat > 0) ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
+            (chatOpen || unreadChat > 0) ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
+            (chatOpen || unreadChat > 0) ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
+            !(chatOpen || unreadChat > 0), COL_BORDER,
+            (chatOpen || unreadChat > 0) ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT,
+            [this, chatOpen]() {
+                if (chatOpen) {
+                    showFileDrawer_ = false;
+                } else {
+                    showFileDrawer_ = true;
+                    drawerTab_ = DrawerTab::LiveChat;
+                    network_.markChatRead();
+                    focusedField_ = FocusedField::ChatInput;
+                }
+            }
+        });
+
+        // 16. Fullscreen
+        hudButtons.push_back({
+            "sess_fullscreen", "Fullscreen", 84.0f,
+            COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY,
+            true, COL_BORDER, COL_TEXT_ACCENT,
+            [this]() {
+                toggleFullscreen();
+            }
+        });
+
+        // Calculate total width of all session action buttons
+        float totalHudButtonsW = 0.0f;
+        for (size_t i = 0; i < hudButtons.size(); ++i) {
+            if (i > 0) totalHudButtonsW += 6.0f;
+            totalHudButtonsW += hudButtons[i].width;
+        }
+
+        sessionHudMaxScroll_ = std::max(0.0f, totalHudButtonsW - stripViewport.width());
+        sessionHudScrollOffset_ = std::clamp(sessionHudScrollOffset_, 0.0f, sessionHudMaxScroll_);
+
+        // Render scroll chevrons if overflowing
+        if (sessionHudMaxScroll_ > 2.0f) {
+            if (sessionHudScrollOffset_ > 2.0f) {
+                UiRect lBtn = { stripViewport.left, stripViewport.top + 2.0f, stripViewport.left + 22.0f, stripViewport.bottom - 2.0f };
+                drawButton("sess_hud_scroll_left", lBtn, "◀", COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 6.0f, [this]() {
+                    sessionHudScrollOffset_ = std::clamp(sessionHudScrollOffset_ - 140.0f, 0.0f, sessionHudMaxScroll_);
+                }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
+                stripViewport.left += 26.0f;
+            }
+            if (sessionHudScrollOffset_ < sessionHudMaxScroll_ - 2.0f) {
+                UiRect rBtn = { stripViewport.right - 22.0f, stripViewport.top + 2.0f, stripViewport.right, stripViewport.bottom - 2.0f };
+                drawButton("sess_hud_scroll_right", rBtn, "▶", COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 6.0f, [this]() {
+                    sessionHudScrollOffset_ = std::clamp(sessionHudScrollOffset_ + 140.0f, 0.0f, sessionHudMaxScroll_);
+                }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
+                stripViewport.right -= 26.0f;
             }
         }
 
-        UiRect voiceBtn = { rx - 78.0f, hudBar.top + 8.0f, rx, hudBar.bottom - 8.0f };
-        drawButton("sess_voice_intercom", voiceBtn, voiceLabel,
-                   voiceActive ? (voiceMuted ? COL_SEC_BTN_BG : rgba(16, 185, 129, 0.95f)) : COL_SEC_BTN_BG,
-                   voiceActive ? (voiceMuted ? COL_SEC_BTN_HV : rgba(5, 150, 105, 0.95f)) : COL_SEC_BTN_HV,
-                   voiceActive ? (voiceMuted ? COL_TEXT_PRIMARY : COL_TEXT_ON_ACCENT) : COL_TEXT_PRIMARY,
-                   7.5f, [this, voiceActive, voiceMuted]() {
-                       if (!voiceActive) {
-                           if (network_.startVoiceIntercom()) {
-                               showToast("Voice Intercom active (Mic live)");
-                           } else {
-                               showToast("Failed to open microphone", true);
-                           }
-                       } else if (!voiceMuted) {
-                           network_.setVoiceIntercomMicMuted(true);
-                           showToast("Intercom Mic muted");
-                       } else {
-                           network_.stopVoiceIntercom();
-                           showToast("Voice Intercom stopped");
-                       }
-                   }, fmtSmall_, !voiceActive || voiceMuted, COL_BORDER,
-                   (voiceActive && !voiceMuted) ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
-        rx = voiceBtn.left - 6.0f;
+        renderTarget_->PushAxisAlignedClip(
+            D2D1::RectF(stripViewport.left, stripViewport.top, stripViewport.right, stripViewport.bottom),
+            D2D1_ANTIALIAS_MODE_PER_PRIMITIVE
+        );
 
-        bool diagOpen = (showFileDrawer_ && drawerTab_ == DrawerTab::Diagnostics);
-        UiRect taskBtn = { rx - 74.0f, hudBar.top + 8.0f, rx, hudBar.bottom - 8.0f };
-        drawButton("sess_taskmgr", taskBtn, "Task Mgr",
-                   diagOpen ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
-                   diagOpen ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
-                   diagOpen ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
-                   7.5f, [this, diagOpen]() {
-                       if (diagOpen) {
-                           network_.setDiagnosticsActive(false);
-                           showFileDrawer_ = false;
-                       } else {
-                           showFileDrawer_ = true;
-                           drawerTab_ = DrawerTab::Diagnostics;
-                           network_.setDiagnosticsActive(true);
-                       }
-                   }, fmtSmall_, !diagOpen, COL_BORDER,
-                   diagOpen ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
-        rx = taskBtn.left - 6.0f;
-
-        std::string scaleLabel = (scaleMode_ == ScaleMode::FitAspect) ? "Scale: Fit" :
-                                 (scaleMode_ == ScaleMode::FillAspect) ? "Scale: Fill" :
-                                 (scaleMode_ == ScaleMode::Stretch) ? "Scale: Stretch" : "Scale: 1:1";
-        UiRect scaleBtn = { rx - 88.0f, hudBar.top + 8.0f, rx, hudBar.bottom - 8.0f };
-        drawButton("sess_scale", scaleBtn, scaleLabel,
-                   (scaleMode_ == ScaleMode::FillAspect) ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
-                   (scaleMode_ == ScaleMode::FillAspect) ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
-                   (scaleMode_ == ScaleMode::FillAspect) ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
-                   7.5f, [this]() {
-                       if (scaleMode_ == ScaleMode::FitAspect) scaleMode_ = ScaleMode::FillAspect;
-                       else if (scaleMode_ == ScaleMode::FillAspect) scaleMode_ = ScaleMode::Stretch;
-                       else if (scaleMode_ == ScaleMode::Stretch) scaleMode_ = ScaleMode::Original;
-                       else scaleMode_ = ScaleMode::FitAspect;
-                   }, fmtSmall_, (scaleMode_ != ScaleMode::FillAspect), COL_BORDER,
-                   (scaleMode_ == ScaleMode::FillAspect) ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
-        rx = scaleBtn.left - 6.0f;
-
-        UiRect matchBtn = { rx - 84.0f, hudBar.top + 8.0f, rx, hudBar.bottom - 8.0f };
-        drawButton("sess_match_res", matchBtn, "Match Res",
-                   COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 7.5f, [this, bounds]() {
-                       float targetW = bounds.width();
-                       float targetH = std::max(480.0f, bounds.height() - 48.0f);
-                       network_.requestHostResolution(static_cast<uint32_t>(targetW), static_cast<uint32_t>(targetH), 2);
-                       showToast("Requested host resolution match (" + std::to_string(static_cast<int>(targetW)) + "x" + std::to_string(static_cast<int>(targetH)) + ")");
-                   }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
-        rx = matchBtn.left - 6.0f;
-
-        ConnectionProfile curProf = stats.connectionProfile;
-        std::string profLabel;
-        if (curProf == ConnectionProfile::LowBandwidth) profLabel = "Profile: Low BW";
-        else if (curProf == ConnectionProfile::UltraLAN) profLabel = "Profile: Ultra LAN";
-        else if (curProf == ConnectionProfile::Balanced) profLabel = "Profile: Balanced";
-        else profLabel = "Profile: Custom";
-
-        UiRect profBtn = { rx - 116.0f, hudBar.top + 8.0f, rx, hudBar.bottom - 8.0f };
-        drawButton("sess_profile", profBtn, profLabel,
-                   (curProf == ConnectionProfile::UltraLAN) ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
-                   (curProf == ConnectionProfile::UltraLAN) ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
-                   (curProf == ConnectionProfile::UltraLAN) ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
-                   7.5f, [this, curProf]() {
-                       ConnectionProfile nextProf;
-                       if (curProf == ConnectionProfile::UltraLAN) nextProf = ConnectionProfile::Balanced;
-                       else if (curProf == ConnectionProfile::Balanced) nextProf = ConnectionProfile::LowBandwidth;
-                       else nextProf = ConnectionProfile::UltraLAN;
-                       network_.applyConnectionProfile(nextProf);
-                       AppSettings ns = identity_.settings();
-                       ns.connectionProfile = nextProf;
-                       QualityPreset qp; uint8_t fps; bool adap;
-                       getProfileSettings(nextProf, qp, fps, adap);
-                       ns.defaultQuality = qp;
-                       ns.targetFps = fps;
-                       ns.adaptiveFps = adap;
-                       identity_.updateSettings(ns);
-                       showToast(std::string("Switched Profile: ") + connectionProfileName(nextProf));
-                   }, fmtSmall_, curProf != ConnectionProfile::UltraLAN, COL_BORDER,
-                   (curProf == ConnectionProfile::UltraLAN) ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
-        rx = profBtn.left - 6.0f;
-
-        if (stats.monitorCount > 1) {
-            std::string monLabel = (stats.activeMonitorIndex == -1) ? "All Displays" : ("Display " + std::to_string(stats.activeMonitorIndex + 1));
-            UiRect monBtn = { rx - 88.0f, hudBar.top + 8.0f, rx, hudBar.bottom - 8.0f };
-            drawButton("sess_monitor", monBtn, monLabel,
-                       stats.activeMonitorIndex == -1 ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
-                       stats.activeMonitorIndex == -1 ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
-                       stats.activeMonitorIndex == -1 ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
-                       7.5f, [this, stats]() {
-                           int nextMon = 0;
-                           if (stats.activeMonitorIndex >= 0 && stats.activeMonitorIndex + 1 < stats.monitorCount) {
-                               nextMon = stats.activeMonitorIndex + 1;
-                           } else if (stats.activeMonitorIndex >= 0) {
-                               nextMon = -1;
-                           } else {
-                               nextMon = 0;
-                           }
-                           network_.selectRemoteMonitor(nextMon);
-                           showToast(nextMon == -1 ? "Switched to All Displays (Grid View)" : ("Switched to Display " + std::to_string(nextMon + 1)));
-                       }, fmtSmall_, stats.activeMonitorIndex != -1, COL_BORDER,
-                       stats.activeMonitorIndex == -1 ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
-            rx = monBtn.left - 6.0f;
+        float curBtnX = stripViewport.left - sessionHudScrollOffset_;
+        for (const auto& btn : hudButtons) {
+            UiRect btnRect = { curBtnX, stripViewport.top + 2.0f, curBtnX + btn.width, stripViewport.bottom - 2.0f };
+            if (btnRect.right > stripViewport.left && btnRect.left < stripViewport.right) {
+                drawButton(btn.id, btnRect, btn.label, btn.bgColor, btn.hoverColor, btn.textColor,
+                           7.5f, btn.onClick, fmtSmall_, btn.hasBorder, btn.borderColor, btn.hoverTextColor);
+            }
+            curBtnX += btn.width + 6.0f;
         }
 
-        bool canControl = (stats.grantedPermissions & PERM_INPUT) != 0;
-        bool inputActive = canControl && remoteInputEnabled_;
-        std::string inputLabel = !canControl ? "View Only" :
-                                 (inputActive ? "Control: ON" : "View Only");
-        UiRect inputBtn = { rx - 98.0f, hudBar.top + 8.0f, rx, hudBar.bottom - 8.0f };
-        drawButton("sess_input_toggle", inputBtn, inputLabel,
-                   inputActive ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
-                   inputActive ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
-                   inputActive ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
-                   7.5f, [this, canControl]() {
-                       if (canControl) {
-                           remoteInputEnabled_ = !remoteInputEnabled_;
-                           if (!remoteInputEnabled_) network_.sendReleaseAllModifiers();
-                           showToast(remoteInputEnabled_ ? "Control enabled" : "View-only mode");
-                       } else {
-                           showToast("Remote control disabled by host", true);
-                       }
-                   }, fmtSmall_, !inputActive, COL_BORDER,
-                   inputActive ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
-        rx = inputBtn.left - 6.0f;
-
-        // Audio Mute / Volume Button
-        bool isMuted = network_.isAudioMuted();
-        int vol = network_.audioVolume();
-        std::string audioLabel = isMuted ? "Audio: Mute" : ("Vol: " + std::to_string(vol) + "%");
-        UiRect audioBtn = { rx - 88.0f, hudBar.top + 8.0f, rx, hudBar.bottom - 8.0f };
-        drawButton("sess_audio_btn", audioBtn, audioLabel,
-                   isMuted ? COL_SEC_BTN_BG : COL_PRIMARY_ACCENT,
-                   isMuted ? COL_SEC_BTN_HV : COL_PRIMARY_ACCENT_HV,
-                   isMuted ? COL_TEXT_PRIMARY : COL_TEXT_ON_ACCENT,
-                   7.5f, [this]() {
-                       showAudioVolumePopup_ = !showAudioVolumePopup_;
-                   }, fmtSmall_, isMuted, COL_BORDER,
-                   isMuted ? COL_TEXT_ACCENT : COL_TEXT_ON_ACCENT);
-        rx = audioBtn.left - 6.0f;
-
-        // Privacy Mode Screen Blank Button
-        bool privacyOn = stats.privacyModeEngaged;
-        std::string privLabel = privacyOn ? "Blank: ON" : "Blank Screen";
-        UiRect privBtn = { rx - 92.0f, hudBar.top + 8.0f, rx, hudBar.bottom - 8.0f };
-        drawButton("sess_privacy_btn", privBtn, privLabel,
-                   privacyOn ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
-                   privacyOn ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
-                   privacyOn ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
-                   7.5f, [this]() {
-                       network_.requestTogglePrivacyMode();
-                   }, fmtSmall_, !privacyOn, COL_BORDER,
-                   privacyOn ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
-        rx = privBtn.left - 6.0f;
-
-        // Port Forwarding Tunnels Button
-        UiRect tunnelsBtn = { rx - 76.0f, hudBar.top + 8.0f, rx, hudBar.bottom - 8.0f };
-        drawButton("sess_tunnels_btn", tunnelsBtn, "Tunnels",
-                   showPortForwardModal_ ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
-                   showPortForwardModal_ ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
-                   showPortForwardModal_ ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
-                   7.5f, [this]() {
-                       showPortForwardModal_ = !showPortForwardModal_;
-                   }, fmtSmall_, !showPortForwardModal_, COL_BORDER,
-                   showPortForwardModal_ ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
-        rx = tunnelsBtn.left - 6.0f;
-
-        // Whiteboard Annotation Button
-        std::string wbLabel = whiteboardActive_ ? "Board: ON" : "Board";
-        UiRect wbBtn = { rx - 78.0f, hudBar.top + 8.0f, rx, hudBar.bottom - 8.0f };
-        drawButton("sess_whiteboard_btn", wbBtn, wbLabel,
-                   whiteboardActive_ ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
-                   whiteboardActive_ ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
-                   whiteboardActive_ ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
-                   7.5f, [this]() {
-                       whiteboardActive_ = !whiteboardActive_;
-                       showToast(whiteboardActive_ ? "Whiteboard active" : "Whiteboard hidden");
-                   }, fmtSmall_, !whiteboardActive_, COL_BORDER,
-                   whiteboardActive_ ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
-        rx = wbBtn.left - 6.0f;
-
-        // Performance HUD Button
-        std::string hudLabel = showPerformanceHud_ ? "HUD: ON" : "HUD";
-        UiRect hudBtn = { rx - 72.0f, hudBar.top + 8.0f, rx, hudBar.bottom - 8.0f };
-        drawButton("sess_hud_btn", hudBtn, hudLabel,
-                   showPerformanceHud_ ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
-                   showPerformanceHud_ ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
-                   showPerformanceHud_ ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
-                   7.5f, [this]() {
-                       showPerformanceHud_ = !showPerformanceHud_;
-                       showToast(showPerformanceHud_ ? "Performance HUD: ON" : "Performance HUD: OFF");
-                   }, fmtSmall_, !showPerformanceHud_, COL_BORDER,
-                   showPerformanceHud_ ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
+        renderTarget_->PopAxisAlignedClip();
 
         stageRect = { bounds.left, hudBar.bottom, bounds.right, bounds.bottom };
     }
@@ -2886,434 +2959,971 @@ void CppDeskWindow::drawSettingsView(const UiRect& bounds, float alpha) {
     float staggerL = (1.0f - sL) * 12.0f;
     float staggerR = (1.0f - sR) * 14.0f;
 
-    float pad = 20.0f;
-    float minCardsH = 1150.0f;
-    float availCardsH = bounds.height() - (pad + 66.0f + 12.0f + pad);
-    float cardsH = std::max(minCardsH, availCardsH);
-    float totalContentH = pad + 66.0f + 12.0f + cardsH + pad;
+    float pad = 18.0f;
+    float navW = 210.0f;
 
-    settingsMaxScroll_ = std::max(0.0f, totalContentH - bounds.height());
+    // Sidebar navigation card on left
+    UiRect navCard = UiRect{ bounds.left + pad, bounds.top + pad, bounds.left + pad + navW, bounds.bottom - pad }.offset(0.0f, staggerL);
+    drawCardShadow(navCard, 14.0f, 0.35f * alpha);
+    drawCardSurface(navCard, 14.0f, alpha);
+
+    // Sidebar header
+    float navPad = 12.0f;
+    float navY = navCard.top + 16.0f;
+    drawText("SETTINGS", { navCard.left + 16.0f, navY, navCard.right - 16.0f, navY + 18.0f }, fmtSmall_, COL_TEXT_ACCENT);
+    navY += 26.0f;
+
+    struct NavItem {
+        SettingsSection section;
+        const char* id;
+        const char* label;
+    };
+    static const NavItem navItems[] = {
+        { SettingsSection::Appearance,     "sett_sec_app",    "Appearance" },
+        { SettingsSection::DisplayQuality, "sett_sec_disp",   "Display & Quality" },
+        { SettingsSection::Permissions,    "sett_sec_perm",   "Permissions" },
+        { SettingsSection::TwoFactorAuth,  "sett_sec_totp",   "Two-Factor Auth" },
+        { SettingsSection::NetworkRelay,   "sett_sec_net",    "Network & Relay" },
+        { SettingsSection::CurtainPrivacy, "sett_sec_priv",   "Curtain & Privacy" },
+        { SettingsSection::SystemService,  "sett_sec_svc",    "System & Service" },
+        { SettingsSection::About,          "sett_sec_about",  "About & Data" },
+    };
+
+    for (const auto& item : navItems) {
+        UiRect itemRect = { navCard.left + navPad, navY, navCard.right - navPad, navY + 38.0f };
+        bool isActive = (settingsSection_ == item.section);
+
+        drawButton(item.id, itemRect, item.label,
+                   isActive ? COL_PRIMARY_ACCENT : COL_BG_SUBTLE,
+                   isActive ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
+                   isActive ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
+                   8.0f, [this, sec = item.section]() {
+                       settingsSection_ = sec;
+                       settingsScrollOffset_ = 0.0f;
+                       settingsScrollTarget_ = 0.0f;
+                       settingsScrollVel_ = 0.0f;
+                   }, fmtSmall_, !isActive, COL_BORDER, isActive ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
+
+        navY += 44.0f;
+    }
+
+    // Version label at bottom of sidebar
+    UiRect verRect = { navCard.left + 12.0f, navCard.bottom - 28.0f, navCard.right - 12.0f, navCard.bottom - 10.0f };
+    drawText("v" + std::string(CPP_DESK_VERSION), verRect, fmtSmall_, COL_TEXT_MUTED, DWRITE_TEXT_ALIGNMENT_CENTER);
+
+    // Right content pane calculation
+    float sectionContentH = 340.0f;
+    switch (settingsSection_) {
+        case SettingsSection::Appearance:     sectionContentH = 290.0f; break;
+        case SettingsSection::DisplayQuality: sectionContentH = 550.0f; break;
+        case SettingsSection::Permissions:    sectionContentH = 280.0f; break;
+        case SettingsSection::TwoFactorAuth:  sectionContentH = 360.0f; break;
+        case SettingsSection::NetworkRelay:   sectionContentH = 320.0f; break;
+        case SettingsSection::CurtainPrivacy: sectionContentH = 270.0f; break;
+        case SettingsSection::SystemService:  sectionContentH = 360.0f; break;
+        case SettingsSection::About:          sectionContentH = 350.0f; break;
+    }
+
+    float availContentH = navCard.height();
+    settingsMaxScroll_ = std::max(0.0f, sectionContentH - availContentH);
     settingsScrollTarget_ = std::clamp(settingsScrollTarget_, 0.0f, settingsMaxScroll_);
     settingsScrollOffset_ = std::clamp(settingsScrollOffset_, 0.0f, settingsMaxScroll_);
-
     float scrollY = -settingsScrollOffset_;
-    float rightPad = (settingsMaxScroll_ > 0.5f) ? (pad + 10.0f) : pad;
-    size_t settingsClickStart = clickRegions_.size();
+
+    float rightPad = (settingsMaxScroll_ > 0.5f) ? (pad + 14.0f) : pad;
+    UiRect contentPane = UiRect{ navCard.right + 14.0f, bounds.top + pad, bounds.right - rightPad, bounds.bottom - pad }.offset(0.0f, staggerR);
+
+    drawCardShadow(contentPane, 16.0f, 0.35f * alpha);
+    drawCardSurface(contentPane, 16.0f, alpha);
+
+    size_t rightPaneClickStart = clickRegions_.size();
 
     renderTarget_->PushAxisAlignedClip(
-        D2D1::RectF(bounds.left, bounds.top, bounds.right, bounds.bottom),
+        D2D1::RectF(contentPane.left, contentPane.top, contentPane.right, contentPane.bottom),
         D2D1_ANTIALIAS_MODE_PER_PRIMITIVE
     );
 
-    // ---------------- TOP HERO BANNER: SOFTWARE UPDATE & VERSION (v3.0.0) ----------------
-    UiRect updateBanner = UiRect{ bounds.left + pad, bounds.top + pad + scrollY, bounds.right - rightPad, bounds.top + pad + 66.0f + scrollY }.offset(0.0f, staggerL);
-    drawCardShadow(updateBanner, 14.0f, alpha);
-    drawCardSurface(updateBanner, 14.0f, alpha);
-
-    float bPad = 16.0f;
-    // App Icon
-    UiRect iconBadge = { updateBanner.left + bPad, updateBanner.top + 13.0f, updateBanner.left + bPad + 40.0f, updateBanner.top + 53.0f };
-    ensureAppIconBitmap();
-    if (appIconBitmap_) {
-        drawCardShadow(iconBadge, 10.0f, 0.5f * alpha);
-        D2D1_RECT_F dst = D2D1::RectF(iconBadge.left, iconBadge.top, iconBadge.right, iconBadge.bottom);
-        renderTarget_->DrawBitmap(appIconBitmap_, dst, alpha, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
-    } else {
-        fillRoundRect(iconBadge, 10.0f, COL_PRIMARY_ACCENT);
-        drawText("CD", iconBadge, fmtSubheading_, COL_TEXT_ON_ACCENT, DWRITE_TEXT_ALIGNMENT_CENTER);
-    }
-
-    // App Name & Product Value Proposition
-    float infoX = iconBadge.right + 14.0f;
-    UiRect titleRect = { infoX, updateBanner.top + 12.0f, updateBanner.right - 340.0f, updateBanner.top + 34.0f };
-    drawText("CppDesk v" + std::string(CPP_DESK_VERSION) + "  •  Fast, secure remote desktop for Windows",
-             titleRect, fmtSubheading_, COL_TEXT_PRIMARY, DWRITE_TEXT_ALIGNMENT_LEADING);
-
-    // Status Indicator Dot & Live Text
-    float dotX = infoX + 5.0f;
-    float dotY = updateBanner.top + 45.0f;
-    D2D1_COLOR_F statusDotCol = latestUpdateInfo_.updateRequired ? COL_DANGER : (isCheckingUpdates_ ? COL_WARNING : COL_SUCCESS);
-    drawPulseDot(dotX, dotY, 3.8f, statusDotCol);
-
-    UiRect statusTextRect = { dotX + 11.0f, updateBanner.top + 35.0f, updateBanner.right - 340.0f, updateBanner.top + 55.0f };
-    D2D1_COLOR_F statusTxtCol = latestUpdateInfo_.updateRequired ? COL_DANGER : COL_TEXT_SECONDARY;
-    drawText(updateStatusText_, statusTextRect, fmtSmall_, statusTxtCol, DWRITE_TEXT_ALIGNMENT_LEADING);
-
-    // Buttons on Right Side of Top Banner
-    float btnH = 34.0f;
-    float btnY = updateBanner.top + (updateBanner.height() - btnH) * 0.5f;
-
-    // "Check for update" Button (exact text requested by user)
-    float chkW = 150.0f;
-    UiRect chkBtn = { updateBanner.right - bPad - chkW, btnY, updateBanner.right - bPad, btnY + btnH };
-    drawButton("sett_check_updates_top", chkBtn, isCheckingUpdates_ ? "Checking..." : "Check for update",
-               COL_PRIMARY_ACCENT, COL_PRIMARY_ACCENT_HV, COL_TEXT_ON_ACCENT,
-               8.0f, [this]() {
-                   triggerUpdateCheck(true);
-               }, fmtSmall_);
-
-    // "Release Notes" Link Button
-    float relW = 120.0f;
-    UiRect relBtn = { chkBtn.left - 10.0f - relW, btnY, chkBtn.left - 10.0f, btnY + btnH };
-    drawButton("sett_view_release_top", relBtn, "Release Notes",
-               COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY,
-               8.0f, [this]() {
-                   ShellExecuteA(nullptr, "open", "https://github.com/nmnghia2527/cppdesk/releases/latest", nullptr, nullptr, SW_SHOWNORMAL);
-               }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
-
-    // ---------------- TWO-COLUMN SETTINGS BODY ----------------
-    float totalW = (bounds.right - rightPad) - (bounds.left + pad);
-    float colW = (totalW - pad) * 0.5f;
-    float cardTop = bounds.top + pad + 66.0f + 12.0f + scrollY;
-
-    UiRect leftCard  = UiRect{ bounds.left + pad, cardTop, bounds.left + pad + colW, cardTop + cardsH }.offset(0.0f, staggerL);
-    UiRect rightCard = UiRect{ leftCard.right + pad, cardTop, bounds.right - rightPad, cardTop + cardsH }.offset(0.0f, staggerR);
-
     const AppSettings s = identity_.settings();
+    float cPad = 24.0f;
+    float cx = contentPane.left + cPad;
+    float crx = contentPane.right - cPad;
+    float cy = contentPane.top + 20.0f + scrollY;
+    float innerW = crx - cx;
 
-    // ==================== LEFT COLUMN: APPEARANCE & DISPLAY ====================
-    drawCardSurface(leftCard, 16.0f, alpha);
+    if (settingsSection_ == SettingsSection::Appearance) {
+        drawText("Appearance & Visuals", { cx, cy, crx, cy + 24.0f }, fmtHeading_, COL_TEXT_PRIMARY);
+        cy += 25.0f;
+        drawText("Customize color theme, remote cursor visibility, and performance telemetry.",
+                 { cx, cy, crx, cy + 16.0f }, fmtSmall_, COL_TEXT_SECONDARY);
+        cy += 22.0f;
 
-    float lx = leftCard.left + 24.0f;
-    float lrx = leftCard.right - 24.0f;
-    float ly = leftCard.top + 16.0f;
-    float innerW = lrx - lx;
+        // 1. Theme Segmented Box
+        UiRect themeBox = { cx, cy, crx, cy + 68.0f };
+        fillRoundRect(themeBox, 12.0f, COL_BG_SUBTLE);
+        strokeRoundRect(themeBox, 12.0f, COL_BORDER);
 
-    drawText("Appearance & Display", { lx, ly, lrx, ly + 24.0f }, fmtHeading_, COL_TEXT_PRIMARY);
-    ly += 25.0f;
-    drawText("Customize theme, frame rate, and display preferences.",
-             { lx, ly, lrx, ly + 16.0f }, fmtSmall_, COL_TEXT_SECONDARY);
-    ly += 22.0f;
+        drawText("THEME", { themeBox.left + 16.0f, themeBox.top + 8.0f, themeBox.right - 16.0f, themeBox.top + 22.0f },
+                 fmtSmall_, COL_TEXT_ACCENT);
+        float halfBtnW = (innerW - 32.0f - 10.0f) * 0.5f;
+        UiRect lightBtn = { themeBox.left + 16.0f, themeBox.top + 26.0f, themeBox.left + 16.0f + halfBtnW, themeBox.top + 58.0f };
+        UiRect darkBtn  = { lightBtn.right + 10.0f, themeBox.top + 26.0f, themeBox.right - 16.0f, themeBox.top + 58.0f };
 
-    // 1. Theme Segmented Box
-    UiRect themeBox = { lx, ly, lrx, ly + 64.0f };
-    fillRoundRect(themeBox, 12.0f, COL_BG_SUBTLE);
-    strokeRoundRect(themeBox, 12.0f, COL_BORDER);
+        drawButton("sett_theme_light", lightBtn, "Light",
+                   !s.darkTheme ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
+                   !s.darkTheme ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
+                   !s.darkTheme ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
+                   8.0f, [this]() {
+                       AppSettings ns = identity_.settings();
+                       ns.darkTheme = false;
+                       identity_.updateSettings(ns);
+                       applyWindowThemeAttribute();
+                   }, fmtSmall_, s.darkTheme, COL_BORDER, !s.darkTheme ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
 
-    drawText("THEME", { themeBox.left + 16.0f, themeBox.top + 8.0f, themeBox.right - 16.0f, themeBox.top + 22.0f },
-             fmtSmall_, COL_TEXT_ACCENT);
-    float halfBtnW = (innerW - 32.0f - 10.0f) * 0.5f;
-    UiRect lightBtn = { themeBox.left + 16.0f, themeBox.top + 26.0f, themeBox.left + 16.0f + halfBtnW, themeBox.top + 56.0f };
-    UiRect darkBtn  = { lightBtn.right + 10.0f, themeBox.top + 26.0f, themeBox.right - 16.0f, themeBox.top + 56.0f };
+        drawButton("sett_theme_dark", darkBtn, "Dark",
+                   s.darkTheme ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
+                   s.darkTheme ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
+                   s.darkTheme ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
+                   8.0f, [this]() {
+                       AppSettings ns = identity_.settings();
+                       ns.darkTheme = true;
+                       identity_.updateSettings(ns);
+                       applyWindowThemeAttribute();
+                   }, fmtSmall_, !s.darkTheme, COL_BORDER, s.darkTheme ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
 
-    drawButton("sett_theme_light", lightBtn, "Light",
-               !s.darkTheme ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
-               !s.darkTheme ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
-               !s.darkTheme ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
-               8.0f, [this]() {
-                   AppSettings ns = identity_.settings();
-                   ns.darkTheme = false;
-                   identity_.updateSettings(ns);
-                   applyWindowThemeAttribute();
-               }, fmtSmall_, s.darkTheme, COL_BORDER, !s.darkTheme ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
+        cy = themeBox.bottom + 14.0f;
 
-    drawButton("sett_theme_dark", darkBtn, "Dark",
-               s.darkTheme ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
-               s.darkTheme ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
-               s.darkTheme ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
-               8.0f, [this]() {
-                   AppSettings ns = identity_.settings();
-                   ns.darkTheme = true;
-                   identity_.updateSettings(ns);
-                   applyWindowThemeAttribute();
-               }, fmtSmall_, !s.darkTheme, COL_BORDER, s.darkTheme ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
+        // 2. Cursor & HUD Box
+        UiRect curBox = { cx, cy, crx, cy + 86.0f };
+        fillRoundRect(curBox, 12.0f, COL_BG_SUBTLE);
+        strokeRoundRect(curBox, 12.0f, COL_BORDER);
 
-    ly = themeBox.bottom + 10.0f;
+        drawText("INTERFACE & CURSOR", { curBox.left + 16.0f, curBox.top + 8.0f, curBox.right - 16.0f, curBox.top + 22.0f },
+                 fmtSmall_, COL_TEXT_ACCENT);
 
-    // 2. Connection Quality Profiles
-    UiRect profBox = { lx, ly, lrx, ly + 68.0f };
-    fillRoundRect(profBox, 12.0f, COL_BG_SUBTLE);
-    strokeRoundRect(profBox, 12.0f, COL_BORDER);
+        drawToggleSwitch("sett_show_cursor", { curBox.left + 16.0f, curBox.top + 26.0f, curBox.right - 16.0f, curBox.top + 52.0f },
+                         s.showRemoteCursor, "Show remote cursor", [this]() {
+                             AppSettings ns = identity_.settings();
+                             ns.showRemoteCursor = !ns.showRemoteCursor;
+                             identity_.updateSettings(ns);
+                         });
 
-    ConnectionProfile curProf = inferConnectionProfile(s.defaultQuality, s.targetFps, s.adaptiveFps);
-    std::string profHeader = "QUALITY PRESET PROFILE: " + std::string(connectionProfileName(curProf));
-    drawText(profHeader,
-             { profBox.left + 16.0f, profBox.top + 8.0f, profBox.right - 16.0f, profBox.top + 22.0f },
-             fmtSmall_, (curProf == ConnectionProfile::Custom) ? COL_WARNING : COL_TEXT_ACCENT);
+        drawToggleSwitch("sett_show_hud", { curBox.left + 16.0f, curBox.top + 54.0f, curBox.right - 16.0f, curBox.top + 80.0f },
+                         s.showSessionHud, "Show frame rate in session bar", [this]() {
+                             AppSettings ns = identity_.settings();
+                             ns.showSessionHud = !ns.showSessionHud;
+                             identity_.updateSettings(ns);
+                         });
 
-    float thirdW = (innerW - 32.0f - 16.0f) / 3.0f;
-    UiRect pLowBtn   = { profBox.left + 16.0f, profBox.top + 26.0f, profBox.left + 16.0f + thirdW, profBox.top + 58.0f };
-    UiRect pBalBtn   = { pLowBtn.right + 8.0f, profBox.top + 26.0f, pLowBtn.right + 8.0f + thirdW, profBox.top + 58.0f };
-    UiRect pUltraBtn = { pBalBtn.right + 8.0f, profBox.top + 26.0f, profBox.right - 16.0f, profBox.top + 58.0f };
+        cy = curBox.bottom + 14.0f;
+    }
+    else if (settingsSection_ == SettingsSection::DisplayQuality) {
+        drawText("Display & Streaming Quality", { cx, cy, crx, cy + 24.0f }, fmtHeading_, COL_TEXT_PRIMARY);
+        cy += 25.0f;
+        drawText("Fine-tune connection presets, target framerate, video scaling, and hardware acceleration.",
+                 { cx, cy, crx, cy + 16.0f }, fmtSmall_, COL_TEXT_SECONDARY);
+        cy += 22.0f;
 
-    auto applyProfUi = [this](ConnectionProfile cp) {
-        AppSettings ns = identity_.settings();
-        ns.connectionProfile = cp;
-        QualityPreset qp; uint8_t fps; bool adap;
-        getProfileSettings(cp, qp, fps, adap);
-        ns.defaultQuality = qp;
-        ns.targetFps = fps;
-        ns.adaptiveFps = adap;
-        identity_.updateSettings(ns);
-        network_.applyConnectionProfile(cp);
-        showToast(std::string("Applied ") + connectionProfileName(cp) + " profile");
-    };
+        // 1. Connection Quality Profiles
+        UiRect profBox = { cx, cy, crx, cy + 68.0f };
+        fillRoundRect(profBox, 12.0f, COL_BG_SUBTLE);
+        strokeRoundRect(profBox, 12.0f, COL_BORDER);
 
-    drawButton("sett_prof_low", pLowBtn, "Low Bandwidth",
-               (curProf == ConnectionProfile::LowBandwidth) ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
-               (curProf == ConnectionProfile::LowBandwidth) ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
-               (curProf == ConnectionProfile::LowBandwidth) ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
-               8.0f, [applyProfUi]() { applyProfUi(ConnectionProfile::LowBandwidth); }, fmtSmall_,
-               curProf != ConnectionProfile::LowBandwidth, COL_BORDER,
-               (curProf == ConnectionProfile::LowBandwidth) ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
+        ConnectionProfile curProf = inferConnectionProfile(s.defaultQuality, s.targetFps, s.adaptiveFps);
+        std::string profHeader = "QUALITY PRESET PROFILE: " + std::string(connectionProfileName(curProf));
+        drawText(profHeader,
+                 { profBox.left + 16.0f, profBox.top + 8.0f, profBox.right - 16.0f, profBox.top + 22.0f },
+                 fmtSmall_, (curProf == ConnectionProfile::Custom) ? COL_WARNING : COL_TEXT_ACCENT);
 
-    drawButton("sett_prof_bal", pBalBtn, "Balanced",
-               (curProf == ConnectionProfile::Balanced) ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
-               (curProf == ConnectionProfile::Balanced) ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
-               (curProf == ConnectionProfile::Balanced) ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
-               8.0f, [applyProfUi]() { applyProfUi(ConnectionProfile::Balanced); }, fmtSmall_,
-               curProf != ConnectionProfile::Balanced, COL_BORDER,
-               (curProf == ConnectionProfile::Balanced) ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
+        float thirdW = (innerW - 32.0f - 16.0f) / 3.0f;
+        UiRect pLowBtn   = { profBox.left + 16.0f, profBox.top + 26.0f, profBox.left + 16.0f + thirdW, profBox.top + 58.0f };
+        UiRect pBalBtn   = { pLowBtn.right + 8.0f, profBox.top + 26.0f, pLowBtn.right + 8.0f + thirdW, profBox.top + 58.0f };
+        UiRect pUltraBtn = { pBalBtn.right + 8.0f, profBox.top + 26.0f, profBox.right - 16.0f, profBox.top + 58.0f };
 
-    drawButton("sett_prof_ultra", pUltraBtn, "Ultra LAN",
-               (curProf == ConnectionProfile::UltraLAN) ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
-               (curProf == ConnectionProfile::UltraLAN) ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
-               (curProf == ConnectionProfile::UltraLAN) ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
-               8.0f, [applyProfUi]() { applyProfUi(ConnectionProfile::UltraLAN); }, fmtSmall_,
-               curProf != ConnectionProfile::UltraLAN, COL_BORDER,
-               (curProf == ConnectionProfile::UltraLAN) ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
+        auto applyProfUi = [this](ConnectionProfile cp) {
+            AppSettings ns = identity_.settings();
+            ns.connectionProfile = cp;
+            QualityPreset qp; uint8_t fps; bool adap;
+            getProfileSettings(cp, qp, fps, adap);
+            ns.defaultQuality = qp;
+            ns.targetFps = fps;
+            ns.adaptiveFps = adap;
+            identity_.updateSettings(ns);
+            network_.applyConnectionProfile(cp);
+            showToast(std::string("Applied ") + connectionProfileName(cp) + " profile");
+        };
 
-    ly = profBox.bottom + 10.0f;
+        drawButton("sett_prof_low", pLowBtn, "Low Bandwidth",
+                   (curProf == ConnectionProfile::LowBandwidth) ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
+                   (curProf == ConnectionProfile::LowBandwidth) ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
+                   (curProf == ConnectionProfile::LowBandwidth) ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
+                   8.0f, [applyProfUi]() { applyProfUi(ConnectionProfile::LowBandwidth); }, fmtSmall_,
+                   curProf != ConnectionProfile::LowBandwidth, COL_BORDER,
+                   (curProf == ConnectionProfile::LowBandwidth) ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
 
-    // 3. Frame Rate
-    UiRect fpsBox = { lx, ly, lrx, ly + 106.0f };
-    fillRoundRect(fpsBox, 12.0f, COL_BG_SUBTLE);
-    strokeRoundRect(fpsBox, 12.0f, COL_BORDER);
+        drawButton("sett_prof_bal", pBalBtn, "Balanced",
+                   (curProf == ConnectionProfile::Balanced) ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
+                   (curProf == ConnectionProfile::Balanced) ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
+                   (curProf == ConnectionProfile::Balanced) ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
+                   8.0f, [applyProfUi]() { applyProfUi(ConnectionProfile::Balanced); }, fmtSmall_,
+                   curProf != ConnectionProfile::Balanced, COL_BORDER,
+                   (curProf == ConnectionProfile::Balanced) ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
 
-    drawText("FRAME RATE",
-             { fpsBox.left + 16.0f, fpsBox.top + 8.0f, fpsBox.right - 16.0f, fpsBox.top + 22.0f },
-             fmtSmall_, COL_TEXT_ACCENT);
+        drawButton("sett_prof_ultra", pUltraBtn, "Ultra LAN",
+                   (curProf == ConnectionProfile::UltraLAN) ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
+                   (curProf == ConnectionProfile::UltraLAN) ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
+                   (curProf == ConnectionProfile::UltraLAN) ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
+                   8.0f, [applyProfUi]() { applyProfUi(ConnectionProfile::UltraLAN); }, fmtSmall_,
+                   curProf != ConnectionProfile::UltraLAN, COL_BORDER,
+                   (curProf == ConnectionProfile::UltraLAN) ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
 
-    uint8_t curFps = clampTargetFps(s.targetFps);
-    UiRect fps15Btn = { fpsBox.left + 16.0f, fpsBox.top + 26.0f, fpsBox.left + 16.0f + thirdW, fpsBox.top + 58.0f };
-    UiRect fps30Btn = { fps15Btn.right + 8.0f, fpsBox.top + 26.0f, fps15Btn.right + 8.0f + thirdW, fpsBox.top + 58.0f };
-    UiRect fps60Btn = { fps30Btn.right + 8.0f, fpsBox.top + 26.0f, fpsBox.right - 16.0f, fpsBox.top + 58.0f };
+        cy = profBox.bottom + 12.0f;
 
-    auto setFpsAction = [this](uint8_t fpsVal) {
-        AppSettings ns = identity_.settings();
-        ns.targetFps = fpsVal;
-        identity_.updateSettings(ns);
-        network_.setSessionFpsConfig(fpsVal, ns.adaptiveFps);
-    };
+        // 2. Frame Rate
+        UiRect fpsBox = { cx, cy, crx, cy + 106.0f };
+        fillRoundRect(fpsBox, 12.0f, COL_BG_SUBTLE);
+        strokeRoundRect(fpsBox, 12.0f, COL_BORDER);
 
-    drawButton("sett_fps_15", fps15Btn, "15 FPS",
-               (curFps == 15) ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
-               (curFps == 15) ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
-               (curFps == 15) ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
-               8.0f, [setFpsAction]() { setFpsAction(15); }, fmtSmall_, curFps != 15, COL_BORDER,
-               (curFps == 15) ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
+        drawText("FRAME RATE",
+                 { fpsBox.left + 16.0f, fpsBox.top + 8.0f, fpsBox.right - 16.0f, fpsBox.top + 22.0f },
+                 fmtSmall_, COL_TEXT_ACCENT);
 
-    drawButton("sett_fps_30", fps30Btn, "30 FPS",
-               (curFps == 30) ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
-               (curFps == 30) ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
-               (curFps == 30) ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
-               8.0f, [setFpsAction]() { setFpsAction(30); }, fmtSmall_, curFps != 30, COL_BORDER,
-               (curFps == 30) ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
+        uint8_t curFps = clampTargetFps(s.targetFps);
+        UiRect fps15Btn = { fpsBox.left + 16.0f, fpsBox.top + 26.0f, fpsBox.left + 16.0f + thirdW, fpsBox.top + 58.0f };
+        UiRect fps30Btn = { fps15Btn.right + 8.0f, fpsBox.top + 26.0f, fps15Btn.right + 8.0f + thirdW, fpsBox.top + 58.0f };
+        UiRect fps60Btn = { fps30Btn.right + 8.0f, fpsBox.top + 26.0f, fpsBox.right - 16.0f, fpsBox.top + 58.0f };
 
-    drawButton("sett_fps_60", fps60Btn, "60 FPS",
-               (curFps == 60) ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
-               (curFps == 60) ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
-               (curFps == 60) ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
-               8.0f, [setFpsAction]() { setFpsAction(60); }, fmtSmall_, curFps != 60, COL_BORDER,
-               (curFps == 60) ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
+        auto setFpsAction = [this](uint8_t fpsVal) {
+            AppSettings ns = identity_.settings();
+            ns.targetFps = fpsVal;
+            identity_.updateSettings(ns);
+            network_.setSessionFpsConfig(fpsVal, ns.adaptiveFps);
+        };
 
-    drawToggleSwitch("sett_adaptive_fps", { fpsBox.left + 16.0f, fpsBox.top + 68.0f, fpsBox.right - 16.0f, fpsBox.top + 98.0f },
-                     s.adaptiveFps, "Adjust automatically on slow connections", [this]() {
-                         AppSettings ns = identity_.settings();
-                         ns.adaptiveFps = !ns.adaptiveFps;
-                         identity_.updateSettings(ns);
-                         network_.setSessionFpsConfig(ns.targetFps, ns.adaptiveFps);
-                     });
+        drawButton("sett_fps_15", fps15Btn, "15 FPS",
+                   (curFps == 15) ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
+                   (curFps == 15) ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
+                   (curFps == 15) ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
+                   8.0f, [setFpsAction]() { setFpsAction(15); }, fmtSmall_, curFps != 15, COL_BORDER,
+                   (curFps == 15) ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
 
-    ly = fpsBox.bottom + 10.0f;
+        drawButton("sett_fps_30", fps30Btn, "30 FPS",
+                   (curFps == 30) ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
+                   (curFps == 30) ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
+                   (curFps == 30) ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
+                   8.0f, [setFpsAction]() { setFpsAction(30); }, fmtSmall_, curFps != 30, COL_BORDER,
+                   (curFps == 30) ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
 
-    // 3. Quality & Scaling
-    UiRect qualBox = { lx, ly, lrx, ly + 114.0f };
-    fillRoundRect(qualBox, 12.0f, COL_BG_SUBTLE);
-    strokeRoundRect(qualBox, 12.0f, COL_BORDER);
+        drawButton("sett_fps_60", fps60Btn, "60 FPS",
+                   (curFps == 60) ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
+                   (curFps == 60) ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
+                   (curFps == 60) ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
+                   8.0f, [setFpsAction]() { setFpsAction(60); }, fmtSmall_, curFps != 60, COL_BORDER,
+                   (curFps == 60) ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
 
-    drawText("QUALITY & SCALING", { qualBox.left + 16.0f, qualBox.top + 8.0f, qualBox.right - 16.0f, qualBox.top + 22.0f },
-             fmtSmall_, COL_TEXT_ACCENT);
+        drawToggleSwitch("sett_adaptive_fps", { fpsBox.left + 16.0f, fpsBox.top + 68.0f, fpsBox.right - 16.0f, fpsBox.top + 98.0f },
+                         s.adaptiveFps, "Adjust automatically on slow connections", [this]() {
+                             AppSettings ns = identity_.settings();
+                             ns.adaptiveFps = !ns.adaptiveFps;
+                             identity_.updateSettings(ns);
+                             network_.setSessionFpsConfig(ns.targetFps, ns.adaptiveFps);
+                         });
 
-    QualityPreset defQ = s.defaultQuality;
-    UiRect qUltraBtn = { qualBox.left + 16.0f, qualBox.top + 26.0f, qualBox.left + 16.0f + thirdW, qualBox.top + 58.0f };
-    UiRect qBalBtn   = { qUltraBtn.right + 8.0f, qualBox.top + 26.0f, qUltraBtn.right + 8.0f + thirdW, qualBox.top + 58.0f };
-    UiRect qFastBtn  = { qBalBtn.right + 8.0f, qualBox.top + 26.0f, qualBox.right - 16.0f, qualBox.top + 58.0f };
+        cy = fpsBox.bottom + 12.0f;
 
-    auto setQualAction = [this](QualityPreset qp) {
-        AppSettings ns = identity_.settings();
-        ns.defaultQuality = qp;
-        identity_.updateSettings(ns);
-        auto st = network_.viewerStats();
-        if (st.state == ViewerConnectionState::Connected) {
-            network_.requestVideoSettings(qp, st.activeMonitorIndex, true, ns.targetFps, ns.adaptiveFps ? 1 : 0);
+        // 3. Quality & Scaling
+        UiRect qualBox = { cx, cy, crx, cy + 114.0f };
+        fillRoundRect(qualBox, 12.0f, COL_BG_SUBTLE);
+        strokeRoundRect(qualBox, 12.0f, COL_BORDER);
+
+        drawText("QUALITY & SCALING", { qualBox.left + 16.0f, qualBox.top + 8.0f, qualBox.right - 16.0f, qualBox.top + 22.0f },
+                 fmtSmall_, COL_TEXT_ACCENT);
+
+        QualityPreset defQ = s.defaultQuality;
+        UiRect qUltraBtn = { qualBox.left + 16.0f, qualBox.top + 26.0f, qualBox.left + 16.0f + thirdW, qualBox.top + 58.0f };
+        UiRect qBalBtn   = { qUltraBtn.right + 8.0f, qualBox.top + 26.0f, qUltraBtn.right + 8.0f + thirdW, qualBox.top + 58.0f };
+        UiRect qFastBtn  = { qBalBtn.right + 8.0f, qualBox.top + 26.0f, qualBox.right - 16.0f, qualBox.top + 58.0f };
+
+        auto setQualAction = [this](QualityPreset qp) {
+            AppSettings ns = identity_.settings();
+            ns.defaultQuality = qp;
+            identity_.updateSettings(ns);
+            auto st = network_.viewerStats();
+            if (st.state == ViewerConnectionState::Connected) {
+                network_.requestVideoSettings(qp, st.activeMonitorIndex, true, ns.targetFps, ns.adaptiveFps ? 1 : 0);
+            }
+        };
+
+        drawButton("sett_q_ultra", qUltraBtn, "High",
+                   (defQ == QualityPreset::Ultra) ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
+                   (defQ == QualityPreset::Ultra) ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
+                   (defQ == QualityPreset::Ultra) ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
+                   8.0f, [setQualAction]() { setQualAction(QualityPreset::Ultra); }, fmtSmall_, defQ != QualityPreset::Ultra, COL_BORDER,
+                   (defQ == QualityPreset::Ultra) ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
+
+        drawButton("sett_q_bal", qBalBtn, "Balanced",
+                   (defQ == QualityPreset::Balanced) ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
+                   (defQ == QualityPreset::Balanced) ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
+                   (defQ == QualityPreset::Balanced) ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
+                   8.0f, [setQualAction]() { setQualAction(QualityPreset::Balanced); }, fmtSmall_, defQ != QualityPreset::Balanced, COL_BORDER,
+                   (defQ == QualityPreset::Balanced) ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
+
+        drawButton("sett_q_fast", qFastBtn, "Fast",
+                   (defQ == QualityPreset::LowBandwidth) ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
+                   (defQ == QualityPreset::LowBandwidth) ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
+                   (defQ == QualityPreset::LowBandwidth) ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
+                   8.0f, [setQualAction]() { setQualAction(QualityPreset::LowBandwidth); }, fmtSmall_, defQ != QualityPreset::LowBandwidth, COL_BORDER,
+                   (defQ == QualityPreset::LowBandwidth) ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
+
+        uint8_t defScale = s.defaultScaleMode;
+        float quarterW = (innerW - 32.0f - 24.0f) / 4.0f;
+        UiRect scFitBtn  = { qualBox.left + 16.0f, qualBox.top + 68.0f, qualBox.left + 16.0f + quarterW, qualBox.top + 100.0f };
+        UiRect scFillBtn = { scFitBtn.right + 8.0f, qualBox.top + 68.0f, scFitBtn.right + 8.0f + quarterW, qualBox.top + 100.0f };
+        UiRect scStrBtn  = { scFillBtn.right + 8.0f, qualBox.top + 68.0f, scFillBtn.right + 8.0f + quarterW, qualBox.top + 100.0f };
+        UiRect scOrigBtn = { scStrBtn.right + 8.0f, qualBox.top + 68.0f, qualBox.right - 16.0f, qualBox.top + 100.0f };
+
+        auto setScaleAction = [this](uint8_t scMode) {
+            AppSettings ns = identity_.settings();
+            ns.defaultScaleMode = scMode;
+            identity_.updateSettings(ns);
+            scaleMode_ = static_cast<ScaleMode>(scMode);
+        };
+
+        drawButton("sett_sc_fit", scFitBtn, "Fit",
+                   (defScale == 0) ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
+                   (defScale == 0) ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
+                   (defScale == 0) ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
+                   8.0f, [setScaleAction]() { setScaleAction(0); }, fmtSmall_, defScale != 0, COL_BORDER,
+                   (defScale == 0) ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
+
+        drawButton("sett_sc_fill", scFillBtn, "Fill",
+                   (defScale == 3) ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
+                   (defScale == 3) ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
+                   (defScale == 3) ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
+                   8.0f, [setScaleAction]() { setScaleAction(3); }, fmtSmall_, defScale != 3, COL_BORDER,
+                   (defScale == 3) ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
+
+        drawButton("sett_sc_str", scStrBtn, "Stretch",
+                   (defScale == 1) ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
+                   (defScale == 1) ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
+                   (defScale == 1) ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
+                   8.0f, [setScaleAction]() { setScaleAction(1); }, fmtSmall_, defScale != 1, COL_BORDER,
+                   (defScale == 1) ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
+
+        drawButton("sett_sc_orig", scOrigBtn, "1:1",
+                   (defScale == 2) ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
+                   (defScale == 2) ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
+                   (defScale == 2) ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
+                   8.0f, [setScaleAction]() { setScaleAction(2); }, fmtSmall_, defScale != 2, COL_BORDER,
+                   (defScale == 2) ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
+
+        cy = qualBox.bottom + 12.0f;
+
+        // 4. Graphics Acceleration & Virtual Display
+        UiRect ovBox = { cx, cy, crx, cy + 88.0f };
+        fillRoundRect(ovBox, 12.0f, COL_BG_SUBTLE);
+        strokeRoundRect(ovBox, 12.0f, COL_BORDER);
+
+        drawText("GRAPHICS ACCELERATION & VIRTUAL DISPLAY", { ovBox.left + 16.0f, ovBox.top + 8.0f, ovBox.right - 16.0f, ovBox.top + 22.0f },
+                 fmtSmall_, COL_TEXT_ACCENT);
+
+        drawToggleSwitch("sett_hw_accel", { ovBox.left + 16.0f, ovBox.top + 26.0f, ovBox.right - 16.0f, ovBox.top + 52.0f },
+                         s.hardwareAcceleration, "Hardware accelerated rendering (GPU)", [this]() {
+                             AppSettings ns = identity_.settings();
+                             pendingHwAccelChoice_ = !ns.hardwareAcceleration;
+                             ns.hardwareAcceleration = pendingHwAccelChoice_;
+                             identity_.updateSettings(ns);
+                             showHwAccelRestartModal_ = true;
+                         });
+
+        drawToggleSwitch("sett_auto_virtual_display", { ovBox.left + 16.0f, ovBox.top + 54.0f, ovBox.right - 16.0f, ovBox.top + 80.0f },
+                         s.autoVirtualDisplay, "Auto Virtual Display for Headless Host", [this]() {
+                             AppSettings ns = identity_.settings();
+                             ns.autoVirtualDisplay = !ns.autoVirtualDisplay;
+                             identity_.updateSettings(ns);
+                         });
+
+        cy = ovBox.bottom + 12.0f;
+    }
+    else if (settingsSection_ == SettingsSection::Permissions) {
+        drawText("Access Permissions", { cx, cy, crx, cy + 24.0f }, fmtHeading_, COL_TEXT_PRIMARY);
+        cy += 25.0f;
+        drawText("Configure default security permissions for incoming viewer connections.",
+                 { cx, cy, crx, cy + 16.0f }, fmtSmall_, COL_TEXT_SECONDARY);
+        cy += 22.0f;
+
+        UiRect permBox = { cx, cy, crx, cy + 172.0f };
+        fillRoundRect(permBox, 12.0f, COL_BG_SUBTLE);
+        strokeRoundRect(permBox, 12.0f, COL_BORDER);
+
+        drawText("DEFAULT HOST PERMISSIONS",
+                 { permBox.left + 16.0f, permBox.top + 8.0f, permBox.right - 16.0f, permBox.top + 22.0f },
+                 fmtSmall_, COL_TEXT_ACCENT);
+
+        float py = permBox.top + 26.0f;
+        drawToggleSwitch("sett_auto_accept", { permBox.left + 16.0f, py, permBox.right - 16.0f, py + 24.0f },
+                         s.autoAcceptIncoming, "Automatically accept incoming connections", [this]() {
+                             AppSettings ns = identity_.settings();
+                             ns.autoAcceptIncoming = !ns.autoAcceptIncoming;
+                             identity_.updateSettings(ns);
+                             network_.setAutoAcceptIncoming(ns.autoAcceptIncoming, ns.defaultPermissions);
+                         });
+        py += 28.0f;
+
+        drawToggleSwitch("sett_def_perm_input", { permBox.left + 16.0f, py, permBox.right - 16.0f, py + 24.0f },
+                         (s.defaultPermissions & PERM_INPUT) != 0, "Allow mouse and keyboard control", [this]() {
+                             AppSettings ns = identity_.settings();
+                             ns.defaultPermissions ^= PERM_INPUT;
+                             identity_.updateSettings(ns);
+                             network_.setAutoAcceptIncoming(ns.autoAcceptIncoming, ns.defaultPermissions);
+                         });
+        py += 28.0f;
+
+        drawToggleSwitch("sett_def_perm_clip", { permBox.left + 16.0f, py, permBox.right - 16.0f, py + 24.0f },
+                         (s.defaultPermissions & PERM_CLIPBOARD) != 0, "Allow clipboard sharing", [this]() {
+                             AppSettings ns = identity_.settings();
+                             ns.defaultPermissions ^= PERM_CLIPBOARD;
+                             identity_.updateSettings(ns);
+                             network_.setAutoAcceptIncoming(ns.autoAcceptIncoming, ns.defaultPermissions);
+                         });
+        py += 28.0f;
+
+        drawToggleSwitch("sett_def_perm_file", { permBox.left + 16.0f, py, permBox.right - 16.0f, py + 24.0f },
+                         (s.defaultPermissions & PERM_FILE_TRANSFER) != 0, "Allow file transfers", [this]() {
+                             AppSettings ns = identity_.settings();
+                             ns.defaultPermissions ^= PERM_FILE_TRANSFER;
+                             identity_.updateSettings(ns);
+                             network_.setAutoAcceptIncoming(ns.autoAcceptIncoming, ns.defaultPermissions);
+                         });
+        py += 28.0f;
+
+        drawToggleSwitch("sett_lock_disc", { permBox.left + 16.0f, py, permBox.right - 16.0f, py + 24.0f },
+                         s.lockWorkstationOnDisconnect, "Lock computer when session ends", [this]() {
+                             AppSettings ns = identity_.settings();
+                             ns.lockWorkstationOnDisconnect = !ns.lockWorkstationOnDisconnect;
+                             identity_.updateSettings(ns);
+                         });
+
+        cy = permBox.bottom + 12.0f;
+    }
+    else if (settingsSection_ == SettingsSection::TwoFactorAuth) {
+        drawText("Two-Factor Authentication", { cx, cy, crx, cy + 24.0f }, fmtHeading_, COL_TEXT_PRIMARY);
+        cy += 25.0f;
+        drawText("Require an RFC 6238 time-based authenticator code (TOTP) when connecting unattended.",
+                 { cx, cy, crx, cy + 16.0f }, fmtSmall_, COL_TEXT_SECONDARY);
+        cy += 22.0f;
+
+        UiRect totpBox = { cx, cy, crx, cy + 246.0f };
+        fillRoundRect(totpBox, 12.0f, COL_BG_SUBTLE);
+        strokeRoundRect(totpBox, 12.0f, COL_BORDER);
+
+        drawText("TWO-FACTOR AUTHENTICATION (TOTP)",
+                 { totpBox.left + 16.0f, totpBox.top + 8.0f, totpBox.right - 16.0f, totpBox.top + 22.0f },
+                 fmtSmall_, COL_TEXT_ACCENT);
+
+        drawToggleSwitch("sett_totp_enable",
+                         { totpBox.left + 16.0f, totpBox.top + 26.0f, totpBox.right - 16.0f, totpBox.top + 50.0f },
+                         s.totpEnabled, "Require 2FA code for unattended access", [this, s]() {
+                             if (s.totpEnabled) {
+                                 AppSettings ns = identity_.settings();
+                                 ns.totpEnabled = false;
+                                 identity_.updateSettings(ns);
+                                 totpEnrollSuccess_ = false;
+                                 totpEnrollFeedback_ = "2FA disabled.";
+                                 showToast("Two-Factor Authentication Disabled");
+                             } else {
+                                 showToast("Verify a 6-digit code below to enable 2FA", true);
+                             }
+                         });
+
+        UiRect qrRect = { totpBox.left + 16.0f, totpBox.top + 56.0f, totpBox.left + 126.0f, totpBox.top + 166.0f };
+        renderQrCodeDirect2D(qrRect, totpQrMatrix_, totpQrMatrixSize_, alpha);
+
+        float totpInfoX = qrRect.right + 12.0f;
+        float totpInfoRx = totpBox.right - 16.0f;
+
+        drawText("Secret Key (Base32):", { totpInfoX, qrRect.top, totpInfoRx, qrRect.top + 16.0f }, fmtSmall_, COL_TEXT_SECONDARY);
+
+        std::string curSecret = s.totpSecret.empty() ? identity_.totpManager().getSecretBase32() : s.totpSecret;
+        std::string formattedKey = TotpManager::formatBase32Secret(curSecret);
+
+        UiRect keyBox = { totpInfoX, qrRect.top + 18.0f, totpInfoRx - 64.0f, qrRect.top + 46.0f };
+        fillRoundRect(keyBox, 6.0f, COL_BG_INPUT);
+        strokeRoundRect(keyBox, 6.0f, COL_BORDER);
+        drawText(formattedKey, { keyBox.left + 8.0f, keyBox.top, keyBox.right - 8.0f, keyBox.bottom },
+                 fmtMono_, COL_TEXT_PRIMARY, DWRITE_TEXT_ALIGNMENT_LEADING);
+
+        UiRect copyBtn = { keyBox.right + 6.0f, keyBox.top, totpInfoRx, keyBox.bottom };
+        drawButton("sett_totp_copy", copyBtn, "Copy",
+                   COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 6.0f, [this, curSecret]() {
+                       ClipboardManager::setClipboardUtf8(curSecret);
+                       showToast("Secret key copied to clipboard");
+                   }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
+
+        UiRect regenBtn = { totpInfoX, keyBox.bottom + 8.0f, totpInfoRx, keyBox.bottom + 36.0f };
+        drawButton("sett_totp_regen", regenBtn, "Regenerate Secret Key",
+                   COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 6.0f, [this]() {
+                       identity_.totpManager().generateNewSecret();
+                       std::string newSecret = identity_.totpManager().getSecretBase32();
+                       AppSettings ns = identity_.settings();
+                       ns.totpSecret = newSecret;
+                       ns.totpEnabled = false;
+                       identity_.updateSettings(ns);
+                       updateTotpQrMatrix();
+                       totpEnrollCodeEdit_.clear();
+                       totpEnrollSuccess_ = false;
+                       totpEnrollFeedback_ = "New key generated. Enter 6-digit code below to re-enable.";
+                       showToast("New 2FA key generated");
+                   }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
+
+        float verifyY = qrRect.bottom + 10.0f;
+        drawText("Enrollment Code Verification:", { totpBox.left + 16.0f, verifyY, totpBox.right - 16.0f, verifyY + 16.0f },
+                 fmtSmall_, COL_TEXT_SECONDARY);
+        verifyY += 18.0f;
+
+        float testFieldW = 120.0f;
+        UiRect testField = { totpBox.left + 16.0f, verifyY, totpBox.left + 16.0f + testFieldW, verifyY + 30.0f };
+        drawTextField("field_totp_enroll", FocusedField::TotpEnrollTestCode, testField,
+                      totpEnrollCodeEdit_, "000000", false);
+
+        float vBtnW = 124.0f;
+        UiRect verifyBtn = { testField.right + 8.0f, verifyY, testField.right + 8.0f + vBtnW, verifyY + 30.0f };
+        drawButton("sett_totp_verify", verifyBtn, s.totpEnabled ? "Verified" : "Verify & Enable",
+                   s.totpEnabled ? COL_SEC_BTN_BG : COL_PRIMARY_ACCENT,
+                   s.totpEnabled ? COL_SEC_BTN_HV : COL_PRIMARY_ACCENT_HV,
+                   s.totpEnabled ? COL_TEXT_PRIMARY : COL_TEXT_ON_ACCENT, 6.0f, [this]() {
+                       if (totpEnrollCodeEdit_.size() == 6) {
+                           if (identity_.totpManager().verifyCode(totpEnrollCodeEdit_)) {
+                               AppSettings ns = identity_.settings();
+                               ns.totpEnabled = true;
+                               identity_.updateSettings(ns);
+                               totpEnrollSuccess_ = true;
+                               totpEnrollFeedback_ = "Code verified! 2FA enabled.";
+                               showToast("Two-Factor Authentication Enabled");
+                           } else {
+                               totpEnrollSuccess_ = false;
+                               totpEnrollFeedback_ = "Invalid 6-digit code. Check authenticator clock.";
+                               showToast("Invalid 2FA code", true);
+                           }
+                       } else {
+                           totpEnrollFeedback_ = "Please enter 6 digits.";
+                       }
+                   }, fmtSmall_, s.totpEnabled, COL_BORDER);
+
+        UiRect fbRect = { verifyBtn.right + 8.0f, verifyY, totpBox.right - 16.0f, verifyY + 30.0f };
+        D2D1_COLOR_F fbCol = totpEnrollSuccess_ ? COL_SUCCESS : (totpEnrollFeedback_.empty() ? COL_TEXT_MUTED : COL_DANGER);
+        drawText(totpEnrollFeedback_.empty() ? (s.totpEnabled ? "2FA Active" : "Verification required") : totpEnrollFeedback_,
+                 fbRect, fmtSmall_, fbCol, DWRITE_TEXT_ALIGNMENT_LEADING);
+
+        cy = totpBox.bottom + 12.0f;
+    }
+    else if (settingsSection_ == SettingsSection::NetworkRelay) {
+        drawText("Network & Relay", { cx, cy, crx, cy + 24.0f }, fmtHeading_, COL_TEXT_PRIMARY);
+        cy += 25.0f;
+        drawText("Configure rendezvous servers, relay routing, and RFC 5389 STUN NAT traversal.",
+                 { cx, cy, crx, cy + 16.0f }, fmtSmall_, COL_TEXT_SECONDARY);
+        cy += 22.0f;
+
+        UiRect netBox = { cx, cy, crx, cy + 196.0f };
+        fillRoundRect(netBox, 12.0f, COL_BG_SUBTLE);
+        strokeRoundRect(netBox, 12.0f, COL_BORDER);
+
+        drawText("RELAY & RENDEZVOUS NETWORK",
+                 { netBox.left + 16.0f, netBox.top + 8.0f, netBox.left + 240.0f, netBox.top + 22.0f },
+                 fmtSmall_, COL_TEXT_ACCENT);
+
+        float presetW = 54.0f;
+        float presetH = 20.0f;
+        float prX = netBox.right - 16.0f;
+        UiRect lanPreset = { prX - presetW, netBox.top + 5.0f, prX, netBox.top + 5.0f + presetH };
+        UiRect localPreset = { lanPreset.left - 4.0f - 64.0f, netBox.top + 5.0f, lanPreset.left - 4.0f, netBox.top + 5.0f + presetH };
+        UiRect pubPreset = { localPreset.left - 4.0f - 54.0f, netBox.top + 5.0f, localPreset.left - 4.0f, netBox.top + 5.0f + presetH };
+
+        drawButton("sett_pre_pub", pubPreset, "Public",
+                   (relayModeEdit_ == 0) ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
+                   (relayModeEdit_ == 0) ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
+                   (relayModeEdit_ == 0) ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
+                   5.0f, [this]() {
+                       relayServerEdit_ = "relay.cppdesk.io:50999";
+                       stunServerEdit_ = "stun.l.google.com:19302";
+                       relayModeEdit_ = 0;
+                   }, fmtSmall_, relayModeEdit_ != 0, COL_BORDER);
+
+        drawButton("sett_pre_loc", localPreset, "Localhost",
+                   (relayModeEdit_ == 1) ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
+                   (relayModeEdit_ == 1) ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
+                   (relayModeEdit_ == 1) ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
+                   5.0f, [this]() {
+                       relayServerEdit_ = "127.0.0.1:50999";
+                       stunServerEdit_ = "stun.l.google.com:19302";
+                       relayModeEdit_ = 1;
+                   }, fmtSmall_, relayModeEdit_ != 1, COL_BORDER);
+
+        drawButton("sett_pre_lan", lanPreset, "LAN",
+                   (relayModeEdit_ == 2) ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
+                   (relayModeEdit_ == 2) ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
+                   (relayModeEdit_ == 2) ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
+                   5.0f, [this]() {
+                       relayServerEdit_ = "127.0.0.1:50999";
+                       stunServerEdit_ = "";
+                       relayModeEdit_ = 2;
+                   }, fmtSmall_, relayModeEdit_ != 2, COL_BORDER);
+
+        float row1Y = netBox.top + 28.0f;
+        UiRect relayField = { netBox.left + 16.0f, row1Y, netBox.right - 16.0f, row1Y + 30.0f };
+        drawTextField("field_relay_srv_sett", FocusedField::RelayServer, relayField,
+                      relayServerEdit_, "Relay host:port (e.g. 127.0.0.1:50999)", false);
+
+        float row2Y = row1Y + 34.0f;
+        float halfFieldW = (innerW - 32.0f - 8.0f) * 0.5f;
+        UiRect keyField = { netBox.left + 16.0f, row2Y, netBox.left + 16.0f + halfFieldW, row2Y + 30.0f };
+        UiRect stunField = { keyField.right + 8.0f, row2Y, netBox.right - 16.0f, row2Y + 30.0f };
+
+        drawTextField("field_relay_key_sett", FocusedField::RelayAuthKey, keyField,
+                      relayAuthKeyEdit_, "Auth key (optional)", true);
+        drawTextField("field_stun_srv_sett", FocusedField::StunServer, stunField,
+                      stunServerEdit_, "STUN server (e.g. stun.l.google.com:19302)", false);
+
+        float row3Y = row2Y + 34.0f;
+        float thirdBtnW = (innerW - 32.0f - 16.0f) / 3.0f;
+        UiRect pingBtn = { netBox.left + 16.0f, row3Y, netBox.left + 16.0f + thirdBtnW, row3Y + 30.0f };
+        UiRect saveBtn = { pingBtn.right + 8.0f, row3Y, pingBtn.right + 8.0f + thirdBtnW, row3Y + 30.0f };
+        UiRect toggleRelayBtn = { saveBtn.right + 8.0f, row3Y, netBox.right - 16.0f, row3Y + 30.0f };
+
+        bool isDiagActive = network_.isNetworkDiagnosticRunning();
+        drawButton("sett_ping_btn", pingBtn, isDiagActive ? "Testing..." : "Test & Ping",
+                   COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 7.0f, [this]() {
+                       network_.startNetworkDiagnostics(relayServerEdit_, stunServerEdit_);
+                   }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
+
+        drawButton("sett_apply_relay", saveBtn, "Save & Apply",
+                   COL_PRIMARY_ACCENT, COL_PRIMARY_ACCENT_HV, COL_TEXT_ON_ACCENT, 7.0f, [this]() {
+                       AppSettings ns = identity_.settings();
+                       ns.relayServer = relayServerEdit_;
+                       ns.relayAuthKey = relayAuthKeyEdit_;
+                       ns.stunServer = stunServerEdit_;
+                       ns.relayMode = relayModeEdit_;
+                       identity_.updateSettings(ns);
+                       network_.setRelayAddressAndReconnect(relayServerEdit_);
+                       showToast("Network settings applied & reconnected");
+                   }, fmtSmall_);
+
+        bool relayRunning = network_.isLocalRelayRunning();
+        drawButton("sett_toggle_relay", toggleRelayBtn, relayRunning ? "Relay: ON" : "Relay: OFF",
+                   relayRunning ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
+                   relayRunning ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
+                   relayRunning ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
+                   7.0f, [this, relayRunning]() {
+                       if (relayRunning) {
+                           network_.stopLocalRelayServer();
+                           showToast("Local relay stopped");
+                       } else if (network_.startLocalRelayServer(DEFAULT_RELAY_PORT)) {
+                           showToast("Local relay started on :50999");
+                       } else {
+                           showToast("Relay port already in use", true);
+                       }
+                   }, fmtSmall_, !relayRunning, COL_BORDER, relayRunning ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
+
+        float row4Y = row3Y + 33.0f;
+        RelayProbeResult rDiag;
+        StunNatResult sDiag;
+        bool hasResult = network_.getNetworkDiagnosticResult(rDiag, sDiag);
+
+        D2D1_COLOR_F dotCol = COL_TEXT_MUTED;
+        std::string diagText;
+        if (isDiagActive) {
+            dotCol = COL_WARNING;
+            diagText = "Probing relay TCP and RFC 5389 STUN NAT traversal...";
+        } else if (hasResult) {
+            if (rDiag.reachable) {
+                dotCol = COL_SUCCESS;
+                diagText = "Relay: " + rDiag.message + (sDiag.success ? ("  |  NAT: " + sDiag.publicIp + ":" + std::to_string(sDiag.publicPort)) : ("  |  " + sDiag.natTypeDescription));
+            } else {
+                dotCol = COL_DANGER;
+                diagText = "Relay: " + rDiag.message + ("  |  " + sDiag.natTypeDescription);
+            }
+        } else {
+            dotCol = COL_TEXT_SECONDARY;
+            std::string modeName = (relayModeEdit_ == 0) ? "Auto" : (relayModeEdit_ == 1 ? "Self-Hosted" : "Direct LAN");
+            diagText = "Mode: " + modeName + "  |  Ready to probe network";
         }
-    };
 
-    drawButton("sett_q_ultra", qUltraBtn, "High",
-               (defQ == QualityPreset::Ultra) ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
-               (defQ == QualityPreset::Ultra) ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
-               (defQ == QualityPreset::Ultra) ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
-               8.0f, [setQualAction]() { setQualAction(QualityPreset::Ultra); }, fmtSmall_, defQ != QualityPreset::Ultra, COL_BORDER,
-               (defQ == QualityPreset::Ultra) ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
+        drawPulseDot(netBox.left + 22.0f, row4Y + 14.0f, 3.8f, dotCol, alpha);
+        UiRect diagTextRect = { netBox.left + 32.0f, row4Y, netBox.right - 16.0f, row4Y + 28.0f };
+        drawText(diagText, diagTextRect, fmtSmall_, COL_TEXT_SECONDARY, DWRITE_TEXT_ALIGNMENT_LEADING);
 
-    drawButton("sett_q_bal", qBalBtn, "Balanced",
-               (defQ == QualityPreset::Balanced) ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
-               (defQ == QualityPreset::Balanced) ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
-               (defQ == QualityPreset::Balanced) ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
-               8.0f, [setQualAction]() { setQualAction(QualityPreset::Balanced); }, fmtSmall_, defQ != QualityPreset::Balanced, COL_BORDER,
-               (defQ == QualityPreset::Balanced) ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
+        cy = netBox.bottom + 12.0f;
+    }
+    else if (settingsSection_ == SettingsSection::CurtainPrivacy) {
+        drawText("Curtain Screen & Privacy", { cx, cy, crx, cy + 24.0f }, fmtHeading_, COL_TEXT_PRIMARY);
+        cy += 25.0f;
+        drawText("Customize privacy blanking, organization security branding, and hardware DPMS display standby.",
+                 { cx, cy, crx, cy + 16.0f }, fmtSmall_, COL_TEXT_SECONDARY);
+        cy += 22.0f;
 
-    drawButton("sett_q_fast", qFastBtn, "Fast",
-               (defQ == QualityPreset::LowBandwidth) ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
-               (defQ == QualityPreset::LowBandwidth) ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
-               (defQ == QualityPreset::LowBandwidth) ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
-               8.0f, [setQualAction]() { setQualAction(QualityPreset::LowBandwidth); }, fmtSmall_, defQ != QualityPreset::LowBandwidth, COL_BORDER,
-               (defQ == QualityPreset::LowBandwidth) ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
+        UiRect privBox = { cx, cy, crx, cy + 156.0f };
+        fillRoundRect(privBox, 12.0f, COL_BG_SUBTLE);
+        strokeRoundRect(privBox, 12.0f, COL_BORDER);
 
-    uint8_t defScale = s.defaultScaleMode;
-    float quarterW = (qualBox.width() - 32.0f - 24.0f) / 4.0f;
-    UiRect scFitBtn  = { qualBox.left + 16.0f, qualBox.top + 68.0f, qualBox.left + 16.0f + quarterW, qualBox.top + 100.0f };
-    UiRect scFillBtn = { scFitBtn.right + 8.0f, qualBox.top + 68.0f, scFitBtn.right + 8.0f + quarterW, qualBox.top + 100.0f };
-    UiRect scStrBtn  = { scFillBtn.right + 8.0f, qualBox.top + 68.0f, scFillBtn.right + 8.0f + quarterW, qualBox.top + 100.0f };
-    UiRect scOrigBtn = { scStrBtn.right + 8.0f, qualBox.top + 68.0f, qualBox.right - 16.0f, qualBox.top + 100.0f };
+        drawText("CURTAIN SCREEN & PRIVACY BRANDING",
+                 { privBox.left + 16.0f, privBox.top + 8.0f, privBox.right - 16.0f, privBox.top + 22.0f },
+                 fmtSmall_, COL_TEXT_ACCENT);
 
-    auto setScaleAction = [this](uint8_t scMode) {
-        AppSettings ns = identity_.settings();
-        ns.defaultScaleMode = scMode;
-        identity_.updateSettings(ns);
-        scaleMode_ = static_cast<ScaleMode>(scMode);
-    };
+        float py1 = privBox.top + 25.0f;
+        float pSaveW = 68.0f;
+        UiRect brandField = { privBox.left + 16.0f, py1, privBox.right - 16.0f - pSaveW - 8.0f, py1 + 28.0f };
+        UiRect privSaveBtn = { privBox.right - 16.0f - pSaveW, py1, privBox.right - 16.0f, py1 + 28.0f };
 
-    drawButton("sett_sc_fit", scFitBtn, "Fit",
-               (defScale == 0) ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
-               (defScale == 0) ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
-               (defScale == 0) ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
-               8.0f, [setScaleAction]() { setScaleAction(0); }, fmtSmall_, defScale != 0, COL_BORDER,
-               (defScale == 0) ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
+        drawTextField("field_priv_brand", FocusedField::PrivacyBrand, brandField,
+                      privacyBrandEdit_, "Organization / Brand Name...", false);
 
-    drawButton("sett_sc_fill", scFillBtn, "Fill",
-               (defScale == 3) ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
-               (defScale == 3) ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
-               (defScale == 3) ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
-               8.0f, [setScaleAction]() { setScaleAction(3); }, fmtSmall_, defScale != 3, COL_BORDER,
-               (defScale == 3) ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
+        drawButton("sett_priv_save", privSaveBtn, "Save",
+                   COL_PRIMARY_ACCENT, COL_PRIMARY_ACCENT_HV, COL_TEXT_ON_ACCENT, 6.0f, [this]() {
+                       AppSettings ns = identity_.settings();
+                       ns.privacyBrandName = privacyBrandEdit_.empty() ? "CppDesk Enterprise Security" : privacyBrandEdit_;
+                       ns.privacyCustomNotice = privacyNoticeEdit_.empty() ? "Screen output hidden and local physical inputs secured for authorized administration." : privacyNoticeEdit_;
+                       identity_.updateSettings(ns);
+                       network_.configurePrivacyCurtain(ns.privacyCustomNotice, ns.privacyBrandName, ns.privacyShowDeskId);
+                       showToast("Privacy screen branding updated");
+                   }, fmtSmall_);
 
-    drawButton("sett_sc_str", scStrBtn, "Stretch",
-               (defScale == 1) ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
-               (defScale == 1) ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
-               (defScale == 1) ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
-               8.0f, [setScaleAction]() { setScaleAction(1); }, fmtSmall_, defScale != 1, COL_BORDER,
-               (defScale == 1) ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
+        float py2 = py1 + 32.0f;
+        UiRect noticeField = { privBox.left + 16.0f, py2, privBox.right - 16.0f, py2 + 28.0f };
+        drawTextField("field_priv_notice", FocusedField::PrivacyNotice, noticeField,
+                      privacyNoticeEdit_, "Custom Security Notice Text...", false);
 
-    drawButton("sett_sc_orig", scOrigBtn, "1:1",
-               (defScale == 2) ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
-               (defScale == 2) ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
-               (defScale == 2) ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
-               8.0f, [setScaleAction]() { setScaleAction(2); }, fmtSmall_, defScale != 2, COL_BORDER,
-               (defScale == 2) ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
+        float py3 = py2 + 32.0f;
+        UiRect showIdToggle = { privBox.left + 16.0f, py3, privBox.right - 16.0f, py3 + 24.0f };
+        drawToggleSwitch("sett_priv_show_id", showIdToggle, s.privacyShowDeskId, "Display Workstation Desk ID on Curtain Screen", [this]() {
+            AppSettings ns = identity_.settings();
+            ns.privacyShowDeskId = !ns.privacyShowDeskId;
+            identity_.updateSettings(ns);
+            network_.configurePrivacyCurtain(ns.privacyCustomNotice, ns.privacyBrandName, ns.privacyShowDeskId);
+        });
 
-    ly = qualBox.bottom + 10.0f;
+        float py4 = py3 + 28.0f;
+        UiRect dpmsToggle = { privBox.left + 16.0f, py4, privBox.right - 16.0f, py4 + 24.0f };
+        drawToggleSwitch("sett_priv_dpms_blank", dpmsToggle, s.hardwareDpmsBlanking,
+                         "Hardware DPMS Display Standby (Power Off Monitor)", [this]() {
+            AppSettings ns = identity_.settings();
+            ns.hardwareDpmsBlanking = !ns.hardwareDpmsBlanking;
+            identity_.updateSettings(ns);
+        });
 
-    // 4. Display & Acceleration
-    UiRect ovBox = { lx, ly, lrx, ly + 142.0f };
-    fillRoundRect(ovBox, 12.0f, COL_BG_SUBTLE);
-    strokeRoundRect(ovBox, 12.0f, COL_BORDER);
+        cy = privBox.bottom + 12.0f;
+    }
+    else if (settingsSection_ == SettingsSection::SystemService) {
+        drawText("System Service & Integration", { cx, cy, crx, cy + 24.0f }, fmtHeading_, COL_TEXT_PRIMARY);
+        cy += 25.0f;
+        drawText("Manage the elevated Windows service daemon, desktop shortcuts, and Action Center notifications.",
+                 { cx, cy, crx, cy + 16.0f }, fmtSmall_, COL_TEXT_SECONDARY);
+        cy += 22.0f;
 
-    drawText("DISPLAY & ACCELERATION", { ovBox.left + 16.0f, ovBox.top + 8.0f, ovBox.right - 16.0f, ovBox.top + 22.0f },
-             fmtSmall_, COL_TEXT_ACCENT);
+        // 1. Windows System Service
+        UiRect svcBox = { cx, cy, crx, cy + 78.0f };
+        fillRoundRect(svcBox, 12.0f, COL_BG_SUBTLE);
+        strokeRoundRect(svcBox, 12.0f, COL_BORDER);
 
-    drawToggleSwitch("sett_show_cursor", { ovBox.left + 16.0f, ovBox.top + 26.0f, ovBox.right - 16.0f, ovBox.top + 52.0f },
-                     s.showRemoteCursor, "Show remote cursor", [this]() {
-                         AppSettings ns = identity_.settings();
-                         ns.showRemoteCursor = !ns.showRemoteCursor;
-                         identity_.updateSettings(ns);
-                     });
+        drawText("WINDOWS SYSTEM SERVICE",
+                 { svcBox.left + 16.0f, svcBox.top + 8.0f, svcBox.left + 240.0f, svcBox.top + 22.0f },
+                 fmtSmall_, COL_TEXT_ACCENT);
 
-    drawToggleSwitch("sett_show_hud", { ovBox.left + 16.0f, ovBox.top + 54.0f, ovBox.right - 16.0f, ovBox.top + 80.0f },
-                     s.showSessionHud, "Show frame rate in session bar", [this]() {
-                         AppSettings ns = identity_.settings();
-                         ns.showSessionHud = !ns.showSessionHud;
-                         identity_.updateSettings(ns);
-                     });
+        ServiceStatusState svcState = WindowsServiceManager::getServiceState();
+        std::string svcStateLabel = (svcState == ServiceStatusState::Running) ? "Running" :
+                                    (svcState == ServiceStatusState::Stopped) ? "Stopped" : "Not Installed";
+        D2D1_COLOR_F svcStateCol = (svcState == ServiceStatusState::Running) ? COL_SUCCESS :
+                                   (svcState == ServiceStatusState::Stopped) ? COL_WARNING : COL_TEXT_MUTED;
 
-    drawToggleSwitch("sett_hw_accel", { ovBox.left + 16.0f, ovBox.top + 82.0f, ovBox.right - 16.0f, ovBox.top + 108.0f },
-                     s.hardwareAcceleration, "Hardware accelerated rendering (GPU)", [this]() {
-                         AppSettings ns = identity_.settings();
-                         pendingHwAccelChoice_ = !ns.hardwareAcceleration;
-                         ns.hardwareAcceleration = pendingHwAccelChoice_;
-                         identity_.updateSettings(ns);
-                         showHwAccelRestartModal_ = true;
-                     });
+        drawPulseDot(svcBox.right - 100.0f, svcBox.top + 15.0f, 3.8f, svcStateCol, alpha);
+        drawText(svcStateLabel, { svcBox.right - 90.0f, svcBox.top + 7.0f, svcBox.right - 16.0f, svcBox.top + 23.0f },
+                 fmtSmall_, svcStateCol, DWRITE_TEXT_ALIGNMENT_LEADING);
 
-    drawToggleSwitch("sett_auto_virtual_display", { ovBox.left + 16.0f, ovBox.top + 110.0f, ovBox.right - 16.0f, ovBox.top + 136.0f },
-                     s.autoVirtualDisplay, "Auto Virtual Display for Headless Host", [this]() {
-                         AppSettings ns = identity_.settings();
-                         ns.autoVirtualDisplay = !ns.autoVirtualDisplay;
-                         identity_.updateSettings(ns);
-                     });
+        float sBtnTop = svcBox.top + 28.0f;
+        float sBtnBot = svcBox.top + 64.0f;
+        float sQuarterW = (innerW - 32.0f - 24.0f) / 4.0f;
 
-    ly = ovBox.bottom + 10.0f;
+        UiRect installBtn   = { svcBox.left + 16.0f, sBtnTop, svcBox.left + 16.0f + sQuarterW, sBtnBot };
+        UiRect uninstallBtn = { installBtn.right + 8.0f, sBtnTop, installBtn.right + 8.0f + sQuarterW, sBtnBot };
+        UiRect startBtn     = { uninstallBtn.right + 8.0f, sBtnTop, uninstallBtn.right + 8.0f + sQuarterW, sBtnBot };
+        UiRect stopBtn      = { startBtn.right + 8.0f, sBtnTop, svcBox.right - 16.0f, sBtnBot };
 
-    // 5. Curtain Screen & Privacy Branding (v3.2.0)
-    UiRect privBox = { lx, ly, lrx, ly + 156.0f };
-    fillRoundRect(privBox, 12.0f, COL_BG_SUBTLE);
-    strokeRoundRect(privBox, 12.0f, COL_BORDER);
+        bool isInstalled = (svcState != ServiceStatusState::NotInstalled);
+        bool isRunning = (svcState == ServiceStatusState::Running);
 
-    drawText("CURTAIN SCREEN & PRIVACY BRANDING",
-             { privBox.left + 16.0f, privBox.top + 8.0f, privBox.right - 16.0f, privBox.top + 22.0f },
-             fmtSmall_, COL_TEXT_ACCENT);
+        drawButton("sett_svc_install", installBtn, "Install",
+                   !isInstalled ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
+                   !isInstalled ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
+                   !isInstalled ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
+                   7.0f, [this, isInstalled]() {
+                       if (!isInstalled) {
+                           if (WindowsServiceManager::installService()) {
+                               showToast("Service installed successfully");
+                           } else {
+                               showToast("Failed to install service (Admin required)", true);
+                           }
+                       } else {
+                           showToast("Service already installed");
+                       }
+                   }, fmtSmall_, isInstalled, COL_BORDER, !isInstalled ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
 
-    // Row 1: Brand / Organization Title (Left) & Save Button (Right)
-    float py1 = privBox.top + 25.0f;
-    float pSaveW = 68.0f;
-    UiRect brandField = { privBox.left + 16.0f, py1, privBox.right - 16.0f - pSaveW - 8.0f, py1 + 28.0f };
-    UiRect privSaveBtn = { privBox.right - 16.0f - pSaveW, py1, privBox.right - 16.0f, py1 + 28.0f };
+        drawButton("sett_svc_uninstall", uninstallBtn, "Uninstall",
+                   COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY,
+                   7.0f, [this, isInstalled]() {
+                       if (isInstalled) {
+                           if (WindowsServiceManager::uninstallService()) {
+                               showToast("Service uninstalled");
+                           } else {
+                               showToast("Failed to uninstall service (Admin required)", true);
+                           }
+                       } else {
+                           showToast("Service not installed");
+                       }
+                   }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
 
-    drawTextField("field_priv_brand", FocusedField::PrivacyBrand, brandField,
-                  privacyBrandEdit_, "Organization / Brand Name...", false);
+        drawButton("sett_svc_start", startBtn, "Start",
+                   (isInstalled && !isRunning) ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
+                   (isInstalled && !isRunning) ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
+                   (isInstalled && !isRunning) ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
+                   7.0f, [this, isInstalled, isRunning]() {
+                       if (isInstalled && !isRunning) {
+                           if (WindowsServiceManager::startService()) {
+                               showToast("Service started");
+                           } else {
+                               showToast("Failed to start service (Admin required)", true);
+                           }
+                       } else if (!isInstalled) {
+                           showToast("Install service first", true);
+                       }
+                   }, fmtSmall_, !(isInstalled && !isRunning), COL_BORDER,
+                   (isInstalled && !isRunning) ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
 
-    drawButton("sett_priv_save", privSaveBtn, "Save",
-               COL_PRIMARY_ACCENT, COL_PRIMARY_ACCENT_HV, COL_TEXT_ON_ACCENT, 6.0f, [this]() {
-                   AppSettings ns = identity_.settings();
-                   ns.privacyBrandName = privacyBrandEdit_.empty() ? "CppDesk Enterprise Security" : privacyBrandEdit_;
-                   ns.privacyCustomNotice = privacyNoticeEdit_.empty() ? "Screen output hidden and local physical inputs secured for authorized administration." : privacyNoticeEdit_;
-                   identity_.updateSettings(ns);
-                   network_.configurePrivacyCurtain(ns.privacyCustomNotice, ns.privacyBrandName, ns.privacyShowDeskId);
-                   showToast("Privacy screen branding updated");
-               }, fmtSmall_);
+        drawButton("sett_svc_stop", stopBtn, "Stop",
+                   isRunning ? COL_DANGER : COL_SEC_BTN_BG,
+                   isRunning ? COL_DANGER_HV : COL_SEC_BTN_HV,
+                   isRunning ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
+                   7.0f, [this, isRunning]() {
+                       if (isRunning) {
+                           if (WindowsServiceManager::stopService()) {
+                               showToast("Service stopped");
+                           } else {
+                               showToast("Failed to stop service", true);
+                           }
+                       }
+                   }, fmtSmall_, !isRunning, COL_BORDER, isRunning ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
 
-    // Row 2: Custom Notice Message
-    float py2 = py1 + 32.0f;
-    UiRect noticeField = { privBox.left + 16.0f, py2, privBox.right - 16.0f, py2 + 28.0f };
-    drawTextField("field_priv_notice", FocusedField::PrivacyNotice, noticeField,
-                  privacyNoticeEdit_, "Custom Security Notice Text...", false);
+        cy = svcBox.bottom + 12.0f;
 
-    // Row 3: Show Desk ID toggle
-    float py3 = py2 + 32.0f;
-    UiRect showIdToggle = { privBox.left + 16.0f, py3, privBox.right - 16.0f, py3 + 24.0f };
-    drawToggleSwitch("sett_priv_show_id", showIdToggle, s.privacyShowDeskId, "Display Workstation Desk ID on Curtain Screen", [this]() {
-        AppSettings ns = identity_.settings();
-        ns.privacyShowDeskId = !ns.privacyShowDeskId;
-        identity_.updateSettings(ns);
-        network_.configurePrivacyCurtain(ns.privacyCustomNotice, ns.privacyBrandName, ns.privacyShowDeskId);
-    });
+        // 2. Notifications & System Integration
+        UiRect notifBox = { cx, cy, crx, cy + 158.0f };
+        fillRoundRect(notifBox, 12.0f, COL_BG_SUBTLE);
+        strokeRoundRect(notifBox, 12.0f, COL_BORDER);
 
-    // Row 4: Hardware DPMS Blanking toggle
-    float py4 = py3 + 28.0f;
-    UiRect dpmsToggle = { privBox.left + 16.0f, py4, privBox.right - 16.0f, py4 + 24.0f };
-    drawToggleSwitch("sett_priv_dpms_blank", dpmsToggle, s.hardwareDpmsBlanking,
-                     "Hardware DPMS Display Standby (Power Off Monitor)", [this]() {
-        AppSettings ns = identity_.settings();
-        ns.hardwareDpmsBlanking = !ns.hardwareDpmsBlanking;
-        identity_.updateSettings(ns);
-    });
+        drawText("SYSTEM & NOTIFICATIONS",
+                 { notifBox.left + 16.0f, notifBox.top + 8.0f, notifBox.right - 16.0f, notifBox.top + 22.0f },
+                 fmtSmall_, COL_TEXT_ACCENT);
 
-    ly = privBox.bottom + 10.0f;
+        float ny = notifBox.top + 26.0f;
+        drawToggleSwitch("sett_push_notif", { notifBox.left + 16.0f, ny, notifBox.right - 16.0f, ny + 24.0f },
+                         s.enablePushNotifications, "Windows Action Center push toasts", [this]() {
+                             AppSettings ns = identity_.settings();
+                             ns.enablePushNotifications = !ns.enablePushNotifications;
+                             identity_.updateSettings(ns);
+                         });
+        ny += 25.0f;
 
-    // 6. About CppDesk (draw if at least 40px remaining)
-    if (leftCard.bottom - 10.0f > ly + 40.0f) {
-        UiRect aboutBox = { lx, ly, lrx, leftCard.bottom - 16.0f };
+        drawToggleSwitch("sett_taskbar_flash", { notifBox.left + 16.0f, ny, notifBox.right - 16.0f, ny + 24.0f },
+                         s.enableTaskbarFlash, "Flash taskbar orange when unfocused", [this]() {
+                             AppSettings ns = identity_.settings();
+                             ns.enableTaskbarFlash = !ns.enableTaskbarFlash;
+                             identity_.updateSettings(ns);
+                         });
+        ny += 25.0f;
+
+        drawToggleSwitch("sett_notif_sound", { notifBox.left + 16.0f, ny, notifBox.right - 16.0f, ny + 24.0f },
+                         s.enableNotificationSounds, "Play sound on incoming alerts", [this]() {
+                             AppSettings ns = identity_.settings();
+                             ns.enableNotificationSounds = !ns.enableNotificationSounds;
+                             identity_.updateSettings(ns);
+                         });
+        ny += 25.0f;
+
+        drawToggleSwitch("sett_min_to_tray", { notifBox.left + 16.0f, ny, notifBox.right - 16.0f, ny + 24.0f },
+                         s.minimizeToTray, "Minimize window to system tray", [this]() {
+                             AppSettings ns = identity_.settings();
+                             ns.minimizeToTray = !ns.minimizeToTray;
+                             identity_.updateSettings(ns);
+                         });
+        ny += 25.0f;
+
+        bool isUriReg = ShortcutManager::isUriProtocolRegistered();
+        drawToggleSwitch("sett_reg_uri", { notifBox.left + 16.0f, ny, notifBox.right - 16.0f, ny + 24.0f },
+                         isUriReg, "Register cppdesk:// URL Protocol Handler", [this, isUriReg]() {
+                             ShortcutManager::setUriProtocolRegistered(!isUriReg);
+                             showToast(!isUriReg ? "Registered cppdesk:// URL protocol" : "Unregistered cppdesk:// URL protocol");
+                         });
+
+        cy = notifBox.bottom + 12.0f;
+    }
+    else if (settingsSection_ == SettingsSection::About) {
+        drawText("About & Maintenance", { cx, cy, crx, cy + 24.0f }, fmtHeading_, COL_TEXT_PRIMARY);
+        cy += 25.0f;
+        drawText("Software version, update checks, local file storage, and configuration reset.",
+                 { cx, cy, crx, cy + 16.0f }, fmtSmall_, COL_TEXT_SECONDARY);
+        cy += 22.0f;
+
+        // 1. Top Update Banner
+        UiRect updateBanner = { cx, cy, crx, cy + 66.0f };
+        drawCardShadow(updateBanner, 12.0f, alpha);
+        drawCardSurface(updateBanner, 12.0f, alpha);
+
+        float bPad = 16.0f;
+        UiRect iconBadge = { updateBanner.left + bPad, updateBanner.top + 13.0f, updateBanner.left + bPad + 40.0f, updateBanner.top + 53.0f };
+        ensureAppIconBitmap();
+        if (appIconBitmap_) {
+            drawCardShadow(iconBadge, 10.0f, 0.5f * alpha);
+            D2D1_RECT_F dst = D2D1::RectF(iconBadge.left, iconBadge.top, iconBadge.right, iconBadge.bottom);
+            renderTarget_->DrawBitmap(appIconBitmap_, dst, alpha, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+        } else {
+            fillRoundRect(iconBadge, 10.0f, COL_PRIMARY_ACCENT);
+            drawText("CD", iconBadge, fmtSubheading_, COL_TEXT_ON_ACCENT, DWRITE_TEXT_ALIGNMENT_CENTER);
+        }
+
+        float infoX = iconBadge.right + 14.0f;
+        UiRect titleRect = { infoX, updateBanner.top + 12.0f, updateBanner.right - 300.0f, updateBanner.top + 34.0f };
+        drawText("CppDesk v" + std::string(CPP_DESK_VERSION) + "  •  Fast, secure remote desktop for Windows",
+                 titleRect, fmtSubheading_, COL_TEXT_PRIMARY, DWRITE_TEXT_ALIGNMENT_LEADING);
+
+        float dotX = infoX + 5.0f;
+        float dotY = updateBanner.top + 45.0f;
+        D2D1_COLOR_F statusDotCol = latestUpdateInfo_.updateRequired ? COL_DANGER : (isCheckingUpdates_ ? COL_WARNING : COL_SUCCESS);
+        drawPulseDot(dotX, dotY, 3.8f, statusDotCol);
+
+        UiRect statusTextRect = { dotX + 11.0f, updateBanner.top + 35.0f, updateBanner.right - 300.0f, updateBanner.top + 55.0f };
+        D2D1_COLOR_F statusTxtCol = latestUpdateInfo_.updateRequired ? COL_DANGER : COL_TEXT_SECONDARY;
+        drawText(updateStatusText_, statusTextRect, fmtSmall_, statusTxtCol, DWRITE_TEXT_ALIGNMENT_LEADING);
+
+        float btnH = 34.0f;
+        float btnY = updateBanner.top + (updateBanner.height() - btnH) * 0.5f;
+
+        float chkW = 140.0f;
+        UiRect chkBtn = { updateBanner.right - bPad - chkW, btnY, updateBanner.right - bPad, btnY + btnH };
+        drawButton("sett_check_updates_top", chkBtn, isCheckingUpdates_ ? "Checking..." : "Check for update",
+                   COL_PRIMARY_ACCENT, COL_PRIMARY_ACCENT_HV, COL_TEXT_ON_ACCENT,
+                   8.0f, [this]() {
+                       triggerUpdateCheck(true);
+                   }, fmtSmall_);
+
+        float relW = 110.0f;
+        UiRect relBtn = { chkBtn.left - 8.0f - relW, btnY, chkBtn.left - 8.0f, btnY + btnH };
+        drawButton("sett_view_release_top", relBtn, "Release Notes",
+                   COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY,
+                   8.0f, [this]() {
+                       ShellExecuteA(nullptr, "open", "https://github.com/nmnghia2527/cppdesk/releases/latest", nullptr, nullptr, SW_SHOWNORMAL);
+                   }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
+
+        cy = updateBanner.bottom + 14.0f;
+
+        // 2. About CppDesk Box
+        UiRect aboutBox = { cx, cy, crx, cy + 72.0f };
         fillRoundRect(aboutBox, 12.0f, COL_BG_SUBTLE);
         strokeRoundRect(aboutBox, 12.0f, COL_BORDER);
 
@@ -3322,492 +3932,31 @@ void CppDeskWindow::drawSettingsView(const UiRect& bounds, float alpha) {
                  { aboutBox.left + aPad, aboutBox.top + 8.0f, aboutBox.right - aPad, aboutBox.top + 22.0f },
                  fmtSmall_, COL_TEXT_ACCENT);
 
-        float btnW = 68.0f;
-        float btnH = 26.0f;
-        float btnRight = aboutBox.right - aPad;
-        float btnY = aboutBox.top + 15.0f;
+        float aBtnW = 68.0f;
+        float aBtnH = 26.0f;
+        float aBtnRight = aboutBox.right - aPad;
+        float aBtnY = aboutBox.top + 15.0f;
 
-        // Interactive "License" Pill Button
-        UiRect licBtn = { btnRight - btnW, btnY, btnRight, btnY + btnH };
+        UiRect licBtn = { aBtnRight - aBtnW, aBtnY, aBtnRight, aBtnY + aBtnH };
         drawButton("sett_about_license", licBtn, "License",
                    COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 6.0f, []() {
                        ShellExecuteA(nullptr, "open", "https://github.com/nmnghia2527/cppdesk/blob/main/LICENSE", nullptr, nullptr, SW_SHOWNORMAL);
                    }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
 
-        // Interactive "GitHub" Pill Button
-        UiRect ghBtn = { licBtn.left - 8.0f - btnW, btnY, licBtn.left - 8.0f, btnY + btnH };
+        UiRect ghBtn = { licBtn.left - 8.0f - aBtnW, aBtnY, licBtn.left - 8.0f, aBtnY + aBtnH };
         drawButton("sett_about_github", ghBtn, "GitHub",
                    COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 6.0f, []() {
                        ShellExecuteA(nullptr, "open", "https://github.com/nmnghia2527/cppdesk", nullptr, nullptr, SW_SHOWNORMAL);
                    }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
 
-        // App Title & Value Summary
-        UiRect textRect = { aboutBox.left + aPad, aboutBox.top + 24.0f, ghBtn.left - 12.0f, aboutBox.bottom - 6.0f };
+        UiRect aTextRect = { aboutBox.left + aPad, aboutBox.top + 24.0f, ghBtn.left - 12.0f, aboutBox.bottom - 6.0f };
         drawText("CppDesk v" + std::string(CPP_DESK_VERSION) + " • Free & Open Source\nZero-install, high-speed remote access with end-to-end encryption.",
-                 textRect, fmtSmall_, COL_TEXT_SECONDARY);
-    }
+                 aTextRect, fmtSmall_, COL_TEXT_SECONDARY);
 
-    // ==================== RIGHT COLUMN: ACCESS & NETWORK ====================
-    drawCardSurface(rightCard, 16.0f, alpha);
+        cy = aboutBox.bottom + 14.0f;
 
-    float rx = rightCard.left + 24.0f;
-    float rrx = rightCard.right - 24.0f;
-    float ry = rightCard.top + 16.0f;
-
-    drawText("Access & Network", { rx, ry, rrx, ry + 24.0f }, fmtHeading_, COL_TEXT_PRIMARY);
-    ry += 25.0f;
-    drawText("Permissions, privacy, and connection settings.",
-             { rx, ry, rrx, ry + 16.0f }, fmtSmall_, COL_TEXT_SECONDARY);
-    ry += 22.0f;
-
-    // 1. Permissions
-    UiRect permBox = { rx, ry, rrx, ry + 172.0f };
-    fillRoundRect(permBox, 12.0f, COL_BG_SUBTLE);
-    strokeRoundRect(permBox, 12.0f, COL_BORDER);
-
-    drawText("PERMISSIONS",
-             { permBox.left + 16.0f, permBox.top + 8.0f, permBox.right - 16.0f, permBox.top + 22.0f },
-             fmtSmall_, COL_TEXT_ACCENT);
-
-    float py = permBox.top + 26.0f;
-    drawToggleSwitch("sett_auto_accept", { permBox.left + 16.0f, py, permBox.right - 16.0f, py + 24.0f },
-                     s.autoAcceptIncoming, "Automatically accept incoming connections", [this]() {
-                         AppSettings ns = identity_.settings();
-                         ns.autoAcceptIncoming = !ns.autoAcceptIncoming;
-                         identity_.updateSettings(ns);
-                         network_.setAutoAcceptIncoming(ns.autoAcceptIncoming, ns.defaultPermissions);
-                     });
-    py += 28.0f;
-
-    drawToggleSwitch("sett_def_perm_input", { permBox.left + 16.0f, py, permBox.right - 16.0f, py + 24.0f },
-                     (s.defaultPermissions & PERM_INPUT) != 0, "Allow mouse and keyboard control", [this]() {
-                         AppSettings ns = identity_.settings();
-                         ns.defaultPermissions ^= PERM_INPUT;
-                         identity_.updateSettings(ns);
-                         network_.setAutoAcceptIncoming(ns.autoAcceptIncoming, ns.defaultPermissions);
-                     });
-    py += 28.0f;
-
-    drawToggleSwitch("sett_def_perm_clip", { permBox.left + 16.0f, py, permBox.right - 16.0f, py + 24.0f },
-                     (s.defaultPermissions & PERM_CLIPBOARD) != 0, "Allow clipboard sharing", [this]() {
-                         AppSettings ns = identity_.settings();
-                         ns.defaultPermissions ^= PERM_CLIPBOARD;
-                         identity_.updateSettings(ns);
-                         network_.setAutoAcceptIncoming(ns.autoAcceptIncoming, ns.defaultPermissions);
-                     });
-    py += 28.0f;
-
-    drawToggleSwitch("sett_def_perm_file", { permBox.left + 16.0f, py, permBox.right - 16.0f, py + 24.0f },
-                     (s.defaultPermissions & PERM_FILE_TRANSFER) != 0, "Allow file transfers", [this]() {
-                         AppSettings ns = identity_.settings();
-                         ns.defaultPermissions ^= PERM_FILE_TRANSFER;
-                         identity_.updateSettings(ns);
-                         network_.setAutoAcceptIncoming(ns.autoAcceptIncoming, ns.defaultPermissions);
-                     });
-    py += 28.0f;
-
-    drawToggleSwitch("sett_lock_disc", { permBox.left + 16.0f, py, permBox.right - 16.0f, py + 24.0f },
-                     s.lockWorkstationOnDisconnect, "Lock computer when session ends", [this]() {
-                         AppSettings ns = identity_.settings();
-                         ns.lockWorkstationOnDisconnect = !ns.lockWorkstationOnDisconnect;
-                         identity_.updateSettings(ns);
-                     });
-
-    ry = permBox.bottom + 10.0f;
-
-    // 2. Notifications & System Integration
-    UiRect notifBox = { rx, ry, rrx, ry + 158.0f };
-    fillRoundRect(notifBox, 12.0f, COL_BG_SUBTLE);
-    strokeRoundRect(notifBox, 12.0f, COL_BORDER);
-
-    drawText("SYSTEM & NOTIFICATIONS",
-             { notifBox.left + 16.0f, notifBox.top + 8.0f, notifBox.right - 16.0f, notifBox.top + 22.0f },
-             fmtSmall_, COL_TEXT_ACCENT);
-
-    float ny = notifBox.top + 26.0f;
-    drawToggleSwitch("sett_push_notif", { notifBox.left + 16.0f, ny, notifBox.right - 16.0f, ny + 24.0f },
-                     s.enablePushNotifications, "Windows Action Center push toasts", [this]() {
-                         AppSettings ns = identity_.settings();
-                         ns.enablePushNotifications = !ns.enablePushNotifications;
-                         identity_.updateSettings(ns);
-                     });
-    ny += 25.0f;
-
-    drawToggleSwitch("sett_taskbar_flash", { notifBox.left + 16.0f, ny, notifBox.right - 16.0f, ny + 24.0f },
-                     s.enableTaskbarFlash, "Flash taskbar orange when unfocused", [this]() {
-                         AppSettings ns = identity_.settings();
-                         ns.enableTaskbarFlash = !ns.enableTaskbarFlash;
-                         identity_.updateSettings(ns);
-                     });
-    ny += 25.0f;
-
-    drawToggleSwitch("sett_notif_sound", { notifBox.left + 16.0f, ny, notifBox.right - 16.0f, ny + 24.0f },
-                     s.enableNotificationSounds, "Play sound on incoming alerts", [this]() {
-                         AppSettings ns = identity_.settings();
-                         ns.enableNotificationSounds = !ns.enableNotificationSounds;
-                         identity_.updateSettings(ns);
-                     });
-    ny += 25.0f;
-
-    drawToggleSwitch("sett_min_to_tray", { notifBox.left + 16.0f, ny, notifBox.right - 16.0f, ny + 24.0f },
-                     s.minimizeToTray, "Minimize window to system tray", [this]() {
-                         AppSettings ns = identity_.settings();
-                         ns.minimizeToTray = !ns.minimizeToTray;
-                         identity_.updateSettings(ns);
-                     });
-    ny += 25.0f;
-
-    bool isUriReg = ShortcutManager::isUriProtocolRegistered();
-    drawToggleSwitch("sett_reg_uri", { notifBox.left + 16.0f, ny, notifBox.right - 16.0f, ny + 24.0f },
-                     isUriReg, "Register cppdesk:// URL Protocol Handler", [this, isUriReg]() {
-                         ShortcutManager::setUriProtocolRegistered(!isUriReg);
-                         showToast(!isUriReg ? "Registered cppdesk:// URL protocol" : "Unregistered cppdesk:// URL protocol");
-                     });
-
-    ry = notifBox.bottom + 10.0f;
-
-    // 3. Relay & Rendezvous Network (v3.2.0)
-    UiRect netBox = { rx, ry, rrx, ry + 196.0f };
-    fillRoundRect(netBox, 12.0f, COL_BG_SUBTLE);
-    strokeRoundRect(netBox, 12.0f, COL_BORDER);
-
-    drawText("RELAY & RENDEZVOUS NETWORK",
-             { netBox.left + 16.0f, netBox.top + 8.0f, netBox.left + 240.0f, netBox.top + 22.0f },
-             fmtSmall_, COL_TEXT_ACCENT);
-
-    // Preset pills on top right
-    float presetW = 54.0f;
-    float presetH = 20.0f;
-    float prX = netBox.right - 16.0f;
-    UiRect lanPreset = { prX - presetW, netBox.top + 5.0f, prX, netBox.top + 5.0f + presetH };
-    UiRect localPreset = { lanPreset.left - 4.0f - 64.0f, netBox.top + 5.0f, lanPreset.left - 4.0f, netBox.top + 5.0f + presetH };
-    UiRect pubPreset = { localPreset.left - 4.0f - 54.0f, netBox.top + 5.0f, localPreset.left - 4.0f, netBox.top + 5.0f + presetH };
-
-    drawButton("sett_pre_pub", pubPreset, "Public",
-               (relayModeEdit_ == 0) ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
-               (relayModeEdit_ == 0) ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
-               (relayModeEdit_ == 0) ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
-               5.0f, [this]() {
-                   relayServerEdit_ = "relay.cppdesk.io:50999";
-                   stunServerEdit_ = "stun.l.google.com:19302";
-                   relayModeEdit_ = 0;
-               }, fmtSmall_, relayModeEdit_ != 0, COL_BORDER);
-
-    drawButton("sett_pre_loc", localPreset, "Localhost",
-               (relayModeEdit_ == 1) ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
-               (relayModeEdit_ == 1) ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
-               (relayModeEdit_ == 1) ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
-               5.0f, [this]() {
-                   relayServerEdit_ = "127.0.0.1:50999";
-                   stunServerEdit_ = "stun.l.google.com:19302";
-                   relayModeEdit_ = 1;
-               }, fmtSmall_, relayModeEdit_ != 1, COL_BORDER);
-
-    drawButton("sett_pre_lan", lanPreset, "LAN",
-               (relayModeEdit_ == 2) ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
-               (relayModeEdit_ == 2) ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
-               (relayModeEdit_ == 2) ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
-               5.0f, [this]() {
-                   relayServerEdit_ = "127.0.0.1:50999";
-                   stunServerEdit_ = "";
-                   relayModeEdit_ = 2;
-               }, fmtSmall_, relayModeEdit_ != 2, COL_BORDER);
-
-    // Row 1: Relay Address
-    float row1Y = netBox.top + 28.0f;
-    UiRect relayField = { netBox.left + 16.0f, row1Y, netBox.right - 16.0f, row1Y + 30.0f };
-    drawTextField("field_relay_srv_sett", FocusedField::RelayServer, relayField,
-                  relayServerEdit_, "Relay host:port (e.g. 127.0.0.1:50999)", false);
-
-    // Row 2: Auth Key (left) & STUN Server (right)
-    float row2Y = row1Y + 34.0f;
-    float halfFieldW = (netBox.width() - 32.0f - 8.0f) * 0.5f;
-    UiRect keyField = { netBox.left + 16.0f, row2Y, netBox.left + 16.0f + halfFieldW, row2Y + 30.0f };
-    UiRect stunField = { keyField.right + 8.0f, row2Y, netBox.right - 16.0f, row2Y + 30.0f };
-
-    drawTextField("field_relay_key_sett", FocusedField::RelayAuthKey, keyField,
-                  relayAuthKeyEdit_, "Auth key (optional)", true);
-    drawTextField("field_stun_srv_sett", FocusedField::StunServer, stunField,
-                  stunServerEdit_, "STUN server (e.g. stun.l.google.com:19302)", false);
-
-    // Row 3: Action Buttons
-    float row3Y = row2Y + 34.0f;
-    float thirdBtnW = (netBox.width() - 32.0f - 16.0f) / 3.0f;
-    UiRect pingBtn = { netBox.left + 16.0f, row3Y, netBox.left + 16.0f + thirdBtnW, row3Y + 30.0f };
-    UiRect saveBtn = { pingBtn.right + 8.0f, row3Y, pingBtn.right + 8.0f + thirdBtnW, row3Y + 30.0f };
-    UiRect toggleRelayBtn = { saveBtn.right + 8.0f, row3Y, netBox.right - 16.0f, row3Y + 30.0f };
-
-    bool isDiagActive = network_.isNetworkDiagnosticRunning();
-    drawButton("sett_ping_btn", pingBtn, isDiagActive ? "Testing..." : "Test & Ping",
-               COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 7.0f, [this]() {
-                   network_.startNetworkDiagnostics(relayServerEdit_, stunServerEdit_);
-               }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
-
-    drawButton("sett_apply_relay", saveBtn, "Save & Apply",
-               COL_PRIMARY_ACCENT, COL_PRIMARY_ACCENT_HV, COL_TEXT_ON_ACCENT, 7.0f, [this]() {
-                   AppSettings ns = identity_.settings();
-                   ns.relayServer = relayServerEdit_;
-                   ns.relayAuthKey = relayAuthKeyEdit_;
-                   ns.stunServer = stunServerEdit_;
-                   ns.relayMode = relayModeEdit_;
-                   identity_.updateSettings(ns);
-                   network_.setRelayAddressAndReconnect(relayServerEdit_);
-                   showToast("Network settings applied & reconnected");
-               }, fmtSmall_);
-
-    bool relayRunning = network_.isLocalRelayRunning();
-    drawButton("sett_toggle_relay", toggleRelayBtn, relayRunning ? "Relay: ON" : "Relay: OFF",
-               relayRunning ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
-               relayRunning ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
-               relayRunning ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
-               7.0f, [this, relayRunning]() {
-                   if (relayRunning) {
-                       network_.stopLocalRelayServer();
-                       showToast("Local relay stopped");
-                   } else if (network_.startLocalRelayServer(DEFAULT_RELAY_PORT)) {
-                       showToast("Local relay started on :50999");
-                   } else {
-                       showToast("Relay port already in use", true);
-                   }
-               }, fmtSmall_, !relayRunning, COL_BORDER, relayRunning ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
-
-    // Row 4: Status Indicator & Telemetry Dot
-    float row4Y = row3Y + 33.0f;
-    RelayProbeResult rDiag;
-    StunNatResult sDiag;
-    bool hasResult = network_.getNetworkDiagnosticResult(rDiag, sDiag);
-
-    D2D1_COLOR_F dotCol = COL_TEXT_MUTED;
-    std::string diagText;
-    if (isDiagActive) {
-        dotCol = COL_WARNING;
-        diagText = "Probing relay TCP and RFC 5389 STUN NAT traversal...";
-    } else if (hasResult) {
-        if (rDiag.reachable) {
-            dotCol = COL_SUCCESS;
-            diagText = "Relay: " + rDiag.message + (sDiag.success ? ("  |  NAT: " + sDiag.publicIp + ":" + std::to_string(sDiag.publicPort)) : ("  |  " + sDiag.natTypeDescription));
-        } else {
-            dotCol = COL_DANGER;
-            diagText = "Relay: " + rDiag.message + ("  |  " + sDiag.natTypeDescription);
-        }
-    } else {
-        dotCol = COL_TEXT_SECONDARY;
-        std::string modeName = (relayModeEdit_ == 0) ? "Auto" : (relayModeEdit_ == 1 ? "Self-Hosted" : "Direct LAN");
-        diagText = "Mode: " + modeName + "  |  Ready to probe network";
-    }
-
-    drawPulseDot(netBox.left + 22.0f, row4Y + 14.0f, 3.8f, dotCol, alpha);
-    UiRect diagTextRect = { netBox.left + 32.0f, row4Y, netBox.right - 16.0f, row4Y + 28.0f };
-    drawText(diagText, diagTextRect, fmtSmall_, COL_TEXT_SECONDARY, DWRITE_TEXT_ALIGNMENT_LEADING);
-
-    ry = netBox.bottom + 10.0f;
-
-    // 4. Windows System Service (v3.2.0)
-    UiRect svcBox = { rx, ry, rrx, ry + 78.0f };
-    fillRoundRect(svcBox, 12.0f, COL_BG_SUBTLE);
-    strokeRoundRect(svcBox, 12.0f, COL_BORDER);
-
-    drawText("WINDOWS SYSTEM SERVICE",
-             { svcBox.left + 16.0f, svcBox.top + 8.0f, svcBox.left + 240.0f, svcBox.top + 22.0f },
-             fmtSmall_, COL_TEXT_ACCENT);
-
-    ServiceStatusState svcState = WindowsServiceManager::getServiceState();
-    std::string svcStateLabel = (svcState == ServiceStatusState::Running) ? "Running" :
-                                (svcState == ServiceStatusState::Stopped) ? "Stopped" : "Not Installed";
-    D2D1_COLOR_F svcStateCol = (svcState == ServiceStatusState::Running) ? COL_SUCCESS :
-                               (svcState == ServiceStatusState::Stopped) ? COL_WARNING : COL_TEXT_MUTED;
-
-    drawPulseDot(svcBox.right - 100.0f, svcBox.top + 15.0f, 3.8f, svcStateCol, alpha);
-    drawText(svcStateLabel, { svcBox.right - 90.0f, svcBox.top + 7.0f, svcBox.right - 16.0f, svcBox.top + 23.0f },
-             fmtSmall_, svcStateCol, DWRITE_TEXT_ALIGNMENT_LEADING);
-
-    float sBtnTop = svcBox.top + 28.0f;
-    float sBtnBot = svcBox.top + 64.0f;
-    float sQuarterW = (rrx - rx - 32.0f - 24.0f) / 4.0f;
-
-    UiRect installBtn   = { svcBox.left + 16.0f, sBtnTop, svcBox.left + 16.0f + sQuarterW, sBtnBot };
-    UiRect uninstallBtn = { installBtn.right + 8.0f, sBtnTop, installBtn.right + 8.0f + sQuarterW, sBtnBot };
-    UiRect startBtn     = { uninstallBtn.right + 8.0f, sBtnTop, uninstallBtn.right + 8.0f + sQuarterW, sBtnBot };
-    UiRect stopBtn      = { startBtn.right + 8.0f, sBtnTop, svcBox.right - 16.0f, sBtnBot };
-
-    bool isInstalled = (svcState != ServiceStatusState::NotInstalled);
-    bool isRunning = (svcState == ServiceStatusState::Running);
-
-    drawButton("sett_svc_install", installBtn, "Install",
-               !isInstalled ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
-               !isInstalled ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
-               !isInstalled ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
-               7.0f, [this, isInstalled]() {
-                   if (!isInstalled) {
-                       if (WindowsServiceManager::installService()) {
-                           showToast("Service installed successfully");
-                       } else {
-                           showToast("Failed to install service (Admin required)", true);
-                       }
-                   } else {
-                       showToast("Service already installed");
-                   }
-               }, fmtSmall_, isInstalled, COL_BORDER, !isInstalled ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
-
-    drawButton("sett_svc_uninstall", uninstallBtn, "Uninstall",
-               COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY,
-               7.0f, [this, isInstalled]() {
-                   if (isInstalled) {
-                       if (WindowsServiceManager::uninstallService()) {
-                           showToast("Service uninstalled");
-                       } else {
-                           showToast("Failed to uninstall service (Admin required)", true);
-                       }
-                   } else {
-                       showToast("Service not installed");
-                   }
-               }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
-
-    drawButton("sett_svc_start", startBtn, "Start",
-               (isInstalled && !isRunning) ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
-               (isInstalled && !isRunning) ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
-               (isInstalled && !isRunning) ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
-               7.0f, [this, isInstalled, isRunning]() {
-                   if (isInstalled && !isRunning) {
-                       if (WindowsServiceManager::startService()) {
-                           showToast("Service started");
-                       } else {
-                           showToast("Failed to start service (Admin required)", true);
-                       }
-                   } else if (!isInstalled) {
-                       showToast("Install service first", true);
-                   }
-               }, fmtSmall_, !(isInstalled && !isRunning), COL_BORDER,
-               (isInstalled && !isRunning) ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
-
-    drawButton("sett_svc_stop", stopBtn, "Stop",
-               isRunning ? COL_DANGER : COL_SEC_BTN_BG,
-               isRunning ? COL_DANGER_HV : COL_SEC_BTN_HV,
-               isRunning ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
-               7.0f, [this, isRunning]() {
-                   if (isRunning) {
-                       if (WindowsServiceManager::stopService()) {
-                           showToast("Service stopped");
-                       } else {
-                           showToast("Failed to stop service", true);
-                       }
-                   }
-               }, fmtSmall_, !isRunning, COL_BORDER, isRunning ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
-
-    ry = svcBox.bottom + 10.0f;
-
-    // 5. Two-Factor Authentication (TOTP)
-    UiRect totpBox = { rx, ry, rrx, ry + 246.0f };
-    fillRoundRect(totpBox, 12.0f, COL_BG_SUBTLE);
-    strokeRoundRect(totpBox, 12.0f, COL_BORDER);
-
-    drawText("TWO-FACTOR AUTHENTICATION (TOTP)",
-             { totpBox.left + 16.0f, totpBox.top + 8.0f, totpBox.right - 16.0f, totpBox.top + 22.0f },
-             fmtSmall_, COL_TEXT_ACCENT);
-
-    // Toggle 2FA switch
-    drawToggleSwitch("sett_totp_enable",
-                     { totpBox.left + 16.0f, totpBox.top + 26.0f, totpBox.right - 16.0f, totpBox.top + 50.0f },
-                     s.totpEnabled, "Require 2FA code for unattended access", [this, s]() {
-                         if (s.totpEnabled) {
-                             AppSettings ns = identity_.settings();
-                             ns.totpEnabled = false;
-                             identity_.updateSettings(ns);
-                             totpEnrollSuccess_ = false;
-                             totpEnrollFeedback_ = "2FA disabled.";
-                             showToast("Two-Factor Authentication Disabled");
-                         } else {
-                             showToast("Verify a 6-digit code below to enable 2FA", true);
-                         }
-                     });
-
-    // QR Code Box (110x110)
-    UiRect qrRect = { totpBox.left + 16.0f, totpBox.top + 56.0f, totpBox.left + 126.0f, totpBox.top + 166.0f };
-    renderQrCodeDirect2D(qrRect, totpQrMatrix_, totpQrMatrixSize_, alpha);
-
-    // Right of QR: Secret Key & Action Buttons
-    float totpInfoX = qrRect.right + 12.0f;
-    float totpInfoRx = totpBox.right - 16.0f;
-
-    drawText("Secret Key (Base32):", { totpInfoX, qrRect.top, totpInfoRx, qrRect.top + 16.0f }, fmtSmall_, COL_TEXT_SECONDARY);
-
-    std::string curSecret = s.totpSecret.empty() ? identity_.totpManager().getSecretBase32() : s.totpSecret;
-    std::string formattedKey = TotpManager::formatBase32Secret(curSecret);
-
-    UiRect keyBox = { totpInfoX, qrRect.top + 18.0f, totpInfoRx - 64.0f, qrRect.top + 46.0f };
-    fillRoundRect(keyBox, 6.0f, COL_BG_INPUT);
-    strokeRoundRect(keyBox, 6.0f, COL_BORDER);
-    drawText(formattedKey, { keyBox.left + 8.0f, keyBox.top, keyBox.right - 8.0f, keyBox.bottom },
-             fmtMono_, COL_TEXT_PRIMARY, DWRITE_TEXT_ALIGNMENT_LEADING);
-
-    UiRect copyBtn = { keyBox.right + 6.0f, keyBox.top, totpInfoRx, keyBox.bottom };
-    drawButton("sett_totp_copy", copyBtn, "Copy",
-               COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 6.0f, [this, curSecret]() {
-                   ClipboardManager::setClipboardUtf8(curSecret);
-                   showToast("Secret key copied to clipboard");
-               }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
-
-    UiRect regenBtn = { totpInfoX, keyBox.bottom + 8.0f, totpInfoRx, keyBox.bottom + 36.0f };
-    drawButton("sett_totp_regen", regenBtn, "Regenerate Secret Key",
-               COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 6.0f, [this]() {
-                   identity_.totpManager().generateNewSecret();
-                   std::string newSecret = identity_.totpManager().getSecretBase32();
-                   AppSettings ns = identity_.settings();
-                   ns.totpSecret = newSecret;
-                   ns.totpEnabled = false;
-                   identity_.updateSettings(ns);
-                   updateTotpQrMatrix();
-                   totpEnrollCodeEdit_.clear();
-                   totpEnrollSuccess_ = false;
-                   totpEnrollFeedback_ = "New key generated. Enter 6-digit code below to re-enable.";
-                   showToast("New 2FA key generated");
-               }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
-
-    // Row below QR: Test input field & "Verify & Enable"
-    float verifyY = qrRect.bottom + 10.0f;
-    drawText("Enrollment Code Verification:", { totpBox.left + 16.0f, verifyY, totpBox.right - 16.0f, verifyY + 16.0f },
-             fmtSmall_, COL_TEXT_SECONDARY);
-    verifyY += 18.0f;
-
-    float testFieldW = 120.0f;
-    UiRect testField = { totpBox.left + 16.0f, verifyY, totpBox.left + 16.0f + testFieldW, verifyY + 30.0f };
-    drawTextField("field_totp_enroll", FocusedField::TotpEnrollTestCode, testField,
-                  totpEnrollCodeEdit_, "000000", false);
-
-    float vBtnW = 124.0f;
-    UiRect verifyBtn = { testField.right + 8.0f, verifyY, testField.right + 8.0f + vBtnW, verifyY + 30.0f };
-    drawButton("sett_totp_verify", verifyBtn, s.totpEnabled ? "Verified" : "Verify & Enable",
-               s.totpEnabled ? COL_SEC_BTN_BG : COL_PRIMARY_ACCENT,
-               s.totpEnabled ? COL_SEC_BTN_HV : COL_PRIMARY_ACCENT_HV,
-               s.totpEnabled ? COL_TEXT_PRIMARY : COL_TEXT_ON_ACCENT, 6.0f, [this]() {
-                   if (totpEnrollCodeEdit_.size() == 6) {
-                       if (identity_.totpManager().verifyCode(totpEnrollCodeEdit_)) {
-                           AppSettings ns = identity_.settings();
-                           ns.totpEnabled = true;
-                           identity_.updateSettings(ns);
-                           totpEnrollSuccess_ = true;
-                           totpEnrollFeedback_ = "Code verified! 2FA enabled.";
-                           showToast("Two-Factor Authentication Enabled");
-                       } else {
-                           totpEnrollSuccess_ = false;
-                           totpEnrollFeedback_ = "Invalid 6-digit code. Check authenticator clock.";
-                           showToast("Invalid 2FA code", true);
-                       }
-                   } else {
-                       totpEnrollFeedback_ = "Please enter 6 digits.";
-                   }
-               }, fmtSmall_, s.totpEnabled, COL_BORDER);
-
-    UiRect fbRect = { verifyBtn.right + 8.0f, verifyY, totpBox.right - 16.0f, verifyY + 30.0f };
-    D2D1_COLOR_F fbCol = totpEnrollSuccess_ ? COL_SUCCESS : (totpEnrollFeedback_.empty() ? COL_TEXT_MUTED : COL_DANGER);
-    drawText(totpEnrollFeedback_.empty() ? (s.totpEnabled ? "2FA Active" : "Verification required") : totpEnrollFeedback_,
-             fbRect, fmtSmall_, fbCol, DWRITE_TEXT_ALIGNMENT_LEADING);
-
-    ry = totpBox.bottom + 10.0f;
-
-    // 6. Data & Reset Actions
-    if (rightCard.bottom - 10.0f > ry + 36.0f) {
-        UiRect maintBox = { rx, ry, rrx, rightCard.bottom - 16.0f };
+        // 3. Data & Reset Actions
+        UiRect maintBox = { cx, cy, crx, cy + 78.0f };
         fillRoundRect(maintBox, 12.0f, COL_BG_SUBTLE);
         strokeRoundRect(maintBox, 12.0f, COL_BORDER);
 
@@ -3815,13 +3964,13 @@ void CppDeskWindow::drawSettingsView(const UiRect& bounds, float alpha) {
                  { maintBox.left + 16.0f, maintBox.top + 8.0f, maintBox.right - 16.0f, maintBox.top + 22.0f },
                  fmtSmall_, COL_TEXT_ACCENT);
 
-        float mThirdW = (rrx - rx - 32.0f - 16.0f) / 3.0f;
-        float btnTop = maintBox.top + 28.0f;
-        float btnBot = std::min(btnTop + 34.0f, maintBox.bottom - 8.0f);
+        float mThirdW = (innerW - 32.0f - 16.0f) / 3.0f;
+        float mBtnTop = maintBox.top + 28.0f;
+        float mBtnBot = maintBox.top + 64.0f;
 
-        UiRect openRecvBtn = { maintBox.left + 16.0f, btnTop, maintBox.left + 16.0f + mThirdW, btnBot };
-        UiRect clearRecBtn = { openRecvBtn.right + 8.0f, btnTop, openRecvBtn.right + 8.0f + mThirdW, btnBot };
-        UiRect resetBtn    = { clearRecBtn.right + 8.0f, btnTop, maintBox.right - 16.0f, btnBot };
+        UiRect openRecvBtn = { maintBox.left + 16.0f, mBtnTop, maintBox.left + 16.0f + mThirdW, mBtnBot };
+        UiRect clearRecBtn = { openRecvBtn.right + 8.0f, mBtnTop, openRecvBtn.right + 8.0f + mThirdW, mBtnBot };
+        UiRect resetBtn    = { clearRecBtn.right + 8.0f, mBtnTop, maintBox.right - 16.0f, mBtnBot };
 
         drawButton("sett_open_recv", openRecvBtn, "Received Files",
                    COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 8.0f, [this]() {
@@ -3843,21 +3992,25 @@ void CppDeskWindow::drawSettingsView(const UiRect& bounds, float alpha) {
                        network_.setSessionFpsConfig(30, true);
                        showToast("Settings restored to defaults");
                    }, fmtSmall_, true, COL_BORDER, COL_TEXT_ON_ACCENT);
+
+        cy = maintBox.bottom + 12.0f;
     }
 
-    // Clamp hit-test regions inside Settings viewport so scrolled controls never overlap top navbar
-    for (size_t i = settingsClickStart; i < clickRegions_.size(); ++i) {
-        clickRegions_[i].rect.top = std::max(clickRegions_[i].rect.top, bounds.top);
-        clickRegions_[i].rect.bottom = std::min(clickRegions_[i].rect.bottom, bounds.bottom);
+    // Clamp hit-test regions inside contentPane viewport
+    for (size_t i = rightPaneClickStart; i < clickRegions_.size(); ++i) {
+        clickRegions_[i].rect.top = std::max(clickRegions_[i].rect.top, contentPane.top);
+        clickRegions_[i].rect.bottom = std::min(clickRegions_[i].rect.bottom, contentPane.bottom);
         if (clickRegions_[i].rect.bottom <= clickRegions_[i].rect.top) {
             clickRegions_[i].rect = { -10000.0f, -10000.0f, -10000.0f, -10000.0f };
         }
     }
 
-    // Vertical Scrollbar Track & Draggable Thumb when content overflows viewport
+    renderTarget_->PopAxisAlignedClip();
+
+    // Vertical Scrollbar for contentPane
     if (settingsMaxScroll_ > 0.5f) {
-        UiRect trackRect = { bounds.right - 11.0f, bounds.top + 12.0f, bounds.right - 4.0f, bounds.bottom - 12.0f };
-        float visRatio = std::clamp(bounds.height() / totalContentH, 0.12f, 1.0f);
+        UiRect trackRect = { contentPane.right + 3.0f, contentPane.top + 6.0f, contentPane.right + 9.0f, contentPane.bottom - 6.0f };
+        float visRatio = std::clamp(contentPane.height() / sectionContentH, 0.12f, 1.0f);
         float thumbH = std::max(36.0f, trackRect.height() * visRatio);
         float scrollFrac = std::clamp(settingsScrollOffset_ / settingsMaxScroll_, 0.0f, 1.0f);
         float thumbTop = trackRect.top + (trackRect.height() - thumbH) * scrollFrac;
@@ -3867,18 +4020,16 @@ void CppDeskWindow::drawSettingsView(const UiRect& bounds, float alpha) {
         settingsScrollThumbRect_ = thumbRect;
 
         bool hoverTrack = trackRect.inflate(4.0f, 2.0f).contains(mouseX_, mouseY_);
-        fillRoundRect(trackRect, 3.5f, withAlpha(COL_BORDER, (hoverTrack || draggingSettingsScrollbar_) ? 0.38f * alpha : 0.18f * alpha));
+        fillRoundRect(trackRect, 3.0f, withAlpha(COL_BORDER, (hoverTrack || draggingSettingsScrollbar_) ? 0.38f * alpha : 0.18f * alpha));
 
         D2D1_COLOR_F thumbCol = (draggingSettingsScrollbar_ || hoverTrack)
             ? withAlpha(COL_PRIMARY_ACCENT, 0.85f * alpha)
             : withAlpha(COL_TEXT_MUTED, 0.55f * alpha);
-        fillRoundRect(thumbRect, 3.5f, thumbCol);
+        fillRoundRect(thumbRect, 3.0f, thumbCol);
     } else {
         settingsScrollTrackRect_ = {};
         settingsScrollThumbRect_ = {};
     }
-
-    renderTarget_->PopAxisAlignedClip();
 }
 
 // ---------------- Floating macOS Side Sheet Drawer ----------------
@@ -3893,82 +4044,6 @@ void CppDeskWindow::drawFileTransferDrawer(const UiRect& bounds, float slideProg
     float rx = r.right - 20.0f;
     float y = r.top + 16.0f;
 
-    float tabW = (rx - x - 34.0f - 25.0f) / 6.0f;
-    UiRect tabFiles = { x, y, x + tabW, y + 32.0f };
-    UiRect tabChat  = { tabFiles.right + 5.0f, y, tabFiles.right + 5.0f + tabW, y + 32.0f };
-    UiRect tabTerm  = { tabChat.right + 5.0f, y, tabChat.right + 5.0f + tabW, y + 32.0f };
-    UiRect tabDiag  = { tabTerm.right + 5.0f, y, tabTerm.right + 5.0f + tabW, y + 32.0f };
-    UiRect tabHist  = { tabDiag.right + 5.0f, y, tabDiag.right + 5.0f + tabW, y + 32.0f };
-    UiRect tabSync  = { tabHist.right + 5.0f, y, tabHist.right + 5.0f + tabW, y + 32.0f };
-
-    bool onFiles = (drawerTab_ == DrawerTab::FilesAndClip);
-    bool onChat  = (drawerTab_ == DrawerTab::LiveChat);
-    bool onTerm  = (drawerTab_ == DrawerTab::RemoteTerminal);
-    bool onDiag  = (drawerTab_ == DrawerTab::Diagnostics);
-    bool onHist  = (drawerTab_ == DrawerTab::ClipboardHistory);
-    bool onSync  = (drawerTab_ == DrawerTab::Sync);
-
-    drawButton("drawer_tab_files", tabFiles, "Files",
-               onFiles ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
-               onFiles ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
-               onFiles ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
-               8.0f, [this]() {
-                   if (drawerTab_ == DrawerTab::Diagnostics) network_.setDiagnosticsActive(false);
-                   drawerTab_ = DrawerTab::FilesAndClip;
-               }, fmtSmall_);
-
-    uint32_t unread = network_.unreadChatCount();
-    std::string chatTabLbl = unread > 0 ? ("Chat (" + std::to_string(unread) + ")") : "Chat";
-    drawButton("drawer_tab_chat", tabChat, chatTabLbl,
-               onChat ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
-               onChat ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
-               onChat ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
-               8.0f, [this]() {
-                   if (drawerTab_ == DrawerTab::Diagnostics) network_.setDiagnosticsActive(false);
-                   drawerTab_ = DrawerTab::LiveChat;
-                   network_.markChatRead();
-               }, fmtSmall_);
-
-    drawButton("drawer_tab_term", tabTerm, "Terminal",
-               onTerm ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
-               onTerm ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
-               onTerm ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
-               8.0f, [this]() {
-                   if (drawerTab_ == DrawerTab::Diagnostics) network_.setDiagnosticsActive(false);
-                   drawerTab_ = DrawerTab::RemoteTerminal;
-                   focusedField_ = FocusedField::TerminalInput;
-               }, fmtSmall_);
-
-    drawButton("drawer_tab_diag", tabDiag, "TaskMgr",
-               onDiag ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
-               onDiag ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
-               onDiag ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
-               8.0f, [this]() {
-                   if (drawerTab_ != DrawerTab::Diagnostics) {
-                       drawerTab_ = DrawerTab::Diagnostics;
-                       network_.setDiagnosticsActive(true);
-                   }
-               }, fmtSmall_);
-
-    drawButton("drawer_tab_hist", tabHist, "History",
-               onHist ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
-               onHist ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
-               onHist ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
-               8.0f, [this]() {
-                   if (drawerTab_ == DrawerTab::Diagnostics) network_.setDiagnosticsActive(false);
-                   drawerTab_ = DrawerTab::ClipboardHistory;
-                   focusedField_ = FocusedField::ClipboardSearch;
-               }, fmtSmall_);
-
-    drawButton("drawer_tab_sync", tabSync, "Sync",
-               onSync ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
-               onSync ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
-               onSync ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
-               8.0f, [this]() {
-                   if (drawerTab_ == DrawerTab::Diagnostics) network_.setDiagnosticsActive(false);
-                   drawerTab_ = DrawerTab::Sync;
-               }, fmtSmall_);
-
     UiRect closeBtn = { rx - 28.0f, y + 1.0f, rx, y + 31.0f };
     drawButton("drawer_close", closeBtn, "", COL_SEC_BTN_BG, COL_DANGER, COL_TEXT_SECONDARY, 7.5f, [this]() {
         if (drawerTab_ == DrawerTab::Diagnostics) {
@@ -3979,6 +4054,112 @@ void CppDeskWindow::drawFileTransferDrawer(const UiRect& bounds, float slideProg
     float closeHover = std::clamp(widgetAnims_["drawer_close"].hoverT, 0.0f, 1.0f);
     drawIconClose(closeBtn.centerX(), closeBtn.centerY(), 4.2f,
                   lerpColor(COL_TEXT_SECONDARY, COL_TEXT_ON_ACCENT, closeHover), 1.6f);
+
+    uint32_t unread = network_.unreadChatCount();
+    std::string chatTabLbl = unread > 0 ? ("Chat (" + std::to_string(unread) + ")") : "Chat";
+
+    struct DrawerTabDef {
+        DrawerTab tab;
+        std::string id;
+        std::string label;
+        float width;
+        bool isActive;
+        std::function<void()> onClick;
+    };
+
+    std::vector<DrawerTabDef> drawerTabsList = {
+        { DrawerTab::FilesAndClip, "drawer_tab_files", "Files", 58.0f, (drawerTab_ == DrawerTab::FilesAndClip), [this]() {
+            if (drawerTab_ == DrawerTab::Diagnostics) network_.setDiagnosticsActive(false);
+            drawerTab_ = DrawerTab::FilesAndClip;
+        }},
+        { DrawerTab::LiveChat, "drawer_tab_chat", chatTabLbl, (unread > 0 ? 76.0f : 56.0f), (drawerTab_ == DrawerTab::LiveChat), [this]() {
+            if (drawerTab_ == DrawerTab::Diagnostics) network_.setDiagnosticsActive(false);
+            drawerTab_ = DrawerTab::LiveChat;
+            network_.markChatRead();
+        }},
+        { DrawerTab::RemoteTerminal, "drawer_tab_term", "Terminal", 74.0f, (drawerTab_ == DrawerTab::RemoteTerminal), [this]() {
+            if (drawerTab_ == DrawerTab::Diagnostics) network_.setDiagnosticsActive(false);
+            drawerTab_ = DrawerTab::RemoteTerminal;
+            focusedField_ = FocusedField::TerminalInput;
+        }},
+        { DrawerTab::Diagnostics, "drawer_tab_diag", "TaskMgr", 74.0f, (drawerTab_ == DrawerTab::Diagnostics), [this]() {
+            if (drawerTab_ != DrawerTab::Diagnostics) {
+                drawerTab_ = DrawerTab::Diagnostics;
+                network_.setDiagnosticsActive(true);
+            }
+        }},
+        { DrawerTab::ClipboardHistory, "drawer_tab_hist", "History", 70.0f, (drawerTab_ == DrawerTab::ClipboardHistory), [this]() {
+            if (drawerTab_ == DrawerTab::Diagnostics) network_.setDiagnosticsActive(false);
+            drawerTab_ = DrawerTab::ClipboardHistory;
+            focusedField_ = FocusedField::ClipboardSearch;
+        }},
+        { DrawerTab::Sync, "drawer_tab_sync", "Sync", 58.0f, (drawerTab_ == DrawerTab::Sync), [this]() {
+            if (drawerTab_ == DrawerTab::Diagnostics) network_.setDiagnosticsActive(false);
+            drawerTab_ = DrawerTab::Sync;
+        }}
+    };
+
+    UiRect tabsViewport = { x, y, closeBtn.left - 8.0f, y + 32.0f };
+    float totalTabsW = 0.0f;
+    for (size_t i = 0; i < drawerTabsList.size(); ++i) {
+        if (i > 0) totalTabsW += 5.0f;
+        totalTabsW += drawerTabsList[i].width;
+    }
+
+    drawerTabsMaxScroll_ = std::max(0.0f, totalTabsW - tabsViewport.width());
+    drawerTabsScrollOffset_ = std::clamp(drawerTabsScrollOffset_, 0.0f, drawerTabsMaxScroll_);
+
+    // Auto-scroll to ensure active tab is visible
+    float activeTabStart = 0.0f;
+    for (const auto& t : drawerTabsList) {
+        if (t.isActive) {
+            if (activeTabStart < drawerTabsScrollOffset_) {
+                drawerTabsScrollOffset_ = activeTabStart;
+            } else if (activeTabStart + t.width > drawerTabsScrollOffset_ + tabsViewport.width()) {
+                drawerTabsScrollOffset_ = activeTabStart + t.width - tabsViewport.width();
+            }
+            break;
+        }
+        activeTabStart += t.width + 5.0f;
+    }
+    drawerTabsScrollOffset_ = std::clamp(drawerTabsScrollOffset_, 0.0f, drawerTabsMaxScroll_);
+
+    if (drawerTabsMaxScroll_ > 2.0f) {
+        if (drawerTabsScrollOffset_ > 2.0f) {
+            UiRect lBtn = { tabsViewport.left, tabsViewport.top + 2.0f, tabsViewport.left + 18.0f, tabsViewport.bottom - 2.0f };
+            drawButton("drawer_tab_scroll_l", lBtn, "◀", COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 5.0f, [this]() {
+                drawerTabsScrollOffset_ = std::clamp(drawerTabsScrollOffset_ - 60.0f, 0.0f, drawerTabsMaxScroll_);
+            }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
+            tabsViewport.left += 22.0f;
+        }
+        if (drawerTabsScrollOffset_ < drawerTabsMaxScroll_ - 2.0f) {
+            UiRect rBtn = { tabsViewport.right - 18.0f, tabsViewport.top + 2.0f, tabsViewport.right, tabsViewport.bottom - 2.0f };
+            drawButton("drawer_tab_scroll_r", rBtn, "▶", COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 5.0f, [this]() {
+                drawerTabsScrollOffset_ = std::clamp(drawerTabsScrollOffset_ + 60.0f, 0.0f, drawerTabsMaxScroll_);
+            }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
+            tabsViewport.right -= 22.0f;
+        }
+    }
+
+    renderTarget_->PushAxisAlignedClip(
+        D2D1::RectF(tabsViewport.left, tabsViewport.top, tabsViewport.right, tabsViewport.bottom),
+        D2D1_ANTIALIAS_MODE_PER_PRIMITIVE
+    );
+
+    float curTabX = tabsViewport.left - drawerTabsScrollOffset_;
+    for (const auto& t : drawerTabsList) {
+        UiRect tRect = { curTabX, tabsViewport.top, curTabX + t.width, tabsViewport.bottom };
+        if (tRect.right > tabsViewport.left && tRect.left < tabsViewport.right) {
+            drawButton(t.id, tRect, t.label,
+                       t.isActive ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
+                       t.isActive ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
+                       t.isActive ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
+                       8.0f, t.onClick, fmtSmall_);
+        }
+        curTabX += t.width + 5.0f;
+    }
+
+    renderTarget_->PopAxisAlignedClip();
     y += 44.0f;
 
     if (drawerTab_ == DrawerTab::FilesAndClip) {
@@ -4332,7 +4513,7 @@ void CppDeskWindow::drawFileTransferDrawer(const UiRect& bounds, float slideProg
         y += 20.0f;
 
         UiRect tableBox = { x, y, rx, r.bottom - 16.0f };
-        fillRoundRect(tableBox, 11.0f, rgba(12, 16, 24, 0.95f));
+        fillRoundRect(tableBox, 11.0f, COL_BG_SUBTLE);
         strokeRoundRect(tableBox, 11.0f, COL_BORDER);
 
         if (diag.processes.empty()) {
@@ -4351,8 +4532,11 @@ void CppDeskWindow::drawFileTransferDrawer(const UiRect& bounds, float slideProg
                 const auto& proc = diag.processes[i];
                 UiRect rowRect = { tableBox.left + 8.0f, py, tableBox.right - 8.0f, py + rowH - 4.0f };
 
-                if ((i % 2) == 1) {
-                    fillRoundRect(rowRect, 6.0f, rgba(255, 255, 255, 0.03f));
+                bool isRowHovered = rowRect.contains(mouseX_, mouseY_);
+                if (isRowHovered) {
+                    fillRoundRect(rowRect, 6.0f, withAlpha(COL_PRIMARY_ACCENT, 0.10f));
+                } else if ((i % 2) == 1) {
+                    fillRoundRect(rowRect, 6.0f, withAlpha(COL_TEXT_PRIMARY, 0.035f));
                 }
 
                 // Process Name & PID
@@ -4373,11 +4557,11 @@ void CppDeskWindow::drawFileTransferDrawer(const UiRect& bounds, float slideProg
                 uint32_t targetPid = proc.pid;
                 std::string targetName = proc.name;
 
-                drawButton(kBtnId, killBtn, "End", COL_SEC_BTN_BG, COL_DANGER, COL_TEXT_SECONDARY, 5.0f,
+                drawButton(kBtnId, killBtn, "End", COL_SEC_BTN_BG, COL_DANGER, COL_TEXT_PRIMARY, 5.0f,
                            [this, targetPid, targetName]() {
                                network_.sendProcessKill(targetPid);
                                showToast("Terminating " + targetName + " (PID " + std::to_string(targetPid) + ")...");
-                           }, fmtSmall_, false, D2D1::ColorF(0, 0, 0, 0), COL_TEXT_ON_ACCENT);
+                           }, fmtSmall_, true, COL_BORDER, COL_TEXT_ON_ACCENT);
 
                 py += rowH;
             }
@@ -7140,6 +7324,13 @@ void CppDeskWindow::onMouseWheel(int delta) {
         float targetDrawerW = (drawerTab_ == DrawerTab::Sync) ? 440.0f : 395.0f;
         float drawerW = std::min(targetDrawerW, w * 0.48f);
         if (mouseX_ >= (w - drawerW - 14.0f)) {
+            // Horizontal scroll for drawer tabs header if mouse is at the top
+            if (mouseY_ >= 10.0f && mouseY_ <= 56.0f && drawerTabsMaxScroll_ > 0.5f) {
+                float step = (static_cast<float>(delta) / 120.0f) * 44.0f;
+                drawerTabsScrollOffset_ = std::clamp(drawerTabsScrollOffset_ - step, 0.0f, drawerTabsMaxScroll_);
+                InvalidateRect(hwnd_, nullptr, FALSE);
+                return;
+            }
             if (drawerTab_ == DrawerTab::LiveChat) {
                 chatScrollOffset_ += (delta > 0 ? 1 : -1);
                 if (chatScrollOffset_ < 0) chatScrollOffset_ = 0;
@@ -7161,6 +7352,17 @@ void CppDeskWindow::onMouseWheel(int delta) {
                 if (syncDiffScrollOffset_ < 0.0f) syncDiffScrollOffset_ = 0.0f;
                 InvalidateRect(hwnd_, nullptr, FALSE);
             }
+            return;
+        }
+    }
+
+    // Horizontal scroll for RemoteSession windowed HUD bar
+    if (activeTab_ == ActiveTab::RemoteSession && !isFullscreen_) {
+        float tabBarH = (sessionTabs_.tabCount() > 0) ? 36.0f : 0.0f;
+        if (mouseY_ >= tabBarH && mouseY_ <= tabBarH + 48.0f && sessionHudMaxScroll_ > 0.5f) {
+            float step = (static_cast<float>(delta) / 120.0f) * 80.0f;
+            sessionHudScrollOffset_ = std::clamp(sessionHudScrollOffset_ - step, 0.0f, sessionHudMaxScroll_);
+            InvalidateRect(hwnd_, nullptr, FALSE);
             return;
         }
     }

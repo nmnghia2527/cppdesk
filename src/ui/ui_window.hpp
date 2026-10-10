@@ -36,6 +36,17 @@ enum class ActiveTab : uint8_t {
     Settings      = 2
 };
 
+enum class SettingsSection : uint8_t {
+    Appearance      = 0,
+    DisplayQuality  = 1,
+    Permissions     = 2,
+    TwoFactorAuth   = 3,
+    NetworkRelay    = 4,
+    CurtainPrivacy  = 5,
+    SystemService   = 6,
+    About           = 7
+};
+
 enum class FocusedField : uint8_t {
     None            = 0,
     RemoteId        = 1,
@@ -387,7 +398,8 @@ private:
     // Remote Hardware Diagnostics & Process Telemetry UI state (Feature 1)
     float                   diagnosticsScrollOffset_ = 0.0f;
 
-    // Settings Tab vertical scroll & scrollbar state
+    // Settings Tab vertical scroll & section state
+    SettingsSection         settingsSection_ = SettingsSection::Appearance;
     float                   settingsScrollOffset_ = 0.0f;
     float                   settingsScrollTarget_ = 0.0f;
     float                   settingsScrollVel_ = 0.0f;
@@ -396,6 +408,12 @@ private:
     float                   settingsScrollbarGrabOffset_ = 0.0f;
     UiRect                  settingsScrollTrackRect_{};
     UiRect                  settingsScrollThumbRect_{};
+
+    // Horizontal HUD and Drawer Tabs scroll state
+    float                   sessionHudScrollOffset_ = 0.0f;
+    float                   sessionHudMaxScroll_ = 0.0f;
+    float                   drawerTabsScrollOffset_ = 0.0f;
+    float                   drawerTabsMaxScroll_ = 0.0f;
 
     // Direct Canvas Drag-and-Drop File Drop UI state (Feature 2)
     bool                    canvasDropEffectActive_ = false;
