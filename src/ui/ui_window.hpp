@@ -412,6 +412,7 @@ private:
     // Horizontal HUD and Drawer Tabs scroll state
     float                   sessionHudScrollOffset_ = 0.0f;
     float                   sessionHudMaxScroll_ = 0.0f;
+    UiRect                  sessionHudBarRect_{};
     float                   drawerTabsScrollOffset_ = 0.0f;
     float                   drawerTabsMaxScroll_ = 0.0f;
 
