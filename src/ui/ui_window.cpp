@@ -311,6 +311,22 @@ bool CppDeskWindow::create(HINSTANCE hInstance, int nCmdShow) {
         }
     });
 
+    network_.setOnVersionMismatchCallback([this](const std::string& hostVer, const std::string& viewerVer) {
+        peerMismatchHostVer_ = hostVer;
+        peerMismatchViewerVer_ = viewerVer;
+        showPeerMismatchModal_ = true;
+        showUpdateRequiredModal_ = true;
+        latestUpdateInfo_.latestVersion = hostVer;
+        triggerUpdateCheck(false);
+        if (hwnd_) {
+            InvalidateRect(hwnd_, nullptr, FALSE);
+        }
+    });
+
+    network_.setOnVersionUpgradeNoticeCallback([this](const VersionUpgradeNoticePayload& notice) {
+        showToast("Notice from Viewer: Upgrade to CppDesk v" + notice.senderVersion + " recommended.");
+    });
+
     ShowWindow(hwnd_, nCmdShow);
     UpdateWindow(hwnd_);
 
@@ -606,6 +622,20 @@ bool CppDeskWindow::stepAnimations(float dt) {
             settingsScrollOffset_ = std::clamp(settingsScrollOffset_, 0.0f, settingsMaxScroll_);
             active = true;
         }
+    }
+
+    // Horizontal HUD Smooth Scroll Spring
+    sessionHudScrollTarget_ = std::clamp(sessionHudScrollTarget_, 0.0f, sessionHudMaxScroll_);
+    if (stepSpring(sessionHudScrollOffset_, sessionHudScrollVel_, sessionHudScrollTarget_, 32.0f, 0.88f, dt, 0.15f)) {
+        sessionHudScrollOffset_ = std::clamp(sessionHudScrollOffset_, 0.0f, sessionHudMaxScroll_);
+        active = true;
+    }
+
+    // Drawer Tabs Header Smooth Scroll Spring
+    drawerTabsScrollTarget_ = std::clamp(drawerTabsScrollTarget_, 0.0f, drawerTabsMaxScroll_);
+    if (stepSpring(drawerTabsScrollOffset_, drawerTabsScrollVel_, drawerTabsScrollTarget_, 32.0f, 0.88f, dt, 0.15f)) {
+        drawerTabsScrollOffset_ = std::clamp(drawerTabsScrollOffset_, 0.0f, drawerTabsMaxScroll_);
+        active = true;
     }
 
     // Startup auto-update check timer (queries GitHub 2.0s after launch)
@@ -2597,35 +2627,36 @@ void CppDeskWindow::drawRemoteSessionView(const UiRect& bounds, float alpha) {
 
         fillRoundRect(containerRect, 8.0f, rgba(255, 255, 255, 0.03f));
         strokeRoundRect(containerRect, 8.0f, rgba(255, 255, 255, 0.07f), 1.0f);
+        sessionHudBarRect_ = containerRect;
 
         UiRect stripViewport = { containerRect.left + 4.0f, containerRect.top + 1.0f, containerRect.right - 4.0f, containerRect.bottom - 1.0f };
         bool canScroll = (totalHudButtonsW > stripViewport.width());
         sessionHudMaxScroll_ = std::max(0.0f, totalHudButtonsW - (stripViewport.width() - (canScroll ? 52.0f : 0.0f)));
-        sessionHudScrollOffset_ = std::clamp(sessionHudScrollOffset_, 0.0f, sessionHudMaxScroll_);
+        sessionHudScrollTarget_ = std::clamp(sessionHudScrollTarget_, 0.0f, sessionHudMaxScroll_);
 
         if (canScroll) {
             UiRect lBtn = { containerRect.left + 3.0f, containerRect.top + 2.0f, containerRect.left + 23.0f, containerRect.bottom - 2.0f };
-            bool hasLeft = sessionHudScrollOffset_ > 2.0f;
+            bool hasLeft = sessionHudScrollTarget_ > 2.0f;
             drawButton("sess_hud_scroll_left", lBtn, "<",
                        hasLeft ? COL_SEC_BTN_BG : rgba(255, 255, 255, 0.02f),
                        hasLeft ? COL_SEC_BTN_HV : rgba(255, 255, 255, 0.02f),
                        hasLeft ? COL_TEXT_PRIMARY : rgba(255, 255, 255, 0.25f),
                        6.0f, [this, hasLeft]() {
                            if (hasLeft) {
-                               sessionHudScrollOffset_ = std::clamp(sessionHudScrollOffset_ - 110.0f, 0.0f, sessionHudMaxScroll_);
+                               sessionHudScrollTarget_ = std::clamp(sessionHudScrollTarget_ - 110.0f, 0.0f, sessionHudMaxScroll_);
                                InvalidateRect(hwnd_, nullptr, FALSE);
                            }
                        }, fmtSmall_, true, COL_BORDER, hasLeft ? COL_TEXT_ACCENT : rgba(255, 255, 255, 0.25f));
 
             UiRect rBtn = { containerRect.right - 23.0f, containerRect.top + 2.0f, containerRect.right - 3.0f, containerRect.bottom - 2.0f };
-            bool hasRight = sessionHudScrollOffset_ < sessionHudMaxScroll_ - 2.0f;
+            bool hasRight = sessionHudScrollTarget_ < sessionHudMaxScroll_ - 2.0f;
             drawButton("sess_hud_scroll_right", rBtn, ">",
                        hasRight ? COL_SEC_BTN_BG : rgba(255, 255, 255, 0.02f),
                        hasRight ? COL_SEC_BTN_HV : rgba(255, 255, 255, 0.02f),
                        hasRight ? COL_TEXT_PRIMARY : rgba(255, 255, 255, 0.25f),
                        6.0f, [this, hasRight]() {
                            if (hasRight) {
-                               sessionHudScrollOffset_ = std::clamp(sessionHudScrollOffset_ + 110.0f, 0.0f, sessionHudMaxScroll_);
+                               sessionHudScrollTarget_ = std::clamp(sessionHudScrollTarget_ + 110.0f, 0.0f, sessionHudMaxScroll_);
                                InvalidateRect(hwnd_, nullptr, FALSE);
                            }
                        }, fmtSmall_, true, COL_BORDER, hasRight ? COL_TEXT_ACCENT : rgba(255, 255, 255, 0.25f));
@@ -4152,35 +4183,37 @@ void CppDeskWindow::drawFileTransferDrawer(const UiRect& bounds, float slideProg
     }
 
     drawerTabsMaxScroll_ = std::max(0.0f, totalTabsW - tabsViewport.width());
-    drawerTabsScrollOffset_ = std::clamp(drawerTabsScrollOffset_, 0.0f, drawerTabsMaxScroll_);
+    drawerTabsScrollTarget_ = std::clamp(drawerTabsScrollTarget_, 0.0f, drawerTabsMaxScroll_);
 
     // Auto-scroll to ensure active tab is visible
     float activeTabStart = 0.0f;
     for (const auto& t : drawerTabsList) {
         if (t.isActive) {
-            if (activeTabStart < drawerTabsScrollOffset_) {
-                drawerTabsScrollOffset_ = activeTabStart;
-            } else if (activeTabStart + t.width > drawerTabsScrollOffset_ + tabsViewport.width()) {
-                drawerTabsScrollOffset_ = activeTabStart + t.width - tabsViewport.width();
+            if (activeTabStart < drawerTabsScrollTarget_) {
+                drawerTabsScrollTarget_ = activeTabStart;
+            } else if (activeTabStart + t.width > drawerTabsScrollTarget_ + tabsViewport.width()) {
+                drawerTabsScrollTarget_ = activeTabStart + t.width - tabsViewport.width();
             }
             break;
         }
         activeTabStart += t.width + 5.0f;
     }
-    drawerTabsScrollOffset_ = std::clamp(drawerTabsScrollOffset_, 0.0f, drawerTabsMaxScroll_);
+    drawerTabsScrollTarget_ = std::clamp(drawerTabsScrollTarget_, 0.0f, drawerTabsMaxScroll_);
 
     if (drawerTabsMaxScroll_ > 2.0f) {
-        if (drawerTabsScrollOffset_ > 2.0f) {
+        if (drawerTabsScrollTarget_ > 2.0f) {
             UiRect lBtn = { tabsViewport.left, tabsViewport.top + 2.0f, tabsViewport.left + 18.0f, tabsViewport.bottom - 2.0f };
             drawButton("drawer_tab_scroll_l", lBtn, "◀", COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 5.0f, [this]() {
-                drawerTabsScrollOffset_ = std::clamp(drawerTabsScrollOffset_ - 60.0f, 0.0f, drawerTabsMaxScroll_);
+                drawerTabsScrollTarget_ = std::clamp(drawerTabsScrollTarget_ - 60.0f, 0.0f, drawerTabsMaxScroll_);
+                InvalidateRect(hwnd_, nullptr, FALSE);
             }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
             tabsViewport.left += 22.0f;
         }
-        if (drawerTabsScrollOffset_ < drawerTabsMaxScroll_ - 2.0f) {
+        if (drawerTabsScrollTarget_ < drawerTabsMaxScroll_ - 2.0f) {
             UiRect rBtn = { tabsViewport.right - 18.0f, tabsViewport.top + 2.0f, tabsViewport.right, tabsViewport.bottom - 2.0f };
             drawButton("drawer_tab_scroll_r", rBtn, "▶", COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 5.0f, [this]() {
-                drawerTabsScrollOffset_ = std::clamp(drawerTabsScrollOffset_ + 60.0f, 0.0f, drawerTabsMaxScroll_);
+                drawerTabsScrollTarget_ = std::clamp(drawerTabsScrollTarget_ + 60.0f, 0.0f, drawerTabsMaxScroll_);
+                InvalidateRect(hwnd_, nullptr, FALSE);
             }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
             tabsViewport.right -= 22.0f;
         }
@@ -5886,7 +5919,7 @@ void CppDeskWindow::drawUpdateRequiredModal(float width, float height, float mod
     fillRoundRect({ 0.0f, 0.0f, width, height }, 0.0f, rgba(28, 24, 20, 0.72f * alpha));
 
     float mw = 520.0f;
-    float mh = 330.0f;
+    float mh = isDownloadingUpdate_ ? 360.0f : 330.0f;
     UiRect modal = { (width - mw) * 0.5f, (height - mh) * 0.5f, (width + mw) * 0.5f, (height + mh) * 0.5f };
 
     float scale = 0.90f + 0.10f * modalProgress;
@@ -5902,48 +5935,173 @@ void CppDeskWindow::drawUpdateRequiredModal(float width, float height, float mod
     float mrx = modal.right - 32.0f;
     float my = modal.top + 28.0f;
 
-    // Warning Badge
-    UiRect badgeRect = { mx, my, mx + 160.0f, my + 24.0f };
-    fillRoundRect(badgeRect, 6.0f, rgba(235, 87, 87, 0.18f));
-    strokeRoundRect(badgeRect, 6.0f, rgba(235, 87, 87, 0.45f), 1.0f);
-    drawText("MANDATORY UPDATE", badgeRect, fmtSmall_, COL_DANGER, DWRITE_TEXT_ALIGNMENT_CENTER);
-    my += 34.0f;
+    // Warning Badge & Heading
+    if (showPeerMismatchModal_) {
+        UiRect badgeRect = { mx, my, mx + 160.0f, my + 24.0f };
+        fillRoundRect(badgeRect, 6.0f, rgba(217, 130, 43, 0.18f));
+        strokeRoundRect(badgeRect, 6.0f, rgba(217, 130, 43, 0.45f), 1.0f);
+        drawText("VERSION MISMATCH", badgeRect, fmtSmall_, COL_WARNING, DWRITE_TEXT_ALIGNMENT_CENTER);
+        my += 34.0f;
 
-    // Heading
-    drawText("Update Required to Continue", { mx, my, mrx, my + 30.0f }, fmtHeading_, COL_TEXT_PRIMARY);
-    my += 34.0f;
+        drawText("Host Version Upgrade Notice", { mx, my, mrx, my + 30.0f }, fmtHeading_, COL_TEXT_PRIMARY);
+        my += 34.0f;
 
-    // Version Information
-    std::string verText = "CppDesk v" + latestUpdateInfo_.latestVersion + " is now available (Current: v" + CPP_DESK_VERSION + ").";
-    drawText(verText, { mx, my, mrx, my + 20.0f }, fmtBodyBold_, COL_PRIMARY_ACCENT);
-    my += 28.0f;
+        std::string verText = "Host is running v" + peerMismatchHostVer_ + " (Local Viewer is v" + peerMismatchViewerVer_ + ").";
+        drawText(verText, { mx, my, mrx, my + 20.0f }, fmtBodyBold_, COL_PRIMARY_ACCENT);
+        my += 28.0f;
+    } else {
+        UiRect badgeRect = { mx, my, mx + 160.0f, my + 24.0f };
+        fillRoundRect(badgeRect, 6.0f, rgba(235, 87, 87, 0.18f));
+        strokeRoundRect(badgeRect, 6.0f, rgba(235, 87, 87, 0.45f), 1.0f);
+        drawText("MANDATORY UPDATE", badgeRect, fmtSmall_, COL_DANGER, DWRITE_TEXT_ALIGNMENT_CENTER);
+        my += 34.0f;
+
+        drawText("Update Required to Continue", { mx, my, mrx, my + 30.0f }, fmtHeading_, COL_TEXT_PRIMARY);
+        my += 34.0f;
+
+        std::string verText = "CppDesk v" + latestUpdateInfo_.latestVersion + " is now available (Current: v" + CPP_DESK_VERSION + ").";
+        drawText(verText, { mx, my, mrx, my + 20.0f }, fmtBodyBold_, COL_PRIMARY_ACCENT);
+        my += 28.0f;
+    }
 
     // Description text box
-    UiRect infoBox = { mx, my, mrx, my + 88.0f };
+    UiRect infoBox = { mx, my, mrx, my + (isDownloadingUpdate_ ? 60.0f : 88.0f) };
     fillRoundRect(infoBox, 10.0f, COL_BG_SUBTLE);
     strokeRoundRect(infoBox, 10.0f, COL_BORDER);
 
-    std::string descText = "To ensure end-to-end cryptographic security, protocol compatibility, and uninterrupted remote desktop connections, all clients must update to the latest release.\n\nRemote sessions are locked until CppDesk is updated.";
-    drawText(descText, { infoBox.left + 14.0f, infoBox.top + 10.0f, infoBox.right - 14.0f, infoBox.bottom - 10.0f },
+    std::string descText = showPeerMismatchModal_
+        ? "The remote host is running a newer version of CppDesk with updated protocol features.\n\nUpgrading to v" + peerMismatchHostVer_ + " is recommended for full feature compatibility."
+        : "To ensure end-to-end cryptographic security, protocol compatibility, and uninterrupted remote desktop connections, all clients must update to the latest release.\n\nRemote sessions are locked until CppDesk is updated.";
+    drawText(descText, { infoBox.left + 14.0f, infoBox.top + 8.0f, infoBox.right - 14.0f, infoBox.bottom - 8.0f },
              fmtSmall_, COL_TEXT_SECONDARY);
-    my = infoBox.bottom + 26.0f;
+    my = infoBox.bottom + 16.0f;
+
+    // Live Download Progress Bar and telemetry if downloading
+    if (isDownloadingUpdate_) {
+        UiRect progTrack = { mx, my, mrx, my + 10.0f };
+        fillRoundRect(progTrack, 5.0f, COL_STAGE_BG);
+        strokeRoundRect(progTrack, 5.0f, COL_BORDER, 1.0f);
+
+        float progFrac = std::clamp(updateDownloadProgress_, 0.0f, 1.0f);
+        if (progFrac > 0.005f) {
+            UiRect progFill = { progTrack.left, progTrack.top, progTrack.left + progTrack.width() * progFrac, progTrack.bottom };
+            fillRoundRect(progFill, 5.0f, COL_PRIMARY_ACCENT);
+        }
+        my += 16.0f;
+
+        char statBuf[160];
+        if (updateTotalBytes_ > 0) {
+            double mbDone = static_cast<double>(updateDownloadedBytes_) / (1024.0 * 1024.0);
+            double mbTot  = static_cast<double>(updateTotalBytes_) / (1024.0 * 1024.0);
+            double mbSpd  = updateSpeedBps_ / (1024.0 * 1024.0);
+            std::snprintf(statBuf, sizeof(statBuf), "%.1f / %.1f MB (%.2f MB/s)  •  %s",
+                          mbDone, mbTot, mbSpd, updateStatusMsg_.c_str());
+        } else {
+            std::snprintf(statBuf, sizeof(statBuf), "%s", updateStatusMsg_.c_str());
+        }
+        drawText(statBuf, { mx, my, mrx, my + 18.0f }, fmtSmall_, COL_TEXT_SECONDARY);
+        my += 26.0f;
+    } else {
+        my += 10.0f;
+    }
 
     // Action buttons
     float btnW = (mrx - mx - 14.0f) * 0.5f;
 
-    UiRect exitBtn = { mx, my, mx + btnW, my + 40.0f };
-    drawButton("update_modal_exit", exitBtn, "Exit CppDesk",
-               COL_SEC_BTN_BG, COL_DANGER, COL_TEXT_PRIMARY, 9.0f, [this]() {
-                   DestroyWindow(hwnd_);
-               }, fmtSmall_, true, COL_BORDER, COL_TEXT_ON_ACCENT);
+    UiRect leftBtn = { mx, my, mx + btnW, my + 40.0f };
+    if (showPeerMismatchModal_) {
+        drawButton("update_modal_dismiss", leftBtn, "Dismiss",
+                   COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 9.0f, [this]() {
+                       showUpdateRequiredModal_ = false;
+                       showPeerMismatchModal_ = false;
+                       InvalidateRect(hwnd_, nullptr, FALSE);
+                   }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
+    } else {
+        drawButton("update_modal_exit", leftBtn, "Exit CppDesk",
+                   COL_SEC_BTN_BG, COL_DANGER, COL_TEXT_PRIMARY, 9.0f, [this]() {
+                       DestroyWindow(hwnd_);
+                   }, fmtSmall_, true, COL_BORDER, COL_TEXT_ON_ACCENT);
+    }
 
-    UiRect dlBtn = { exitBtn.right + 14.0f, my, mrx, my + 40.0f };
-    drawButton("update_modal_download", dlBtn, "Download & Update Now",
-               COL_PRIMARY_ACCENT, COL_PRIMARY_ACCENT_HV, COL_TEXT_ON_ACCENT, 9.0f, [this]() {
-                   std::string targetUrl = latestUpdateInfo_.releaseUrl.empty()
-                       ? "https://github.com/nmnghia2527/cppdesk/releases/latest"
-                       : latestUpdateInfo_.releaseUrl;
-                   ShellExecuteA(nullptr, "open", targetUrl.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+    UiRect dlBtn = { leftBtn.right + 14.0f, my, mrx, my + 40.0f };
+    std::string dlBtnLabel = isDownloadingUpdate_
+        ? ("Downloading " + std::to_string(static_cast<int>(updateDownloadProgress_ * 100.0f)) + "%")
+        : "Download & Update Now";
+
+    drawButton("update_modal_download", dlBtn, dlBtnLabel,
+               isDownloadingUpdate_ ? COL_SEC_BTN_BG : COL_PRIMARY_ACCENT,
+               isDownloadingUpdate_ ? COL_SEC_BTN_BG : COL_PRIMARY_ACCENT_HV,
+               isDownloadingUpdate_ ? COL_TEXT_MUTED : COL_TEXT_ON_ACCENT,
+               9.0f, [this]() {
+                   if (isDownloadingUpdate_) return;
+
+                   std::string dlUrl = latestUpdateInfo_.directDownloadUrl;
+                   if (dlUrl.empty()) {
+                       std::string targetUrl = latestUpdateInfo_.releaseUrl.empty()
+                           ? "https://github.com/nmnghia2527/cppdesk/releases/latest"
+                           : latestUpdateInfo_.releaseUrl;
+                       ShellExecuteA(nullptr, "open", targetUrl.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+                       return;
+                   }
+
+                   isDownloadingUpdate_ = true;
+                   updateDownloadProgress_ = 0.0f;
+                   updateDownloadedBytes_ = 0;
+                   updateTotalBytes_ = latestUpdateInfo_.assetSizeBytes;
+                   updateSpeedBps_ = 0.0;
+                   updateStatusMsg_ = "Connecting to download server...";
+                   InvalidateRect(hwnd_, nullptr, FALSE);
+
+                   wchar_t tempDir[MAX_PATH]{};
+                   GetTempPathW(MAX_PATH, tempDir);
+                   std::wstring targetPath = std::wstring(tempDir) + L"CppDesk_update.exe";
+
+                   wchar_t currentExe[MAX_PATH]{};
+                   GetModuleFileNameW(nullptr, currentExe, MAX_PATH);
+                   std::wstring currExePath(currentExe);
+
+                   HWND h = hwnd_;
+                   AutoUpdater::downloadUpdateAssetAsync(
+                       dlUrl,
+                       targetPath,
+                       [this, h](uint64_t downloaded, uint64_t total, double speed) {
+                           updateDownloadedBytes_ = downloaded;
+                           updateTotalBytes_ = total;
+                           updateSpeedBps_ = speed;
+                           if (total > 0) {
+                               updateDownloadProgress_ = static_cast<float>(downloaded) / static_cast<float>(total);
+                           }
+                           if (h) InvalidateRect(h, nullptr, FALSE);
+                       },
+                       [this, h, targetPath, currExePath](bool success, const std::string& err) {
+                           if (!success) {
+                               isDownloadingUpdate_ = false;
+                               updateStatusMsg_ = "Download failed: " + err;
+                               showToast("Download failed: " + err, true);
+                               if (h) InvalidateRect(h, nullptr, FALSE);
+                               return;
+                           }
+
+                           updateStatusMsg_ = "Validating binary integrity...";
+                           if (!AutoUpdater::validatePeBinary(targetPath)) {
+                               isDownloadingUpdate_ = false;
+                               updateStatusMsg_ = "Validation error: Corrupt PE binary";
+                               showToast("Update package corrupted (PE verification failed)", true);
+                               if (h) InvalidateRect(h, nullptr, FALSE);
+                               return;
+                           }
+
+                           updateStatusMsg_ = "Restarting CppDesk...";
+                           if (AutoUpdater::launchSelfUpdate(targetPath, currExePath)) {
+                               PostQuitMessage(0);
+                           } else {
+                               isDownloadingUpdate_ = false;
+                               updateStatusMsg_ = "Failed to launch updater helper";
+                               showToast("Failed to launch updater process", true);
+                               if (h) InvalidateRect(h, nullptr, FALSE);
+                           }
+                       }
+                   );
                }, fmtSmall_);
 
     renderTarget_->SetTransform(D2D1::Matrix3x2F::Identity());
@@ -7371,8 +7529,8 @@ void CppDeskWindow::onMouseWheel(int delta) {
         if (mouseX_ >= (w - drawerW - 14.0f)) {
             // Horizontal scroll for drawer tabs header if mouse is at the top
             if (mouseY_ >= 10.0f && mouseY_ <= 56.0f && drawerTabsMaxScroll_ > 0.5f) {
-                float step = (static_cast<float>(delta) / 120.0f) * 44.0f;
-                drawerTabsScrollOffset_ = std::clamp(drawerTabsScrollOffset_ - step, 0.0f, drawerTabsMaxScroll_);
+                float step = (static_cast<float>(delta) / 120.0f) * 60.0f;
+                drawerTabsScrollTarget_ = std::clamp(drawerTabsScrollTarget_ - step, 0.0f, drawerTabsMaxScroll_);
                 InvalidateRect(hwnd_, nullptr, FALSE);
                 return;
             }
@@ -7407,7 +7565,7 @@ void CppDeskWindow::onMouseWheel(int delta) {
             mouseX_ >= sessionHudBarRect_.left && mouseX_ <= sessionHudBarRect_.right &&
             sessionHudMaxScroll_ > 0.5f) {
             float step = (static_cast<float>(delta) / 120.0f) * 90.0f;
-            sessionHudScrollOffset_ = std::clamp(sessionHudScrollOffset_ - step, 0.0f, sessionHudMaxScroll_);
+            sessionHudScrollTarget_ = std::clamp(sessionHudScrollTarget_ - step, 0.0f, sessionHudMaxScroll_);
             InvalidateRect(hwnd_, nullptr, FALSE);
             return;
         }

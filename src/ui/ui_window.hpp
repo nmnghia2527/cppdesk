@@ -409,12 +409,16 @@ private:
     UiRect                  settingsScrollTrackRect_{};
     UiRect                  settingsScrollThumbRect_{};
 
-    // Horizontal HUD and Drawer Tabs scroll state
+    // Horizontal HUD and Drawer Tabs smooth scroll state
     float                   sessionHudScrollOffset_ = 0.0f;
-    float                   sessionHudMaxScroll_ = 0.0f;
+    float                   sessionHudScrollTarget_ = 0.0f;
+    float                   sessionHudScrollVel_    = 0.0f;
+    float                   sessionHudMaxScroll_    = 0.0f;
     UiRect                  sessionHudBarRect_{};
     float                   drawerTabsScrollOffset_ = 0.0f;
-    float                   drawerTabsMaxScroll_ = 0.0f;
+    float                   drawerTabsScrollTarget_ = 0.0f;
+    float                   drawerTabsScrollVel_    = 0.0f;
+    float                   drawerTabsMaxScroll_    = 0.0f;
 
     // Direct Canvas Drag-and-Drop File Drop UI state (Feature 2)
     bool                    canvasDropEffectActive_ = false;
@@ -481,6 +485,17 @@ private:
     UpdateInfo              latestUpdateInfo_{};
     float                   startupUpdateCheckTimer_ = 2.0f;
     bool                    startupCheckTriggered_ = false;
+
+    // In-App Self-Updater Download State
+    bool                    isDownloadingUpdate_ = false;
+    float                   updateDownloadProgress_ = 0.0f;
+    uint64_t                updateDownloadedBytes_ = 0;
+    uint64_t                updateTotalBytes_ = 0;
+    double                  updateSpeedBps_ = 0.0;
+    std::string             updateStatusMsg_;
+    std::string             peerMismatchHostVer_;
+    std::string             peerMismatchViewerVer_;
+    bool                    showPeerMismatchModal_ = false;
 
     // Remote Reboot & Reconnect Modal (v3.2.0)
     bool                    showRebootConfirmModal_ = false;

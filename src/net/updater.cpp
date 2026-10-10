@@ -233,6 +233,7 @@ UpdateInfo AutoUpdater::queryLatestReleaseSync(
         info.releaseUrl = releaseUrl;
     }
     info.releaseNotes = extractJsonString(responseBody, "body");
+    info.directDownloadUrl = extractAssetDownloadUrl(responseBody, "CppDesk.exe", &info.assetSizeBytes);
 
     if (!info.latestVersion.empty()) {
         info.checkSucceeded = true;
@@ -257,6 +258,342 @@ void AutoUpdater::checkForUpdatesAsync(
             onComplete(info);
         }
     }).detach();
+}
+
+std::string AutoUpdater::extractAssetDownloadUrl(const std::string& json, const std::string& assetName, uint64_t* outSize) {
+    if (outSize) *outSize = 0;
+    if (json.empty() || assetName.empty()) return "";
+
+    size_t pos = 0;
+    while ((pos = json.find(assetName, pos)) != std::string::npos) {
+        size_t objStart = json.rfind('{', pos);
+        size_t objEnd = json.find('}', pos);
+        if (objStart != std::string::npos && objEnd != std::string::npos && objEnd > objStart) {
+            std::string assetObj = json.substr(objStart, objEnd - objStart + 1);
+            std::string dlUrl = extractJsonString(assetObj, "browser_download_url");
+            if (!dlUrl.empty()) {
+                if (outSize) {
+                    size_t sizeKey = assetObj.find("\"size\"");
+                    if (sizeKey != std::string::npos) {
+                        size_t col = assetObj.find(':', sizeKey);
+                        if (col != std::string::npos) {
+                            size_t dStart = col + 1;
+                            while (dStart < assetObj.size() && (assetObj[dStart] == ' ' || assetObj[dStart] == '\t')) dStart++;
+                            size_t dEnd = dStart;
+                            while (dEnd < assetObj.size() && std::isdigit(static_cast<unsigned char>(assetObj[dEnd]))) dEnd++;
+                            if (dEnd > dStart) {
+                                try {
+                                    *outSize = std::stoull(assetObj.substr(dStart, dEnd - dStart));
+                                } catch (...) {
+                                    *outSize = 0;
+                                }
+                            }
+                        }
+                    }
+                }
+                return dlUrl;
+            }
+        }
+        pos += assetName.size();
+    }
+    return "";
+}
+
+void AutoUpdater::downloadUpdateAssetAsync(
+    const std::string& downloadUrl,
+    const std::wstring& targetPath,
+    UpdateProgressCallback onProgress,
+    std::function<void(bool success, const std::string& error)> onComplete)
+{
+    std::thread([downloadUrl, targetPath, onProgress, onComplete]() {
+        if (downloadUrl.empty() || targetPath.empty()) {
+            if (onComplete) onComplete(false, "Invalid URL or target path");
+            return;
+        }
+
+        std::wstring wUrl = toWide(downloadUrl);
+        URL_COMPONENTSW urlComp{};
+        urlComp.dwStructSize = sizeof(urlComp);
+        urlComp.dwHostNameLength = static_cast<DWORD>(-1);
+        urlComp.dwUrlPathLength = static_cast<DWORD>(-1);
+        urlComp.dwExtraInfoLength = static_cast<DWORD>(-1);
+
+        if (!WinHttpCrackUrl(wUrl.c_str(), static_cast<DWORD>(wUrl.size()), 0, &urlComp)) {
+            if (onComplete) onComplete(false, "Failed to parse download URL");
+            return;
+        }
+
+        std::wstring host(urlComp.lpszHostName, urlComp.dwHostNameLength);
+        std::wstring path(urlComp.lpszUrlPath, urlComp.dwUrlPathLength + urlComp.dwExtraInfoLength);
+
+        HINTERNET hSession = WinHttpOpen(
+            L"CppDesk-Updater/3.0",
+            WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+            WINHTTP_NO_PROXY_NAME,
+            WINHTTP_NO_PROXY_BYPASS,
+            0
+        );
+
+        if (!hSession) {
+            if (onComplete) onComplete(false, "Failed to initialize WinHTTP session");
+            return;
+        }
+
+        HINTERNET hConnect = WinHttpConnect(
+            hSession,
+            host.c_str(),
+            urlComp.nPort,
+            0
+        );
+
+        if (!hConnect) {
+            WinHttpCloseHandle(hSession);
+            if (onComplete) onComplete(false, "Failed to connect to host: " + downloadUrl);
+            return;
+        }
+
+        DWORD reqFlags = (urlComp.nScheme == INTERNET_SCHEME_HTTPS) ? WINHTTP_FLAG_SECURE : 0;
+        HINTERNET hRequest = WinHttpOpenRequest(
+            hConnect,
+            L"GET",
+            path.c_str(),
+            nullptr,
+            WINHTTP_NO_REFERER,
+            WINHTTP_DEFAULT_ACCEPT_TYPES,
+            reqFlags
+        );
+
+        if (!hRequest) {
+            WinHttpCloseHandle(hConnect);
+            WinHttpCloseHandle(hSession);
+            if (onComplete) onComplete(false, "Failed to create WinHTTP request");
+            return;
+        }
+
+        // Configure WinHTTP to automatically follow HTTP 302 redirects
+        DWORD redirectPolicy = WINHTTP_OPTION_REDIRECT_POLICY_ALWAYS;
+        WinHttpSetOption(hRequest, WINHTTP_OPTION_REDIRECT_POLICY, &redirectPolicy, sizeof(redirectPolicy));
+
+        LPCWSTR reqHeaders = L"User-Agent: CppDesk-Updater\r\nAccept: application/octet-stream\r\n";
+        BOOL bSend = WinHttpSendRequest(
+            hRequest,
+            reqHeaders,
+            -1L,
+            WINHTTP_NO_REQUEST_DATA,
+            0,
+            0,
+            0
+        );
+
+        if (!bSend || !WinHttpReceiveResponse(hRequest, nullptr)) {
+            WinHttpCloseHandle(hRequest);
+            WinHttpCloseHandle(hConnect);
+            WinHttpCloseHandle(hSession);
+            if (onComplete) onComplete(false, "Failed to receive HTTP response header");
+            return;
+        }
+
+        DWORD statusCode = 0;
+        DWORD scSize = sizeof(statusCode);
+        WinHttpQueryHeaders(hRequest, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+                            WINHTTP_HEADER_NAME_BY_INDEX, &statusCode, &scSize, WINHTTP_NO_HEADER_INDEX);
+
+        if (statusCode != 200) {
+            WinHttpCloseHandle(hRequest);
+            WinHttpCloseHandle(hConnect);
+            WinHttpCloseHandle(hSession);
+            if (onComplete) onComplete(false, "Server returned HTTP " + std::to_string(statusCode));
+            return;
+        }
+
+        uint64_t totalBytes = 0;
+        wchar_t clBuf[64] = {};
+        DWORD clBufSize = sizeof(clBuf);
+        if (WinHttpQueryHeaders(hRequest, WINHTTP_QUERY_CONTENT_LENGTH, WINHTTP_HEADER_NAME_BY_INDEX, clBuf, &clBufSize, WINHTTP_NO_HEADER_INDEX)) {
+            try {
+                totalBytes = std::stoull(clBuf);
+            } catch (...) {
+                totalBytes = 0;
+            }
+        }
+
+        HANDLE hFile = CreateFileW(
+            targetPath.c_str(),
+            GENERIC_WRITE,
+            0,
+            nullptr,
+            CREATE_ALWAYS,
+            FILE_ATTRIBUTE_NORMAL,
+            nullptr
+        );
+
+        if (hFile == INVALID_HANDLE_VALUE) {
+            WinHttpCloseHandle(hRequest);
+            WinHttpCloseHandle(hConnect);
+            WinHttpCloseHandle(hSession);
+            if (onComplete) onComplete(false, "Failed to create target file on disk");
+            return;
+        }
+
+        uint64_t downloadedBytes = 0;
+        auto startTime = std::chrono::steady_clock::now();
+        auto lastSpeedTime = startTime;
+        uint64_t lastSpeedBytes = 0;
+        double currentSpeedBps = 0.0;
+
+        constexpr DWORD BUF_SIZE = 64 * 1024;
+        std::vector<uint8_t> buffer(BUF_SIZE);
+        bool readSuccess = true;
+
+        while (true) {
+            DWORD bytesAvailable = 0;
+            if (!WinHttpQueryDataAvailable(hRequest, &bytesAvailable)) {
+                readSuccess = false;
+                break;
+            }
+            if (bytesAvailable == 0) {
+                break; // EOF
+            }
+
+            DWORD toRead = std::min<DWORD>(bytesAvailable, BUF_SIZE);
+            DWORD bytesRead = 0;
+            if (!WinHttpReadData(hRequest, buffer.data(), toRead, &bytesRead) || bytesRead == 0) {
+                readSuccess = (bytesRead == 0);
+                break;
+            }
+
+            DWORD written = 0;
+            if (!WriteFile(hFile, buffer.data(), bytesRead, &written, nullptr) || written != bytesRead) {
+                readSuccess = false;
+                break;
+            }
+
+            downloadedBytes += bytesRead;
+
+            auto now = std::chrono::steady_clock::now();
+            double elapsedSinceSpeed = std::chrono::duration<double>(now - lastSpeedTime).count();
+            if (elapsedSinceSpeed >= 0.25) {
+                currentSpeedBps = static_cast<double>(downloadedBytes - lastSpeedBytes) / elapsedSinceSpeed;
+                lastSpeedTime = now;
+                lastSpeedBytes = downloadedBytes;
+            }
+
+            if (onProgress) {
+                onProgress(downloadedBytes, totalBytes, currentSpeedBps);
+            }
+        }
+
+        CloseHandle(hFile);
+        WinHttpCloseHandle(hRequest);
+        WinHttpCloseHandle(hConnect);
+        WinHttpCloseHandle(hSession);
+
+        if (!readSuccess || (totalBytes > 0 && downloadedBytes < totalBytes)) {
+            DeleteFileW(targetPath.c_str());
+            if (onComplete) onComplete(false, "Download stream truncated or failed");
+            return;
+        }
+
+        if (onProgress) {
+            onProgress(downloadedBytes, totalBytes, currentSpeedBps);
+        }
+
+        if (onComplete) {
+            onComplete(true, "");
+        }
+    }).detach();
+}
+
+bool AutoUpdater::validatePeBinary(const std::wstring& filePath) {
+    if (filePath.empty()) return false;
+
+    HANDLE hFile = CreateFileW(
+        filePath.c_str(),
+        GENERIC_READ,
+        FILE_SHARE_READ,
+        nullptr,
+        OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL,
+        nullptr
+    );
+
+    if (hFile == INVALID_HANDLE_VALUE) return false;
+
+    LARGE_INTEGER liSize{};
+    if (!GetFileSizeEx(hFile, &liSize) || liSize.QuadPart < static_cast<LONGLONG>(sizeof(IMAGE_DOS_HEADER) + sizeof(DWORD))) {
+        CloseHandle(hFile);
+        return false;
+    }
+
+    IMAGE_DOS_HEADER dos{};
+    DWORD bytesRead = 0;
+    if (!ReadFile(hFile, &dos, sizeof(dos), &bytesRead, nullptr) || bytesRead != sizeof(dos)) {
+        CloseHandle(hFile);
+        return false;
+    }
+
+    if (dos.e_magic != IMAGE_DOS_SIGNATURE) {
+        CloseHandle(hFile);
+        return false;
+    }
+
+    if (dos.e_lfanew <= 0 || static_cast<uint64_t>(dos.e_lfanew) + sizeof(DWORD) > static_cast<uint64_t>(liSize.QuadPart)) {
+        CloseHandle(hFile);
+        return false;
+    }
+
+    LARGE_INTEGER liSeek{};
+    liSeek.QuadPart = dos.e_lfanew;
+    if (!SetFilePointerEx(hFile, liSeek, nullptr, FILE_BEGIN)) {
+        CloseHandle(hFile);
+        return false;
+    }
+
+    DWORD ntSig = 0;
+    if (!ReadFile(hFile, &ntSig, sizeof(ntSig), &bytesRead, nullptr) || bytesRead != sizeof(ntSig)) {
+        CloseHandle(hFile);
+        return false;
+    }
+
+    CloseHandle(hFile);
+    return (ntSig == IMAGE_NT_SIGNATURE);
+}
+
+std::wstring AutoUpdater::buildSelfUpdateCommand(const std::wstring& newExePath, const std::wstring& currentExePath) {
+    std::wstring cmd = L"cmd.exe /c \"timeout /t 1 /nobreak >nul & move /y \"" + newExePath + L"\" \"" + currentExePath + L"\" & start \"\" \"" + currentExePath + L"\"\"";
+    return cmd;
+}
+
+bool AutoUpdater::launchSelfUpdate(const std::wstring& newExePath, const std::wstring& currentExePath) {
+    std::wstring cmd = buildSelfUpdateCommand(newExePath, currentExePath);
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
+    si.dwFlags = STARTF_USESHOWWINDOW;
+    si.wShowWindow = SW_HIDE;
+
+    PROCESS_INFORMATION pi{};
+    std::vector<wchar_t> cmdBuf(cmd.begin(), cmd.end());
+    cmdBuf.push_back(L'\0');
+
+    BOOL res = CreateProcessW(
+        nullptr,
+        cmdBuf.data(),
+        nullptr,
+        nullptr,
+        FALSE,
+        CREATE_NO_WINDOW | DETACHED_PROCESS,
+        nullptr,
+        nullptr,
+        &si,
+        &pi
+    );
+
+    if (res) {
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+        return true;
+    }
+    return false;
 }
 
 } // namespace cppdesk

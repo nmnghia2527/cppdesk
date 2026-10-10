@@ -5225,6 +5225,233 @@ void testRemoteFileSyncAndFolderMirroring() {
     TEST_ASSERT(!std::filesystem::exists(testRoot));
 }
 
+void testPeerVersionHandshakeAndSelfUpdater() {
+    std::cout << "[Test 48] Peer Version Handshake, AutoUpdater and Smooth Horizontal Scrolling..." << std::endl;
+
+    // Part 1: SemanticVersion Numeric Parsing, Formatting, and Comparison Triad
+    {
+        SemanticVersion v1 = SemanticVersion::parse("3.4.0");
+        TEST_ASSERT(v1.major == 3 && v1.minor == 4 && v1.patch == 0);
+        TEST_ASSERT(v1.toString() == "3.4.0");
+
+        SemanticVersion v2 = SemanticVersion::parse("v3.4.1");
+        TEST_ASSERT(v2.major == 3 && v2.minor == 4 && v2.patch == 1);
+
+        SemanticVersion v3 = SemanticVersion::parse("V3.5.0-preview.2");
+        TEST_ASSERT(v3.major == 3 && v3.minor == 5 && v3.patch == 0);
+
+        SemanticVersion vInvalid = SemanticVersion::parse("");
+        TEST_ASSERT(vInvalid.major == 0 && vInvalid.minor == 0 && vInvalid.patch == 0);
+        SemanticVersion vInvalid2 = SemanticVersion::parse("invalid.ver");
+        TEST_ASSERT(vInvalid2.major == 0 && vInvalid2.minor == 0 && vInvalid2.patch == 0);
+
+        // Three-way comparisons
+        TEST_ASSERT(v1 < v2);
+        TEST_ASSERT(v2 < v3);
+        TEST_ASSERT(v1 < v3);
+        TEST_ASSERT(v3 > v2);
+        TEST_ASSERT(v2 > v1);
+        TEST_ASSERT(v1 == (SemanticVersion{ 3, 4, 0 }));
+        TEST_ASSERT((SemanticVersion{ 4, 0, 0 }) > (SemanticVersion{ 3, 9, 9 }));
+        TEST_ASSERT((SemanticVersion{ 3, 5, 1 }) > (SemanticVersion{ 3, 5, 0 }));
+    }
+
+    // Part 2: VersionUpgradeNoticePayload Wire Serialization / Deserialization Round-Trip
+    {
+        VersionUpgradeNoticePayload notice;
+        notice.senderVersion = "3.4.0";
+        notice.minimumVersion = "3.3.0";
+        notice.downloadUrl = "https://github.com/nmnghia2527/cppdesk/releases/tag/v3.4.0";
+        notice.message = "Feature update: peer handshake support.";
+
+        std::vector<uint8_t> buf;
+        serializeVersionUpgradeNotice(notice, buf);
+        TEST_ASSERT(!buf.empty());
+
+        VersionUpgradeNoticePayload decoded;
+        TEST_ASSERT(deserializeVersionUpgradeNotice(buf.data(), buf.size(), decoded));
+        TEST_ASSERT(decoded.senderVersion == notice.senderVersion);
+        TEST_ASSERT(decoded.minimumVersion == notice.minimumVersion);
+        TEST_ASSERT(decoded.downloadUrl == notice.downloadUrl);
+        TEST_ASSERT(decoded.message == notice.message);
+
+        // Truncation / Underflow safety guard
+        TEST_ASSERT(!deserializeVersionUpgradeNotice(buf.data(), 4, decoded));
+        TEST_ASSERT(!deserializeVersionUpgradeNotice(buf.data(), 0, decoded));
+    }
+
+    // Part 3: Handshake Trailing Version Parsing Backward Compatibility Simulation
+    {
+        // Simulate legacy HELLO packet without trailing version string
+        std::vector<uint8_t> legacyHello;
+        ByteWriter legacyW(legacyHello);
+        legacyW.writeU8(static_cast<uint8_t>(PacketType::HELLO));
+        legacyW.writeU64(123456789ULL); // deskId
+        legacyW.writeString("LegacyViewer");
+
+        ByteReader legacyReader(legacyHello.data() + 1, legacyHello.size() - 1);
+        uint64_t dId = legacyReader.readU64();
+        std::string hostName = legacyReader.readString();
+        std::string viewerVer = "unknown";
+        if (legacyReader.hasRemaining(2)) {
+            viewerVer = legacyReader.readString();
+        }
+        TEST_ASSERT(dId == 123456789ULL);
+        TEST_ASSERT(hostName == "LegacyViewer");
+        TEST_ASSERT(viewerVer == "unknown"); // Legacy client gracefully handled
+
+        // Simulate modern HELLO packet with trailing version string
+        std::vector<uint8_t> modernHello;
+        ByteWriter modernW(modernHello);
+        modernW.writeU8(static_cast<uint8_t>(PacketType::HELLO));
+        modernW.writeU64(987654321ULL);
+        modernW.writeString("ModernViewer");
+        modernW.writeString("3.4.0");
+
+        ByteReader modernReader(modernHello.data() + 1, modernHello.size() - 1);
+        uint64_t mId = modernReader.readU64();
+        std::string mHost = modernReader.readString();
+        std::string mVer = "unknown";
+        if (modernReader.hasRemaining(2)) {
+            mVer = modernReader.readString();
+        }
+        TEST_ASSERT(mId == 987654321ULL);
+        TEST_ASSERT(mHost == "ModernViewer");
+        TEST_ASSERT(mVer == "3.4.0");
+    }
+
+    // Part 4: AutoUpdater JSON Extraction for Asset Download URL and Size
+    {
+        std::string mockReleaseJson = R"({
+            "tag_name": "v3.4.0",
+            "html_url": "https://github.com/nmnghia2527/cppdesk/releases/tag/v3.4.0",
+            "assets": [
+                {
+                    "name": "CppDesk.zip",
+                    "size": 5242880,
+                    "browser_download_url": "https://github.com/nmnghia2527/cppdesk/releases/download/v3.4.0/CppDesk.zip"
+                },
+                {
+                    "name": "CppDesk.exe",
+                    "size": 6606028,
+                    "browser_download_url": "https://github.com/nmnghia2527/cppdesk/releases/download/v3.4.0/CppDesk.exe"
+                }
+            ]
+        })";
+
+        uint64_t assetSize = 0;
+        std::string assetUrl = AutoUpdater::extractAssetDownloadUrl(mockReleaseJson, "CppDesk.exe", &assetSize);
+        TEST_ASSERT(assetUrl == "https://github.com/nmnghia2527/cppdesk/releases/download/v3.4.0/CppDesk.exe");
+        TEST_ASSERT(assetSize == 6606028);
+
+        // Non-existent asset
+        uint64_t missingSize = 0;
+        std::string missingUrl = AutoUpdater::extractAssetDownloadUrl(mockReleaseJson, "NonExistent.tar.gz", &missingSize);
+        TEST_ASSERT(missingUrl.empty());
+        TEST_ASSERT(missingSize == 0);
+    }
+
+    // Part 5: PE Binary Integrity Validation & Self-Update Command Construction
+    {
+        // 5a. Validate valid PE binary mockup
+        wchar_t tempPath[MAX_PATH]{};
+        GetTempPathW(MAX_PATH, tempPath);
+        std::wstring testExePath = std::wstring(tempPath) + L"test_mock_pe.exe";
+
+        // Create mock valid PE file
+        {
+            std::ofstream out(testExePath.c_str(), std::ios::binary);
+            IMAGE_DOS_HEADER dosHdr{};
+            dosHdr.e_magic = IMAGE_DOS_SIGNATURE; // 'MZ'
+            dosHdr.e_lfanew = sizeof(IMAGE_DOS_HEADER) + 16; // offset to PE signature
+            out.write(reinterpret_cast<const char*>(&dosHdr), sizeof(dosHdr));
+
+            // Padding up to e_lfanew
+            char pad[16] = {};
+            out.write(pad, sizeof(pad));
+
+            // NT Signature: "PE\0\0"
+            DWORD ntSig = IMAGE_NT_SIGNATURE;
+            out.write(reinterpret_cast<const char*>(&ntSig), sizeof(ntSig));
+
+            // Additional payload bytes
+            char payload[128] = {};
+            out.write(payload, sizeof(payload));
+        }
+
+        TEST_ASSERT(AutoUpdater::validatePeBinary(testExePath));
+
+        // 5b. Corrupt the PE signature
+        {
+            std::fstream corruptFile(testExePath.c_str(), std::ios::in | std::ios::out | std::ios::binary);
+            corruptFile.seekp(sizeof(IMAGE_DOS_HEADER) + 16);
+            DWORD badSig = 0xDEADBEEF;
+            corruptFile.write(reinterpret_cast<const char*>(&badSig), sizeof(badSig));
+        }
+        TEST_ASSERT(!AutoUpdater::validatePeBinary(testExePath));
+
+        // Clean up mock file
+        DeleteFileW(testExePath.c_str());
+
+        // 5c. Test buildSelfUpdateCommand formatting
+        std::wstring newExe = L"C:\\Temp\\CppDesk_new.exe";
+        std::wstring curExe = L"C:\\Program Files\\CppDesk\\CppDesk.exe";
+        std::wstring cmd = AutoUpdater::buildSelfUpdateCommand(newExe, curExe);
+        TEST_ASSERT(cmd.find(L"cmd.exe /c") != std::wstring::npos);
+        TEST_ASSERT(cmd.find(L"timeout /t 1 /nobreak") != std::wstring::npos);
+        TEST_ASSERT(cmd.find(L"move /y") != std::wstring::npos);
+        TEST_ASSERT(cmd.find(L"start \"\"") != std::wstring::npos);
+        TEST_ASSERT(cmd.find(newExe) != std::wstring::npos);
+        TEST_ASSERT(cmd.find(curExe) != std::wstring::npos);
+    }
+
+    // Part 6: Smooth Horizontal Scroll Spring Simulation
+    {
+        auto testSpring = [](float& pos, float& vel, float target, float omega, float zeta, float dt, float eps = 0.0012f) -> bool {
+            float diff = pos - target;
+            if (std::fabs(diff) <= eps && std::fabs(vel) <= eps * 8.0f) {
+                if (pos != target || vel != 0.0f) {
+                    pos = target;
+                    vel = 0.0f;
+                    return true;
+                }
+                return false;
+            }
+            int steps = (dt > 0.008f) ? static_cast<int>(std::ceil(dt / 0.008f)) : 1;
+            steps = std::clamp(steps, 1, 6);
+            float subDt = dt / static_cast<float>(steps);
+            for (int i = 0; i < steps; ++i) {
+                float disp = pos - target;
+                float accel = (-omega * omega * disp) - (2.0f * zeta * omega * vel);
+                vel += accel * subDt;
+                pos += vel * subDt;
+            }
+            if (std::fabs(pos - target) <= eps && std::fabs(vel) <= eps * 8.0f) {
+                pos = target;
+                vel = 0.0f;
+            }
+            return true;
+        };
+
+        float pos = 0.0f;
+        float vel = 0.0f;
+        float target = 220.0f;
+        float dt = 0.016f; // 60 FPS
+        int frameCount = 0;
+
+        while (frameCount < 120) {
+            bool inMotion = testSpring(pos, vel, target, 32.0f, 0.88f, dt, 0.15f);
+            frameCount++;
+            if (!inMotion) break;
+        }
+
+        // Must converge to target smoothly within 60 frames (~1 sec)
+        TEST_ASSERT(frameCount > 5 && frameCount < 60);
+        TEST_ASSERT(std::fabs(pos - target) < 0.001f);
+        TEST_ASSERT(vel == 0.0f);
+    }
+}
+
 } // namespace
 
 int main() {
@@ -5282,6 +5509,7 @@ int main() {
         testSessionRecordingPlayerAndTranscoder(); std::cout << "Test 45 done\n" << std::flush;
         testTwoFactorAuthTotpAndQrMatrix(); std::cout << "Test 46 done\n" << std::flush;
         testRemoteFileSyncAndFolderMirroring(); std::cout << "Test 47 done\n" << std::flush;
+        testPeerVersionHandshakeAndSelfUpdater(); std::cout << "Test 48 done\n" << std::flush;
 
         std::cout << "---------------------------------------------------------\n";
         std::cout << "Assertions Passed: " << g_passed << " | Failed: " << g_failed << "\n";

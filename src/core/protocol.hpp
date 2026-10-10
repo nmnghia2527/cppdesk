@@ -7,6 +7,9 @@
 #include <stdexcept>
 #include <algorithm>
 #include <array>
+#include <sstream>
+#include <cctype>
+#include <compare>
 
 namespace cppdesk {
 
@@ -15,6 +18,49 @@ constexpr uint32_t RELAY_MAGIC      = 0x4344534B; // "CDSK" (CppDesk relay magic
 constexpr uint16_t PROTOCOL_VERSION = 3;
 constexpr const char* CPP_DESK_VERSION = "3.3.1";
 constexpr uint32_t CPP_DESK_VERSION_NUM = 0x030301;
+
+struct SemanticVersion {
+    int major = 0;
+    int minor = 0;
+    int patch = 0;
+
+    static SemanticVersion parse(const std::string& verStr) {
+        SemanticVersion v;
+        std::string s = verStr;
+        size_t start = 0;
+        while (start < s.size() && (std::isspace(static_cast<unsigned char>(s[start])) || s[start] == 'v' || s[start] == 'V')) {
+            start++;
+        }
+        s = s.substr(start);
+        if (s.empty()) return v;
+
+        std::stringstream ss(s);
+        std::string seg;
+        std::vector<int> parts;
+        while (std::getline(ss, seg, '.')) {
+            try {
+                size_t endDigit = 0;
+                while (endDigit < seg.size() && std::isdigit(static_cast<unsigned char>(seg[endDigit]))) {
+                    endDigit++;
+                }
+                parts.push_back(endDigit > 0 ? std::stoi(seg.substr(0, endDigit)) : 0);
+            } catch (...) {
+                parts.push_back(0);
+            }
+        }
+        while (parts.size() < 3) parts.push_back(0);
+        v.major = parts[0];
+        v.minor = parts[1];
+        v.patch = parts[2];
+        return v;
+    }
+
+    std::string toString() const {
+        return std::to_string(major) + "." + std::to_string(minor) + "." + std::to_string(patch);
+    }
+
+    auto operator<=>(const SemanticVersion&) const = default;
+};
 
 constexpr uint16_t DEFAULT_HOST_PORT      = 50990;
 constexpr uint16_t DEFAULT_DISCOVERY_PORT = 50998;
@@ -96,6 +142,9 @@ enum class PacketType : uint8_t {
     SYNC_STATUS_UPDATE      = 0x45, // Bidirectional: Sync progress and state telemetry
     SYNC_ACTION_REQ         = 0x46, // Requester -> Responder: CreateDir, DeleteFile, DeleteDir, Abort
     SYNC_ACTION_RESP        = 0x47, // Responder -> Requester: Action result acknowledgment
+
+    // Peer Version Handshake & Upgrade Notice
+    VERSION_UPGRADE_NOTICE  = 0x48, // Bidirectional: Notify peer that an upgrade is recommended
 
     // Relay & Rendezvous Protocol
     RELAY_REGISTER      = 0x50,
@@ -1377,6 +1426,36 @@ inline bool deserializeSyncActionResp(const uint8_t* data, size_t size, SyncActi
         out.actionId = r.readU32();
         out.actionType = r.readU8();
         out.statusCode = r.readU8();
+        out.message = r.readString();
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+struct VersionUpgradeNoticePayload {
+    std::string senderVersion;      // Version of connecting peer (e.g. "3.4.0")
+    std::string minimumVersion;     // Recommended minimum version (e.g. "3.3.1")
+    std::string downloadUrl;        // Release or asset download URL
+    std::string message;            // Human-readable upgrade notice
+};
+
+inline void serializeVersionUpgradeNotice(const VersionUpgradeNoticePayload& p, std::vector<uint8_t>& out) {
+    ByteWriter w;
+    w.writeString(p.senderVersion);
+    w.writeString(p.minimumVersion);
+    w.writeString(p.downloadUrl);
+    w.writeString(p.message);
+    out = w.takeBuffer();
+}
+
+inline bool deserializeVersionUpgradeNotice(const uint8_t* data, size_t size, VersionUpgradeNoticePayload& out) {
+    if (!data || size < 8) return false;
+    try {
+        ByteReader r(data, size);
+        out.senderVersion = r.readString();
+        out.minimumVersion = r.readString();
+        out.downloadUrl = r.readString();
         out.message = r.readString();
         return true;
     } catch (...) {

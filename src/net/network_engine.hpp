@@ -52,6 +52,7 @@ struct HostSessionStatus {
     uint8_t     permissions = PERM_ALL;
     uint64_t    connectedSinceTickMs = 0;
     std::string securityFingerprint;
+    std::string viewerAppVersion;
 };
 
 struct ChatMessageEntry {
@@ -362,6 +363,14 @@ public:
     bool isNetworkDiagnosticRunning() const;
     bool getNetworkDiagnosticResult(RelayProbeResult& outRelay, StunNatResult& outStun) const;
 
+    // Peer Version Tracking & Compatibility
+    std::string remotePeerAppVersion() const;
+    bool isLocalVersionOutdated() const;
+    bool isRemoteVersionOutdated() const;
+
+    void setOnVersionUpgradeNoticeCallback(std::function<void(const VersionUpgradeNoticePayload&)> cb);
+    void setOnVersionMismatchCallback(std::function<void(const std::string& hostVer, const std::string& viewerVer)> cb);
+
     // Socket options and scatter-gather transmission helpers
     static void setTcpNoDelay(SOCKET s);
     static bool sendScatterGather(
@@ -613,6 +622,14 @@ private:
 
     // Remote File Synchronization & Folder Mirroring
     FileSyncManager                            fileSyncMgr_;
+
+    // Peer Version Tracking & Compatibility
+    mutable std::mutex                         peerVersionMutex_;
+    std::string                                remotePeerAppVersion_;
+    std::atomic<bool>                          localIsOutdated_{false};
+    std::atomic<bool>                          remoteIsOutdated_{false};
+    std::function<void(const VersionUpgradeNoticePayload&)> onVersionUpgradeNotice_;
+    std::function<void(const std::string& hostVer, const std::string& viewerVer)> onVersionMismatch_;
 };
 
 } // namespace cppdesk

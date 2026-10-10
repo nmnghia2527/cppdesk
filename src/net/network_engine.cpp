@@ -1434,6 +1434,12 @@ void NetworkEngine::runHostSession(uintptr_t clientSock, std::string clientIp) {
             std::lock_guard<std::mutex> lock(hostStatusMutex_);
             hostStatus_ = HostSessionStatus{};
         }
+        {
+            std::lock_guard<std::mutex> lk(peerVersionMutex_);
+            remotePeerAppVersion_.clear();
+        }
+        localIsOutdated_.store(false);
+        remoteIsOutdated_.store(false);
         VirtualDisplayManager::instance().destroyAllSessionDisplays();
     };
 
@@ -1464,6 +1470,14 @@ void NetworkEngine::runHostSession(uintptr_t clientSock, std::string clientIp) {
                 viewerPubBlob = helloReader.readBytesVector(pubLen);
             }
         }
+        std::string viewerAppVersion;
+        if (helloReader.hasRemaining(2)) {
+            viewerAppVersion = helloReader.readString();
+        }
+        {
+            std::lock_guard<std::mutex> lk(peerVersionMutex_);
+            remotePeerAppVersion_ = viewerAppVersion;
+        }
         if (protoVer != PROTOCOL_VERSION) {
             cleanup();
             return;
@@ -1483,6 +1497,7 @@ void NetworkEngine::runHostSession(uintptr_t clientSock, std::string clientIp) {
             if (!hostEcdh.localPublicKey().empty()) {
                 w.writeBytes(hostEcdh.localPublicKey().data(), hostEcdh.localPublicKey().size());
             }
+            w.writeString(CPP_DESK_VERSION);
             if (!sendFrame(clientSock, PacketType::AUTH_CHALLENGE, 0, w.buffer().data(), w.buffer().size(), hostSendMutex_)) {
                 cleanup();
                 return;
@@ -1696,6 +1711,7 @@ void NetworkEngine::runHostSession(uintptr_t clientSock, std::string clientIp) {
             hostStatus_.permissions = grantedPerms;
             hostStatus_.connectedSinceTickMs = nowTickMs();
             hostStatus_.securityFingerprint = sasFingerprint;
+            hostStatus_.viewerAppVersion = viewerAppVersion;
         }
 
         // Auto-provision virtual display if host is headless
@@ -2431,6 +2447,20 @@ void NetworkEngine::runHostSession(uintptr_t clientSock, std::string clientIp) {
                             }
                             break;
                         }
+                        case PacketType::VERSION_UPGRADE_NOTICE: {
+                            VersionUpgradeNoticePayload notice;
+                            if (deserializeVersionUpgradeNotice(payload.data(), payload.size(), notice)) {
+                                std::function<void(const VersionUpgradeNoticePayload&)> cb;
+                                {
+                                    std::lock_guard<std::mutex> lk(peerVersionMutex_);
+                                    cb = onVersionUpgradeNotice_;
+                                }
+                                if (cb) {
+                                    cb(notice);
+                                }
+                            }
+                            break;
+                        }
                         case PacketType::DISCONNECT:
                             sessionAlive.store(false);
                             break;
@@ -2942,6 +2972,7 @@ void NetworkEngine::runViewerSession(std::string targetInput, std::string passwo
                 if (!viewerEcdh.localPublicKey().empty()) {
                     w.writeBytes(viewerEcdh.localPublicKey().data(), viewerEcdh.localPublicKey().size());
                 }
+                w.writeString(CPP_DESK_VERSION);
                 if (!sendFrame(vSock, PacketType::HELLO, 0, w.buffer().data(), w.buffer().size(), viewerSendMutex_)) {
                     FrameHeader ehdr{};
                     std::vector<uint8_t> epay;
@@ -3006,6 +3037,14 @@ void NetworkEngine::runViewerSession(std::string targetInput, std::string passwo
                 if (chalReader.hasRemaining(pubLen)) {
                     hostPubBlob = chalReader.readBytesVector(pubLen);
                 }
+            }
+            std::string hostAppVersion;
+            if (chalReader.hasRemaining(2)) {
+                hostAppVersion = chalReader.readString();
+            }
+            {
+                std::lock_guard<std::mutex> lk(peerVersionMutex_);
+                remotePeerAppVersion_ = hostAppVersion;
             }
 
             // 3. Compute & send AUTH_RESPONSE
@@ -3181,6 +3220,32 @@ void NetworkEngine::runViewerSession(std::string targetInput, std::string passwo
                         clampTargetFps(identity_.settings().targetFps),
                         identity_.settings().adaptiveFps ? 1 : 0
                     );
+
+                    if (!hostAppVersion.empty()) {
+                        auto viewerVer = SemanticVersion::parse(CPP_DESK_VERSION);
+                        auto hostVer = SemanticVersion::parse(hostAppVersion);
+                        if (viewerVer < hostVer) {
+                            localIsOutdated_.store(true);
+                            std::function<void(const std::string&, const std::string&)> cb;
+                            {
+                                std::lock_guard<std::mutex> lk(peerVersionMutex_);
+                                cb = onVersionMismatch_;
+                            }
+                            if (cb) {
+                                cb(hostAppVersion, CPP_DESK_VERSION);
+                            }
+                        } else if (viewerVer > hostVer) {
+                            remoteIsOutdated_.store(true);
+                            VersionUpgradeNoticePayload notice;
+                            notice.senderVersion = CPP_DESK_VERSION;
+                            notice.minimumVersion = CPP_DESK_VERSION;
+                            notice.downloadUrl = "https://github.com/nmnghia2527/cppdesk/releases/latest";
+                            notice.message = "Connected viewer is running CppDesk " + std::string(CPP_DESK_VERSION) + ". Host update recommended.";
+                            std::vector<uint8_t> noticeBuf;
+                            serializeVersionUpgradeNotice(notice, noticeBuf);
+                            sendViewerEncryptedPacket(PacketType::VERSION_UPGRADE_NOTICE, 0, noticeBuf.data(), noticeBuf.size());
+                        }
+                    }
                     return true;
                 }
             }
@@ -3803,6 +3868,20 @@ void NetworkEngine::runViewerSession(std::string targetInput, std::string passwo
                             }
                             break;
                         }
+                        case PacketType::VERSION_UPGRADE_NOTICE: {
+                            VersionUpgradeNoticePayload notice;
+                            if (deserializeVersionUpgradeNotice(payload.data(), payload.size(), notice)) {
+                                std::function<void(const VersionUpgradeNoticePayload&)> cb;
+                                {
+                                    std::lock_guard<std::mutex> lk(peerVersionMutex_);
+                                    cb = onVersionUpgradeNotice_;
+                                }
+                                if (cb) {
+                                    cb(notice);
+                                }
+                            }
+                            break;
+                        }
                         case PacketType::DISCONNECT:
                             viewerActive_.store(false);
                             break;
@@ -3820,6 +3899,12 @@ void NetworkEngine::runViewerSession(std::string targetInput, std::string passwo
             std::lock_guard<std::mutex> lock(viewerCipherMutex_);
             viewerCipher_.reset();
         }
+        {
+            std::lock_guard<std::mutex> lk(peerVersionMutex_);
+            remotePeerAppVersion_.clear();
+        }
+        localIsOutdated_.store(false);
+        remoteIsOutdated_.store(false);
 
         if (socketDropped && viewerActive_.load() && running_.load()) {
             isReconnecting = true;
@@ -5827,6 +5912,29 @@ bool NetworkEngine::getNetworkDiagnosticResult(RelayProbeResult& outRelay, StunN
     outRelay = netDiagResult_.relay;
     outStun = netDiagResult_.stun;
     return true;
+}
+
+std::string NetworkEngine::remotePeerAppVersion() const {
+    std::lock_guard<std::mutex> lk(peerVersionMutex_);
+    return remotePeerAppVersion_;
+}
+
+bool NetworkEngine::isLocalVersionOutdated() const {
+    return localIsOutdated_.load();
+}
+
+bool NetworkEngine::isRemoteVersionOutdated() const {
+    return remoteIsOutdated_.load();
+}
+
+void NetworkEngine::setOnVersionUpgradeNoticeCallback(std::function<void(const VersionUpgradeNoticePayload&)> cb) {
+    std::lock_guard<std::mutex> lk(peerVersionMutex_);
+    onVersionUpgradeNotice_ = std::move(cb);
+}
+
+void NetworkEngine::setOnVersionMismatchCallback(std::function<void(const std::string& hostVer, const std::string& viewerVer)> cb) {
+    std::lock_guard<std::mutex> lk(peerVersionMutex_);
+    onVersionMismatch_ = std::move(cb);
 }
 
 } // namespace cppdesk
