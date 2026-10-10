@@ -22,7 +22,7 @@ export const Scene5Outro: React.FC = () => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
 
-  // Phase 1: Interactive Permission & Security card reveal (frames 0 - 170)
+  // Part 1: Interactive Permission & Security card reveal (frames 0 - 170)
   const permCardIn = spring({
     frame: frame - 10,
     fps,
@@ -35,13 +35,13 @@ export const Scene5Outro: React.FC = () => {
     config: { damping: 12, mass: 0.6, stiffness: 140 },
   });
 
-  // Crossfade between Phase 1 and Phase 2 without layout displacement
-  const phase1Opacity = interpolate(frame, [140, 170], [1, 0], {
+  // Crossfade between Part 1 and Part 2 without layout displacement
+  const part1Opacity = interpolate(frame, [140, 170], [1, 0], {
     extrapolateLeft: "clamp",
     extrapolateRight: "clamp",
   });
 
-  const phase2Opacity = interpolate(frame, [155, 185], [0, 1], {
+  const part2Opacity = interpolate(frame, [155, 185], [0, 1], {
     extrapolateLeft: "clamp",
     extrapolateRight: "clamp",
   });
@@ -96,7 +96,7 @@ export const Scene5Outro: React.FC = () => {
             flexDirection: "column",
             alignItems: "center",
             justifyContent: "center",
-            opacity: Math.min(1, Math.max(0, permCardIn)) * phase1Opacity,
+            opacity: Math.min(1, Math.max(0, permCardIn)) * part1Opacity,
             transform: `translateY(${interpolate(permCardIn, [0, 1], [30, 0], { extrapolateRight: "clamp" })}px)`,
             zIndex: 10,
           }}
@@ -282,7 +282,7 @@ export const Scene5Outro: React.FC = () => {
             flexDirection: "column",
             alignItems: "center",
             justifyContent: "center",
-            opacity: phase2Opacity,
+            opacity: part2Opacity,
             transform: `scale(${interpolate(ctaScale, [0, 1], [0.94, 1], { extrapolateRight: "clamp" })})`,
             zIndex: 10,
           }}
@@ -352,7 +352,7 @@ export const Scene5Outro: React.FC = () => {
             }}
           >
             <DownloadIcon size={22} color="#FFF" strokeWidth={2.5} />
-            <span>Download CppDesk v3.1.1</span>
+            <span>Download CppDesk</span>
           </div>
 
           {/* Badges Bar */}

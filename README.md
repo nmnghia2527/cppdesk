@@ -6,7 +6,7 @@
   <a href="#quick-start">Quick Start</a> •
   <a href="#how-to-build-from-source">Build</a> •
   <a href="#project-structure">Structure</a> •
-  <a href="https://github.com/nmnghia2527/cppdesk/releases/download/v3.1.1/CppDeskShowcase.mp4">Video Demo</a> •
+  <a href="assets/CppDeskShowcase.mp4">Video Demo</a> •
   <a href="https://github.com/nmnghia2527/cppdesk/releases">Releases</a>
 </p>
 
@@ -21,12 +21,12 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/nmnghia2527/cppdesk/releases/download/v3.1.1/CppDeskShowcase.mp4">
+  <a href="assets/CppDeskShowcase.mp4">
     <img src="assets/showcase.gif" alt="CppDesk Product Showcase Demo" width="860" style="max-width: 100%; border-radius: 12px; box-shadow: 0 10px 30px rgba(0,0,0,0.15);">
   </a>
   <br>
   <sub>
-    <a href="https://github.com/nmnghia2527/cppdesk/releases/download/v3.1.1/CppDeskShowcase.mp4">
+    <a href="assets/CppDeskShowcase.mp4">
       <b>Watch Full Product Showcase Video (1080p 60 FPS • Audio & Voiceover)</b>
     </a>
   </sub>

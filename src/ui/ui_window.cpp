@@ -353,7 +353,7 @@ bool CppDeskWindow::initGraphics() {
     createFmt(L"Segoe UI", DWRITE_FONT_WEIGHT_SEMI_BOLD, 11.5f, &fmtSmall_);
     createFmt(L"Consolas", DWRITE_FONT_WEIGHT_BOLD, 14.0f, &fmtMono_);
 
-    // Phase 29: Pre-cache unit star geometry for zero-allocation UI rendering
+    // Pre-cache unit star geometry for zero-allocation UI rendering
     if (d2dFactory_) {
         ID2D1PathGeometry* star = nullptr;
         if (SUCCEEDED(d2dFactory_->CreatePathGeometry(&star)) && star) {
@@ -559,15 +559,15 @@ bool CppDeskWindow::stepAnimations(float dt) {
     float targetUpdateModal = showUpdateRequiredModal_ ? 1.0f : 0.0f;
     if (stepSpring(updateModalAnimT_, updateModalAnimVel_, targetUpdateModal, 28.0f, 0.74f, dt)) active = true;
 
-    // 12. Real-Time Performance HUD Overlay Spring (Phase 10)
+    // 12. Real-Time Performance HUD Overlay Spring
     float targetHud = showPerformanceHud_ ? 1.0f : 0.0f;
     if (stepSpring(hudAnimT_, hudAnimVel_, targetHud, 26.0f, 0.78f, dt)) active = true;
 
-    // 13. Remote Reboot & Reconnect Modal Spring (Phase 12)
+    // 13. Remote Reboot & Reconnect Modal Spring
     float targetRebootModal = showRebootConfirmModal_ ? 1.0f : 0.0f;
     if (stepSpring(rebootModalAnimT_, rebootModalAnimVel_, targetRebootModal, 28.0f, 0.74f, dt)) active = true;
 
-    // 14. Hardware Acceleration Restart Modal Spring (Phase 13)
+    // 14. Hardware Acceleration Restart Modal Spring
     float targetHwAccelModal = showHwAccelRestartModal_ ? 1.0f : 0.0f;
     if (stepSpring(hwAccelModalAnimT_, hwAccelModalAnimVel_, targetHwAccelModal, 28.0f, 0.74f, dt)) active = true;
 
@@ -1473,12 +1473,12 @@ void CppDeskWindow::onPaint() {
         drawUpdateRequiredModal(width, height, updateModalAnimT_);
     }
 
-    // Remote Reboot & Reconnect Sheet Modal (Phase 12)
+    // Remote Reboot & Reconnect Sheet Modal
     if (rebootModalAnimT_ > 0.004f) {
         drawRebootConfirmModal(width, height, rebootModalAnimT_);
     }
 
-    // Hardware Acceleration Restart Sheet Modal (Phase 13)
+    // Hardware Acceleration Restart Sheet Modal
     if (hwAccelModalAnimT_ > 0.004f) {
         drawHwAccelRestartModal(width, height, hwAccelModalAnimT_);
     }
@@ -2614,7 +2614,7 @@ void CppDeskWindow::drawRemoteSessionView(const UiRect& bounds, float alpha) {
             renderTarget_->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(curX, curY), 6.0f, 6.0f), solidBrush_, 1.6f);
         }
 
-        // Multi-Monitor Grid Partition Overlays & Badges (Phase 17)
+        // Multi-Monitor Grid Partition Overlays & Badges
         if (stats.activeMonitorIndex == -1 && stats.monitors.size() > 1) {
             int minX = 0, minY = 0, maxX = 0, maxY = 0;
             bool hasBounds = false;
@@ -2828,10 +2828,10 @@ void CppDeskWindow::drawRemoteSessionView(const UiRect& bounds, float alpha) {
         }
     }
 
-    // Real-Time Performance & Diagnostics HUD Overlay (Phase 10)
+    // Real-Time Performance & Diagnostics HUD Overlay
     drawPerformanceHud(stageRect_, alpha);
 
-    // Master Volume Popup (Phase 16)
+    // Master Volume Popup
     if (showAudioVolumePopup_ && !isFullscreen_) {
         drawAudioVolumePopup(stageRect_.right - 140.0f, stageRect_.top + 8.0f);
     }
@@ -2981,7 +2981,7 @@ void CppDeskWindow::drawSettingsView(const UiRect& bounds, float alpha) {
 
     ly = themeBox.bottom + 10.0f;
 
-    // 2. Connection Quality Profiles (Phase 20)
+    // 2. Connection Quality Profiles
     UiRect profBox = { lx, ly, lrx, ly + 68.0f };
     fillRoundRect(profBox, 12.0f, COL_BG_SUBTLE);
     strokeRoundRect(profBox, 12.0f, COL_BORDER);
@@ -3209,7 +3209,7 @@ void CppDeskWindow::drawSettingsView(const UiRect& bounds, float alpha) {
 
     ly = ovBox.bottom + 10.0f;
 
-    // 5. Curtain Screen & Privacy Branding (v3.2.0 Phase 18)
+    // 5. Curtain Screen & Privacy Branding (v3.2.0)
     UiRect privBox = { lx, ly, lrx, ly + 128.0f };
     fillRoundRect(privBox, 12.0f, COL_BG_SUBTLE);
     strokeRoundRect(privBox, 12.0f, COL_BORDER);
@@ -3410,7 +3410,7 @@ void CppDeskWindow::drawSettingsView(const UiRect& bounds, float alpha) {
 
     ry = notifBox.bottom + 10.0f;
 
-    // 3. Relay & Rendezvous Network (v3.2.0 Phase 09)
+    // 3. Relay & Rendezvous Network (v3.2.0)
     UiRect netBox = { rx, ry, rrx, ry + 196.0f };
     fillRoundRect(netBox, 12.0f, COL_BG_SUBTLE);
     strokeRoundRect(netBox, 12.0f, COL_BORDER);
@@ -3546,7 +3546,7 @@ void CppDeskWindow::drawSettingsView(const UiRect& bounds, float alpha) {
 
     ry = netBox.bottom + 10.0f;
 
-    // 4. Windows System Service (v3.2.0 Phase 12)
+    // 4. Windows System Service (v3.2.0)
     UiRect svcBox = { rx, ry, rrx, ry + 78.0f };
     fillRoundRect(svcBox, 12.0f, COL_BG_SUBTLE);
     strokeRoundRect(svcBox, 12.0f, COL_BORDER);
@@ -4047,7 +4047,7 @@ void CppDeskWindow::drawFileTransferDrawer(const UiRect& bounds, float slideProg
 
         auto diag = network_.latestDiagnostics();
 
-        // 1. Host Hardware Info Sheet Card (Phase 19)
+        // 1. Host Hardware Info Sheet Card
         UiRect hwBox = { x, y, rx, y + 96.0f };
         fillRoundRect(hwBox, 11.0f, COL_BG_SUBTLE);
         strokeRoundRect(hwBox, 11.0f, COL_BORDER);
@@ -5202,7 +5202,7 @@ void CppDeskWindow::drawUpdateRequiredModal(float width, float height, float mod
     renderTarget_->SetTransform(D2D1::Matrix3x2F::Identity());
 }
 
-// ---------------- Remote Reboot & Reconnect Sheet Modal (Phase 12) ----------------
+// ---------------- Remote Reboot & Reconnect Sheet Modal ----------------
 
 void CppDeskWindow::drawRebootConfirmModal(float width, float height, float modalProgress) {
     if (!showRebootConfirmModal_ && modalProgress <= 0.01f) return;
@@ -5522,7 +5522,7 @@ void CppDeskWindow::drawWhiteboardOverlay(const UiRect& canvasRect) {
                }, fmtBodyBold_, true, COL_BORDER);
 }
 
-// ---------------- Real-Time Performance & Diagnostics HUD Overlay (Phase 10) ----------------
+// ---------------- Real-Time Performance & Diagnostics HUD Overlay ----------------
 
 void CppDeskWindow::drawPerformanceHud(const UiRect& stageRect, float alpha) {
     if (hudAnimT_ <= 0.01f || alpha <= 0.01f) return;
@@ -5666,7 +5666,7 @@ void CppDeskWindow::drawToastBanner(float width, float height, float toastProgre
              fmtBodyBold_, withAlpha(COL_TEXT_PRIMARY, alpha), DWRITE_TEXT_ALIGNMENT_CENTER);
 }
 
-// ---------------- Master Volume Popup (Phase 16) ----------------
+// ---------------- Master Volume Popup ----------------
 
 void CppDeskWindow::drawAudioVolumePopup(float anchorX, float anchorY) {
     if (!showAudioVolumePopup_) return;

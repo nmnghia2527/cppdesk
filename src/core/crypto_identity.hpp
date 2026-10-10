@@ -24,7 +24,7 @@ struct AppSettings {
     uint8_t       targetFps = 30;                        // 15, 30, or 60 FPS
     bool          adaptiveFps = true;                    // Auto-drop FPS when network connection is poor
     QualityPreset defaultQuality = QualityPreset::Balanced;
-    ConnectionProfile connectionProfile = ConnectionProfile::Balanced; // Phase 20: One-Click Connection Quality Profile
+    ConnectionProfile connectionProfile = ConnectionProfile::Balanced; // One-Click Connection Quality Profile
     uint8_t       defaultScaleMode = 0;                  // 0 = FitAspect, 1 = Stretch, 2 = Original 1:1
     bool          showRemoteCursor = true;               // Render remote cursor ring on viewer canvas
     bool          showSessionHud = true;                 // Show live FPS / RTT / Bitrate telemetry in session bar
@@ -36,20 +36,20 @@ struct AppSettings {
     bool          enableNotificationSounds = true;       // Audio chime on incoming alerts
     bool          minimizeToTray = false;                // Minimize window to Windows Notification Area
 
-    // Phase 09 Self-Hosted Relay & STUN Configuration
+    // Self-Hosted Relay & STUN Configuration
     std::string   relayServer = "127.0.0.1:50999";
     std::string   relayAuthKey = "";
     std::string   stunServer = "stun.l.google.com:19302";
     uint8_t       relayMode = 0;                         // 0 = Auto, 1 = Self-Hosted, 2 = Direct LAN
 
-    // Phase 13 Hardware Accelerated Rendering Toggle
+    // Hardware Accelerated Rendering Toggle
     bool          hardwareAcceleration = true;           // true = GPU (Direct3D 11 / Direct2D default), false = Software (WARP / CPU)
 
-    // Phase 16 Audio Controls & Persistence
+    // Audio Controls & Persistence
     uint8_t       defaultAudioVolume = 100;              // 0 - 100%
     bool          audioMutedDefault = false;             // false = audible, true = muted
 
-    // Phase 18 Privacy Mode Curtain Screen Custom Branding & Notice
+    // Privacy Mode Curtain Screen Custom Branding & Notice
     std::string   privacyCustomNotice = "Screen output hidden and local physical inputs secured for authorized administration.";
     std::string   privacyBrandName = "CppDesk Enterprise Security";
     bool          privacyShowDeskId = true;

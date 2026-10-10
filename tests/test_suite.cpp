@@ -492,7 +492,7 @@ void testAppSettingsAndAdaptiveFps() {
         s.autoAcceptIncoming = true;
         s.defaultPermissions = PERM_INPUT | PERM_CLIPBOARD;
         s.lockWorkstationOnDisconnect = true;
-        s.hardwareAcceleration = false; // Phase 13: Hardware acceleration toggle
+        s.hardwareAcceleration = false; // Hardware acceleration toggle
         idSave.updateSettings(s);
     }
     {

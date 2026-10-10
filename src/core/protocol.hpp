@@ -134,7 +134,7 @@ inline uint8_t clampTargetFps(uint8_t fps) {
     return 60;
 }
 
-// Phase 20: One-Click Connection Quality Profiles
+// One-Click Connection Quality Profiles
 enum class ConnectionProfile : uint8_t {
     LowBandwidth = 0, // 15 FPS, LowBandwidth preset (JPEG Q50), Adaptive FPS ON
     Balanced     = 1, // 30 FPS, Balanced preset (JPEG Q75/Zstd), Adaptive FPS ON
@@ -573,7 +573,7 @@ struct SystemDiagnosticsPayload {
     uint64_t diskTotalBytes = 0;
     std::vector<ProcessTelemetryItem> processes;
 
-    // Phase 19 Extended Host Hardware Specs & Health Info
+    // Extended Host Hardware Specs & Health Info
     std::string cpuModel;          // e.g. "Intel(R) Core(TM) i7-12700H" or "AMD Ryzen 7 5800X"
     std::string gpuModel;          // e.g. "NVIDIA GeForce RTX 4070 Laptop GPU"
     std::string osVersion;         // e.g. "Windows 11 (Build 22631)"
@@ -596,7 +596,7 @@ inline void serializeSystemDiagnostics(const SystemDiagnosticsPayload& payload, 
         w.writeU64(p.workingSetBytes);
         w.writeString(p.name);
     }
-    // Phase 19 Extended Hardware Specs
+    // Extended Hardware Specs
     w.writeString(payload.cpuModel);
     w.writeString(payload.gpuModel);
     w.writeString(payload.osVersion);
@@ -624,7 +624,7 @@ inline bool deserializeSystemDiagnostics(const uint8_t* data, size_t size, Syste
             item.name = r.readString();
             out.processes.push_back(std::move(item));
         }
-        // Phase 19 Extended Hardware Specs (backward-compatible check)
+        // Extended Hardware Specs (backward-compatible check)
         if (r.remaining() > 0) {
             out.cpuModel = r.readString();
             out.gpuModel = r.readString();

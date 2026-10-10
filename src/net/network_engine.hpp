@@ -275,7 +275,7 @@ public:
     ClipboardManager& clipboardManager() { return clipboardManager_; }
     const ClipboardManager& clipboardManager() const { return clipboardManager_; }
 
-    // Audio streaming controls (v2.1.0 & Phase 16)
+    // Audio streaming controls (v2.1.0)
     void setAudioVolume(int percent);
     int audioVolume() const;
     void setAudioMuted(bool muted);
@@ -283,7 +283,7 @@ public:
     void syncAudioControl();
     bool isHostAudioSuspended() const;
 
-    // Privacy screen controls (v2.1.0 & v3.2.0 Phase 18)
+    // Privacy screen controls (v2.1.0 & v3.2.0)
     void requestTogglePrivacyMode();
     bool isPrivacyModeEngaged() const;
     bool isHostPrivacyModeActive() const;
@@ -334,7 +334,7 @@ public:
     bool isHostResolutionChanged() const;
     void handleIncomingResolutionChangeReq(const uint8_t* payload, size_t len, uint8_t callerPermissions);
 
-    // Relay & STUN Network Diagnostics (v3.2.0 Phase 09)
+    // Relay & STUN Network Diagnostics (v3.2.0)
     static StunNatResult queryStunServer(const std::string& hostPort, uint32_t timeoutMs = 2000);
     static RelayProbeResult probeRelayServer(const std::string& hostPort, uint32_t timeoutMs = 2000);
     void setRelayAddressAndReconnect(const std::string& newAddr);
@@ -570,12 +570,12 @@ private:
     // Virtual Display & Dynamic Resolution Manager (Feature 5)
     DisplayResolutionManager                   displayManager_;
 
-    // Relay & STUN diagnostic worker (v3.2.0 Phase 09)
+    // Relay & STUN diagnostic worker (v3.2.0)
     mutable std::mutex                         netDiagMutex_;
     std::thread                                netDiagThread_;
     NetworkDiagnosticResult                    netDiagResult_;
 
-    // Remote Reboot with Auto-Reconnect (v3.2.0 Phase 12)
+    // Remote Reboot with Auto-Reconnect (v3.2.0)
     std::atomic<bool>                          rebootPending_{false};
     std::atomic<uint32_t>                      rebootCountdown_{0};
     std::atomic<bool>                          autoReconnectingWithToken_{false};

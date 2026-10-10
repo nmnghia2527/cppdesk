@@ -350,12 +350,12 @@ private:
     float                   shortcutsModalAnimT_ = 0.0f;
     float                   shortcutsModalAnimVel_ = 0.0f;
 
-    // Real-Time Performance & Diagnostics HUD Overlay state (Phase 10)
+    // Real-Time Performance & Diagnostics HUD Overlay state
     bool                    showPerformanceHud_ = false;
     float                   hudAnimT_ = 0.0f;
     float                   hudAnimVel_ = 0.0f;
 
-    // Master Volume Popup state (Phase 16)
+    // Master Volume Popup state
     bool                    showAudioVolumePopup_ = false;
 
     // Remote Terminal UI state (v2.1.0)
@@ -427,13 +427,13 @@ private:
     float                   startupUpdateCheckTimer_ = 2.0f;
     bool                    startupCheckTriggered_ = false;
 
-    // Remote Reboot & Reconnect Modal (v3.2.0 Phase 12)
+    // Remote Reboot & Reconnect Modal (v3.2.0)
     bool                    showRebootConfirmModal_ = false;
     bool                    rebootSafeModeChoice_ = false;
     float                   rebootModalAnimT_ = 0.0f;
     float                   rebootModalAnimVel_ = 0.0f;
 
-    // Hardware Acceleration Restart Prompt Modal (Phase 13)
+    // Hardware Acceleration Restart Prompt Modal
     bool                    showHwAccelRestartModal_ = false;
     bool                    pendingHwAccelChoice_ = true;
     float                   hwAccelModalAnimT_ = 0.0f;
@@ -442,10 +442,10 @@ private:
     // Multi-Session Tabbed Management (Feature 6)
     SessionTabManager       sessionTabs_;
 
-    // Event-driven 60 FPS viewer frame presentation (Phase 27)
+    // Event-driven 60 FPS viewer frame presentation
     std::atomic<bool>       frameRedrawPending_{false};
 
-    // Mouse Motion Coalescing & Tail Preservation (Phase 28)
+    // Mouse Motion Coalescing & Tail Preservation
     void                    flushPendingMouseMove();
     float                   coalescedMouseNormX_ = 0.0f;
     float                   coalescedMouseNormY_ = 0.0f;

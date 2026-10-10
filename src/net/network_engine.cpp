@@ -1675,7 +1675,7 @@ void NetworkEngine::runHostSession(uintptr_t clientSock, std::string clientIp) {
         std::mutex outboxMutex;
         std::condition_variable outboxCv;
         std::deque<HostOutboxItem> outbox;
-        std::vector<std::vector<uint8_t>> outboxBufferPool; // Phase 29: Recycled payload buffers
+        std::vector<std::vector<uint8_t>> outboxBufferPool; // Recycled payload buffers
         uint64_t totalBytesSent = 0;
 
         auto enqueueHostPacketMove = [&](PacketType pt, uint8_t flags, std::vector<uint8_t>&& payload, bool isVideo) {
@@ -1751,7 +1751,7 @@ void NetworkEngine::runHostSession(uintptr_t clientSock, std::string clientIp) {
                     avgSendMs.store(cur * 0.78f + sendDur * 0.22f);
                 }
 
-                // Phase 29: Recycle payload buffer back to outboxBufferPool to avoid heap allocator thrashing
+                // Recycle payload buffer back to outboxBufferPool to avoid heap allocator thrashing
                 if (item.payload.capacity() >= 256) {
                     item.payload.clear();
                     std::lock_guard<std::mutex> lock(outboxMutex);
@@ -4916,7 +4916,7 @@ SystemDiagnosticsPayload NetworkEngine::sampleHostDiagnostics() {
         CloseHandle(hSnap);
     }
 
-    // 5. Extended Host Hardware Specs & Health Info (Phase 19)
+    // 5. Extended Host Hardware Specs & Health Info
     static std::string s_cachedCpuModel;
     static std::string s_cachedGpuModel;
     static std::string s_cachedOsVersion;
@@ -5093,7 +5093,7 @@ void NetworkEngine::handleIncomingResolutionChangeReq(const uint8_t* payload, si
     }
 }
 
-// ---------------- Relay & STUN Network Diagnostics (v3.2.0 Phase 09) ----------------
+// ---------------- Relay & STUN Network Diagnostics (v3.2.0) ----------------
 
 StunNatResult NetworkEngine::queryStunServer(const std::string& hostPort, uint32_t timeoutMs) {
     ensureWinsockInitialized();
