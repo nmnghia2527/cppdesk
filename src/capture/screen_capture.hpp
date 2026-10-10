@@ -6,6 +6,7 @@
 #include <windows.h>
 
 #include "../core/protocol.hpp"
+#include "virtual_display_manager.hpp"
 
 #include <cstdint>
 #include <vector>
@@ -157,6 +158,10 @@ public:
     float lastEncodeLatencyMs() const { return lastEncodeLatencyMs_; }
     bool hasGdiCachedResources() const { return gdiMemDC_ != nullptr && gdiSection_ != nullptr; }
 
+    // Headless auto-provisioning toggle
+    void setAutoHeadless(bool enable) { autoHeadless_ = enable; }
+    bool autoHeadless() const { return autoHeadless_; }
+
 private:
     bool initDxgiForMonitor(int monitorIndex);
     void releaseDxgi();
@@ -194,6 +199,7 @@ private:
     std::vector<uint8_t>                  reusableDirtyMask_;
     std::vector<uint8_t>                  reusableCandidateTiles_;
     std::vector<TileThreadPool::RectTask> reusableTasks_;
+    bool                                  autoHeadless_ = true;
 };
 
 } // namespace cppdesk

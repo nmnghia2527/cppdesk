@@ -4,8 +4,10 @@
 #include "../core/crypto_identity.hpp"
 #include "../net/network_engine.hpp"
 #include "../media/session_recorder.hpp"
+#include "../media/session_recording_player.hpp"
 #include "../control/session_tab_manager.hpp"
 #include "../control/shortcut_manager.hpp"
+#include "../core/qr_matrix.hpp"
 #include "notification_manager.hpp"
 
 #ifndef WIN32_LEAN_AND_MEAN
@@ -54,7 +56,11 @@ enum class FocusedField : uint8_t {
     StunServer      = 16,
     ClipboardSearch = 17,
     PrivacyBrand    = 18,
-    PrivacyNotice   = 19
+    PrivacyNotice   = 19,
+    TotpEnrollTestCode = 20,
+    TotpModalCode      = 21,
+    SyncLocalPath      = 22,
+    SyncRemotePath     = 23
 };
 
 enum class DrawerTab : uint8_t {
@@ -62,7 +68,8 @@ enum class DrawerTab : uint8_t {
     LiveChat         = 1,
     RemoteTerminal   = 2,
     Diagnostics      = 3,
-    ClipboardHistory = 4
+    ClipboardHistory = 4,
+    Sync             = 5
 };
 
 struct UiRect {
@@ -141,6 +148,7 @@ private:
     void drawRemoteSessionView(const UiRect& bounds, float alpha = 1.0f);
     void drawSettingsView(const UiRect& bounds, float alpha = 1.0f);
     void drawFileTransferDrawer(const UiRect& bounds, float slideProgress);
+    void drawSyncDrawer(const UiRect& contentRect);
     void drawIncomingApprovalModal(float width, float height, float modalProgress);
     void drawDynamicIslandToolbar(float width, float height);
     void drawClipboardTransferPill(float width, float height);
@@ -153,6 +161,7 @@ private:
     void drawRebootConfirmModal(float width, float height, float modalProgress);
     void drawHwAccelRestartModal(float width, float height, float modalProgress);
     void drawAudioVolumePopup(float anchorX, float anchorY);
+    void drawRecordingPlayerModal(float width, float height, float modalProgress);
     void drawToastBanner(float width, float height, float toastProgress);
     void triggerUpdateCheck(bool manual);
 
@@ -180,6 +189,15 @@ private:
                           const std::string& label, std::function<void()> onToggle);
     void ensureAppIconBitmap();
 
+    // Two-Factor Authentication (TOTP) rendering
+    void renderQrCodeDirect2D(
+        const UiRect& rect,
+        const std::vector<uint8_t>& matrix,
+        int matrixSize,
+        float alpha = 1.0f);
+    void updateTotpQrMatrix();
+    void drawTotpChallengeModal(float clientW, float clientH);
+
     // Input & interaction handlers
     void onMouseMove(float x, float y);
     void onMouseButton(MouseButtonId btn, bool isDown, float x, float y);
@@ -191,12 +209,15 @@ private:
     // Actions
     void initiateConnection();
     void openSendFileDialog();
+    void openPickFolderDialog(std::string& outPath);
     void saveRemoteScreenshot();
     void toggleScreenRecording();
     void sendChatFromInput();
     void sendTerminalFromInput();
     void toggleFullscreen();
     void toggleShortcutsModal();
+    void openRecordingPlayer(const std::string& filePath = "");
+    void closeRecordingPlayer();
     void switchToSessionTab(uint32_t tabId, bool force = false);
     void closeSessionTab(uint32_t tabId);
     void showToast(const std::string& message, bool isError = false);
@@ -385,6 +406,21 @@ private:
     // In-Session Screen Recording Subsystem (Feature 3)
     SessionRecorder         sessionRecorder_;
 
+    // In-Session Session Recording Player & Transcoder
+    bool                                    showRecordingPlayer_ = false;
+    float                                   recordingPlayerModalAnimT_ = 0.0f;
+    float                                   recordingPlayerModalAnimVel_ = 0.0f;
+    std::unique_ptr<SessionRecordingPlayer> recordingPlayer_;
+    ID2D1Bitmap*                            recordingPlayerBitmap_ = nullptr;
+    int                                     recordingPlayerBitmapW_ = 0;
+    int                                     recordingPlayerBitmapH_ = 0;
+    bool                                    draggingPlayerScrubber_ = false;
+    uint32_t                                trimInFrame_ = 0;
+    uint32_t                                trimOutFrame_ = 0;
+    bool                                    hasTrimIn_ = false;
+    bool                                    hasTrimOut_ = false;
+    UiRect                                  playerScrubberTrackRect_{};
+
     // TCP Port Forwarding modal state (v2.1.0)
     bool                    showPortForwardModal_ = false;
     float                   portForwardModalAnimT_ = 0.0f;
@@ -450,6 +486,28 @@ private:
     float                   coalescedMouseNormX_ = 0.0f;
     float                   coalescedMouseNormY_ = 0.0f;
     bool                    hasPendingMouseMove_ = false;
+
+    // Two-Factor Authentication (TOTP) UI state
+    std::string             totpEnrollCodeEdit_;
+    std::string             totpEnrollFeedback_;
+    bool                    totpEnrollSuccess_ = false;
+    std::vector<uint8_t>    totpQrMatrix_;
+    int                     totpQrMatrixSize_ = 0;
+    bool                    showTotpRegenConfirm_ = false;
+
+    // Viewer TOTP Challenge Modal state
+    bool                    showTotpModal_ = false;
+    float                   totpModalAnimT_ = 0.0f;
+    float                   totpModalAnimVel_ = 0.0f;
+    std::string             totpModalInput_;
+    std::string             totpModalError_;
+
+    // Remote File Synchronization UI State
+    std::string             syncLocalPathEdit_;
+    std::string             syncRemotePathEdit_;
+    SyncMode                syncSelectedMode_ = SyncMode::PushMirror;
+    float                   syncDiffScrollOffset_ = 0.0f;
+    bool                    syncMirrorPurgeChoice_ = false;
 };
 
 } // namespace cppdesk

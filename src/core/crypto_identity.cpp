@@ -473,12 +473,22 @@ bool IdentityManager::loadOrCreate() {
                 } catch (...) {}
             } else if (key == "audio_muted_default") {
                 settings_.audioMutedDefault = (val == "1" || val == "true");
+            } else if (key == "auto_virtual_display") {
+                settings_.autoVirtualDisplay = (val == "1" || val == "true");
             } else if (key == "privacy_notice") {
                 settings_.privacyCustomNotice = val;
             } else if (key == "privacy_brand") {
                 settings_.privacyBrandName = val;
             } else if (key == "privacy_show_id") {
                 settings_.privacyShowDeskId = (val == "1" || val == "true");
+            } else if (key == "hardware_dpms_blanking") {
+                settings_.hardwareDpmsBlanking = (val == "1" || val == "true");
+            } else if (key == "totp_enabled") {
+                settings_.totpEnabled = (val == "1" || val == "true");
+            } else if (key == "totp_secret") {
+                settings_.totpSecret = val;
+            } else if (key == "totp_algorithm") {
+                settings_.totpAlgorithm = val;
             } else if (key == "recent") {
                 // Backward-compatible pipe format:
                 // 3 fields: deskId|hostname|address
@@ -517,6 +527,11 @@ bool IdentityManager::loadOrCreate() {
     }
 
     settings_.targetFps = clampTargetFps(settings_.targetFps);
+
+    if (!settings_.totpSecret.empty()) {
+        TotpAlgorithm alg = (settings_.totpAlgorithm == "SHA256") ? TotpAlgorithm::Sha256 : TotpAlgorithm::Sha1;
+        totpManager_.setSecret(settings_.totpSecret, alg);
+    }
 
     bool modified = false;
     if (deskId_ < 100000000ULL || deskId_ > 999999999ULL) {
@@ -576,6 +591,7 @@ bool IdentityManager::save() const {
     out << "hardware_acceleration=" << (settings_.hardwareAcceleration ? "1" : "0") << "\n";
     out << "default_audio_volume=" << static_cast<int>(settings_.defaultAudioVolume) << "\n";
     out << "audio_muted_default=" << (settings_.audioMutedDefault ? "1" : "0") << "\n";
+    out << "auto_virtual_display=" << (settings_.autoVirtualDisplay ? "1" : "0") << "\n";
     auto sanitizeIniValue = [](const std::string& in) -> std::string {
         std::string out;
         out.reserve(in.size());
@@ -592,6 +608,10 @@ bool IdentityManager::save() const {
     out << "privacy_notice=" << sanitizeIniValue(settings_.privacyCustomNotice) << "\n";
     out << "privacy_brand=" << sanitizeIniValue(settings_.privacyBrandName) << "\n";
     out << "privacy_show_id=" << (settings_.privacyShowDeskId ? "1" : "0") << "\n";
+    out << "hardware_dpms_blanking=" << (settings_.hardwareDpmsBlanking ? "1" : "0") << "\n";
+    out << "totp_enabled=" << (settings_.totpEnabled ? "1" : "0") << "\n";
+    out << "totp_secret=" << settings_.totpSecret << "\n";
+    out << "totp_algorithm=" << settings_.totpAlgorithm << "\n";
 
     for (const auto& r : recentSessions_) {
         out << "recent=" << r.deskId << "|" << sanitizeIniValue(r.hostname) << "|" << sanitizeIniValue(r.address) << "|" << (r.isFavorite ? "1" : "0")
@@ -748,11 +768,18 @@ void IdentityManager::updateSettings(const AppSettings& newSettings) {
     settings_.targetFps = clampTargetFps(settings_.targetFps);
     settings_.defaultPermissions &= PERM_ALL;
     relayServerAddr_ = settings_.relayServer;
+    if (!settings_.totpSecret.empty()) {
+        TotpAlgorithm alg = (settings_.totpAlgorithm == "SHA256") ? TotpAlgorithm::Sha256 : TotpAlgorithm::Sha1;
+        totpManager_.setSecret(settings_.totpSecret, alg);
+    } else {
+        totpManager_.clear();
+    }
     save();
 }
 
 void IdentityManager::resetSettingsToDefault() {
     settings_ = AppSettings{};
+    totpManager_.clear();
     relayServerAddr_ = settings_.relayServer;
     save();
 }

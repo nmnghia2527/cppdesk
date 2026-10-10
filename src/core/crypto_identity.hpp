@@ -1,6 +1,7 @@
 #pragma once
 
 #include "protocol.hpp"
+#include "totp_manager.hpp"
 
 #include <cstdint>
 #include <string>
@@ -49,10 +50,19 @@ struct AppSettings {
     uint8_t       defaultAudioVolume = 100;              // 0 - 100%
     bool          audioMutedDefault = false;             // false = audible, true = muted
 
+    // Virtual Multi-Display Driver & Headless Emulation
+    bool          autoVirtualDisplay = true;             // Auto-provision virtual display for headless host
+
     // Privacy Mode Curtain Screen Custom Branding & Notice
     std::string   privacyCustomNotice = "Screen output hidden and local physical inputs secured for authorized administration.";
     std::string   privacyBrandName = "CppDesk Enterprise Security";
     bool          privacyShowDeskId = true;
+    bool          hardwareDpmsBlanking = true;           // Hardware DPMS monitor standby coupled with curtain mode (default true)
+
+    // Two-Factor Authentication (TOTP RFC 6238)
+    bool          totpEnabled = false;
+    std::string   totpSecret = "";        // Base32 encoded 160-bit secret
+    std::string   totpAlgorithm = "SHA1"; // Default SHA1
 };
 
 class CryptoUtils {
@@ -265,6 +275,9 @@ public:
     void updateSettings(const AppSettings& newSettings);
     void resetSettingsToDefault();
 
+    TotpManager& totpManager() { return totpManager_; }
+    const TotpManager& totpManager() const { return totpManager_; }
+
     std::string configFilePath() const { return configPath_; }
 
 private:
@@ -279,6 +292,7 @@ private:
     std::string                     relayServerAddr_ = "127.0.0.1:50999";
     std::vector<RecentSessionEntry> recentSessions_;
     AppSettings                     settings_{};
+    TotpManager                     totpManager_;
     std::string                     configPath_;
 };
 

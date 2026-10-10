@@ -1,7 +1,8 @@
 # Project Rules — CppDesk
 
 ## Important Notice
--**Rule**: NEVER include "Phase" or "phase" or "Phases" or "phases" (and anything in between) into the project's codebase.
+- **Rule**: NEVER include "Phase" or "phase" or "Phases" or "phases" (and anything in between) into the project's codebase.
+- **Resumption**: When `/gsd-resume-work` is used or when the user asks to **continue** the current work/workflow. You MUST review the codebase/project/current-task for any incompletions or gaps between prompts or sessions.
 
 ## Phase Execution & Review Workflow
 - **Pre-Phase Research:** Before researching, planning, or executing any phase, you MUST search for information by invoking `/agent-reach`. There is no exception.

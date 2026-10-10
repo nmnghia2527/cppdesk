@@ -8,6 +8,7 @@
 #include "../control/whiteboard_manager.hpp"
 #include "../media/voice_intercom.hpp"
 #include "../capture/display_manager.hpp"
+#include "../control/file_sync_manager.hpp"
 
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -115,6 +116,7 @@ struct ViewerSessionStats {
     uint32_t              deltaTilesCount = 0;
     float                 packetLossPercent = 0.0f;
     std::vector<float>    rttHistory;
+    VirtualDisplayStatusPayload lastVirtualDisplayStatus{};
 };
 
 struct StunNatResult {
@@ -216,6 +218,11 @@ public:
     bool connectToRemote(const std::string& targetIdOrAddr, const std::string& password);
     void disconnectViewer();
 
+    // Viewer 2FA synchronization
+    void submitViewerTotpCode(const std::string& code);
+    void cancelViewerTotp();
+    bool isWaitingForTotp() const;
+
     ViewerSessionStats viewerStats() const;
 
     // Copy latest decoded remote frame if frameSeq > lastSeenSeq
@@ -248,6 +255,12 @@ public:
     void selectRemoteMonitor(int monitorIndex);
     void updateQualitySettings(QualityPreset preset, uint8_t targetFps, bool adaptiveFps);
     void applyConnectionProfile(ConnectionProfile profile);
+
+    // Virtual Multi-Display Control APIs
+    bool requestCreateVirtualDisplay(uint32_t width = 1920, uint32_t height = 1080, uint32_t refreshRate = 60, bool preferIddCx = true);
+    bool requestDestroyVirtualDisplay(uint32_t displayId);
+    bool requestSetVirtualDisplayMode(uint32_t displayId, uint32_t width, uint32_t height, uint32_t refreshRate);
+
     bool isClipboardSyncEnabled() const { return clipboardSyncEnabled_.load(); }
     void setClipboardSyncEnabled(bool enabled) { clipboardSyncEnabled_.store(enabled); }
     ClipboardHistoryManager& clipboardHistory() { return clipboardManager_.history(); }
@@ -274,6 +287,13 @@ public:
     const ClipboardFileTransferManager& clipboardFileTransferManager() const { return clipFileMgr_; }
     ClipboardManager& clipboardManager() { return clipboardManager_; }
     const ClipboardManager& clipboardManager() const { return clipboardManager_; }
+    FileSyncManager& fileSyncManager() { return fileSyncMgr_; }
+    const FileSyncManager& fileSyncManager() const { return fileSyncMgr_; }
+
+    bool requestRemoteScan(const std::string& remotePath);
+    bool requestRemoteBlockHashes(const std::string& relativePath);
+    bool startFolderSync(const std::string& localPath, const std::string& remotePath, SyncMode mode, bool purge = false);
+    void cancelFolderSync();
 
     // Audio streaming controls (v2.1.0)
     void setAudioVolume(int percent);
@@ -283,11 +303,11 @@ public:
     void syncAudioControl();
     bool isHostAudioSuspended() const;
 
-    // Privacy screen controls (v2.1.0 & v3.2.0)
-    void requestTogglePrivacyMode();
+    // Privacy screen controls (v2.1.0, v3.2.0 & DPMS power management)
+    void requestTogglePrivacyMode(ScreenBlankMode blankMode = ScreenBlankMode::Unified);
     bool isPrivacyModeEngaged() const;
     bool isHostPrivacyModeActive() const;
-    void setHostPrivacyMode(bool enable, const std::string& notice = "", const std::string& brand = "", bool showId = true);
+    void setHostPrivacyMode(bool enable, const std::string& notice = "", const std::string& brand = "", bool showId = true, ScreenBlankMode blankMode = ScreenBlankMode::Unified);
     void configurePrivacyCurtain(const std::string& notice, const std::string& brand, bool showId);
 
     // TCP Port Forwarding & Tunneling Manager (v2.1.0)
@@ -449,6 +469,13 @@ private:
     mutable std::mutex          viewerStatsMutex_;
     ViewerSessionStats          viewerStats_;
 
+    // Viewer 2FA synchronization
+    mutable std::mutex          viewerTotpMutex_;
+    std::condition_variable     viewerTotpCv_;
+    std::string                 viewerTotpCode_;
+    bool                        viewerTotpSubmitted_ = false;
+    bool                        viewerTotpCancelled_ = false;
+
     mutable std::mutex          viewerFrameMutex_;
     std::vector<uint8_t>        viewerCanvasBgra_;
     int                         viewerCanvasW_ = 0;
@@ -583,6 +610,9 @@ private:
     std::string                                rebootResumeToken_;
     uint64_t                                   rebootResumeDeskId_ = 0;
     std::string                                rebootResumeTargetInput_;
+
+    // Remote File Synchronization & Folder Mirroring
+    FileSyncManager                            fileSyncMgr_;
 };
 
 } // namespace cppdesk

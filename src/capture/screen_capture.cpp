@@ -614,12 +614,35 @@ std::vector<MonitorDesc> ScreenCapturer::enumerateMonitors() {
                 d.isPrimary = (mi.dwFlags & MONITORINFOF_PRIMARY) != 0;
                 d.name = "Display " + std::to_string(d.index + 1) +
                          " (" + std::to_string(d.width) + "x" + std::to_string(d.height) + ")";
+                d.isVirtual = false;
+                d.virtualId = 0;
                 c->list->push_back(d);
             }
             return TRUE;
         },
         reinterpret_cast<LPARAM>(&ctx)
     );
+
+    // If host has 0 physical monitors and auto-headless is active, provision fallback virtual display
+    if (monitors_.empty() && autoHeadless_) {
+        VirtualDisplayManager::instance().ensureHeadlessDisplay();
+    }
+
+    // Merge active virtual displays
+    auto vDisplays = VirtualDisplayManager::instance().activeDisplays();
+    for (const auto& vd : vDisplays) {
+        MonitorDesc d;
+        d.index = static_cast<int32_t>(monitors_.size());
+        d.x = vd.x;
+        d.y = vd.y;
+        d.width = static_cast<int32_t>(vd.width);
+        d.height = static_cast<int32_t>(vd.height);
+        d.isPrimary = monitors_.empty();
+        d.name = vd.name;
+        d.isVirtual = true;
+        d.virtualId = vd.id;
+        monitors_.push_back(d);
+    }
 
     if (monitors_.empty()) {
         MonitorDesc fallback;
@@ -630,6 +653,8 @@ std::vector<MonitorDesc> ScreenCapturer::enumerateMonitors() {
         fallback.height = std::max(600, GetSystemMetrics(SM_CYSCREEN));
         fallback.isPrimary = true;
         fallback.name = "Primary Display";
+        fallback.isVirtual = false;
+        fallback.virtualId = 0;
         monitors_.push_back(fallback);
     }
     return monitors_;
@@ -647,6 +672,8 @@ bool ScreenCapturer::selectMonitor(int monitorIndex) {
         activeMonitor_.height = std::max(1, GetSystemMetrics(SM_CYVIRTUALSCREEN));
         activeMonitor_.isPrimary = false;
         activeMonitor_.name = "All Displays (Grid View)";
+        activeMonitor_.isVirtual = false;
+        activeMonitor_.virtualId = 0;
 
         frameW_ = activeMonitor_.width;
         frameH_ = activeMonitor_.height;
@@ -669,6 +696,14 @@ bool ScreenCapturer::selectMonitor(int monitorIndex) {
     currentFrame_.assign(static_cast<size_t>(frameW_) * frameH_ * 4, 0);
     prevTileHashes_.clear();
     hasValidFrame_ = false;
+
+    if (activeMonitor_.isVirtual) {
+        releaseDxgi();
+        dxgiRecoveryState_ = DxgiRecoveryState::Disabled;
+        lastDxgiAttemptTick_ = 0;
+        return true;
+    }
+
     dxgiRecoveryState_ = DxgiRecoveryState::Active;
     lastDxgiAttemptTick_ = 0;
 
@@ -999,6 +1034,9 @@ CursorState ScreenCapturer::captureCursorState() const {
         cs.visible = (ci.flags & CURSOR_SHOWING) != 0;
         int relX = ci.ptScreenPos.x - activeMonitor_.x;
         int relY = ci.ptScreenPos.y - activeMonitor_.y;
+        if (activeMonitor_.isVirtual && (relX < 0 || relX > frameW_ || relY < 0 || relY > frameH_)) {
+            cs.visible = false;
+        }
         cs.normX = std::clamp(static_cast<float>(relX) / std::max(1, frameW_), 0.0f, 1.0f);
         cs.normY = std::clamp(static_cast<float>(relY) / std::max(1, frameH_), 0.0f, 1.0f);
     } else {
@@ -1006,9 +1044,13 @@ CursorState ScreenCapturer::captureCursorState() const {
         GetCursorPos(&pt);
         int relX = pt.x - activeMonitor_.x;
         int relY = pt.y - activeMonitor_.y;
+        if (activeMonitor_.isVirtual && (relX < 0 || relX > frameW_ || relY < 0 || relY > frameH_)) {
+            cs.visible = false;
+        } else {
+            cs.visible = true;
+        }
         cs.normX = std::clamp(static_cast<float>(relX) / std::max(1, frameW_), 0.0f, 1.0f);
         cs.normY = std::clamp(static_cast<float>(relY) / std::max(1, frameH_), 0.0f, 1.0f);
-        cs.visible = true;
     }
     return cs;
 }
@@ -1027,7 +1069,7 @@ bool ScreenCapturer::captureDirtyTiles(
     bool hasExplicitDirtyRects = false;
 
     // Check if background recovery from FallbackGdi should be attempted (500ms cooldown)
-    if (dxgiRecoveryState_ == DxgiRecoveryState::FallbackGdi && activeMonitorIdx_ >= 0) {
+    if (dxgiRecoveryState_ == DxgiRecoveryState::FallbackGdi && activeMonitorIdx_ >= 0 && !activeMonitor_.isVirtual) {
         uint64_t now = GetTickCount64();
         if (now - lastDxgiAttemptTick_ >= 500) {
             lastDxgiAttemptTick_ = now;
@@ -1039,12 +1081,21 @@ bool ScreenCapturer::captureDirtyTiles(
     }
 
     auto tCapStart = std::chrono::steady_clock::now();
-    if (dxgiInitialized_ && dxgiRecoveryState_ == DxgiRecoveryState::Active) {
-        captured = captureViaDxgi(dxgiUpdated, dxgiDirtyRects, hasExplicitDirtyRects);
-    }
-    if (!captured || !hasValidFrame_) {
-        if (!captureViaGdi()) {
+    if (activeMonitor_.isVirtual) {
+        captured = VirtualDisplayManager::instance().captureSoftwareSurface(activeMonitor_.virtualId, currentFrame_, frameW_, frameH_);
+        if (captured) {
+            hasValidFrame_ = true;
+        } else {
             return false;
+        }
+    } else {
+        if (dxgiInitialized_ && dxgiRecoveryState_ == DxgiRecoveryState::Active) {
+            captured = captureViaDxgi(dxgiUpdated, dxgiDirtyRects, hasExplicitDirtyRects);
+        }
+        if (!captured || !hasValidFrame_) {
+            if (!captureViaGdi()) {
+                return false;
+            }
         }
     }
     auto tCapEnd = std::chrono::steady_clock::now();

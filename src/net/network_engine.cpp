@@ -1,5 +1,7 @@
 #include "network_engine.hpp"
 #include "../control/windows_service_manager.hpp"
+#include "../capture/virtual_display_manager.hpp"
+#include "../capture/screen_blank_manager.hpp"
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -18,6 +20,7 @@
 
 #include <cstring>
 #include <chrono>
+#include <ctime>
 #include <algorithm>
 #include <deque>
 
@@ -1026,6 +1029,9 @@ void NetworkEngine::stop() {
     stopHostTerminal();
     stopHostTunnelProxy();
     destroyPrivacyCurtainWindow();
+    ScreenBlankManager::instance().setEmergencyWakeCallback(nullptr);
+    ScreenBlankManager::instance().disengageBlanking();
+    ScreenBlankManager::wakeDisplays();
     shutdownViewerAudioPlayback();
     stopViewerTunnelMultiplexer();
 
@@ -1398,6 +1404,9 @@ void NetworkEngine::runHostSession(uintptr_t clientSock, std::string clientIp) {
     auto cleanup = [&]() {
         stopHostAudioCapture();
         destroyPrivacyCurtainWindow();
+        ScreenBlankManager::instance().setEmergencyWakeCallback(nullptr);
+        ScreenBlankManager::instance().disengageBlanking();
+        ScreenBlankManager::wakeDisplays();
         stopHostTerminal();
         stopHostTunnelProxy();
         whiteboardMgr_.hideHostOverlay();
@@ -1425,6 +1434,7 @@ void NetworkEngine::runHostSession(uintptr_t clientSock, std::string clientIp) {
             std::lock_guard<std::mutex> lock(hostStatusMutex_);
             hostStatus_ = HostSessionStatus{};
         }
+        VirtualDisplayManager::instance().destroyAllSessionDisplays();
     };
 
     try {
@@ -1515,11 +1525,80 @@ void NetworkEngine::runHostSession(uintptr_t clientSock, std::string clientIp) {
             }
         } else if (hasPassword != 0) {
             if (identity_.verifyChallengeResponse(viewerId, nonce, clientDigest)) {
-                recordAuthResultForIp(clientIp, true);
-                accepted = true;
-                grantedPerms = identity_.settings().defaultPermissions;
-                resultCode = AuthResultCode::Accepted;
-                resultMsg = "Authenticated via Encrypted Challenge-Response";
+                // Unattended password verified successfully!
+                if (identity_.settings().totpEnabled && identity_.totpManager().isConfigured()) {
+                    // Host requires Two-Factor Authentication!
+                    bool totpVerified = false;
+                    int totpAttempts = 0;
+                    const int maxTotpAttempts = 3;
+
+                    // Send initial AUTH_RESULT with TotpRequired
+                    {
+                        ByteWriter w;
+                        w.writeU8(static_cast<uint8_t>(AuthResultCode::TotpRequired));
+                        w.writeU8(0);
+                        w.writeString("Two-Factor Authentication Required");
+                        if (!sendFrame(clientSock, PacketType::AUTH_RESULT, 0, w.buffer().data(), w.buffer().size(), hostSendMutex_)) {
+                            cleanup();
+                            return;
+                        }
+                    }
+
+                    // Set 45-second socket timeout for TOTP verification
+                    setSocketTimeoutMs(toWinSock(clientSock), 45000);
+
+                    while (totpAttempts < maxTotpAttempts && running_.load()) {
+                        if (!recvFrame(clientSock, hdr, payload)) {
+                            cleanup();
+                            return;
+                        }
+                        if (static_cast<PacketType>(hdr.type) != PacketType::TOTP_VERIFY) {
+                            cleanup();
+                            return;
+                        }
+
+                        ByteReader totpReader(payload);
+                        std::string codeStr = totpReader.readString();
+                        uint64_t currentUnixTime = static_cast<uint64_t>(std::time(nullptr));
+
+                        if (identity_.totpManager().verifyCode(codeStr, currentUnixTime, 1)) {
+                            totpVerified = true;
+                            break;
+                        } else {
+                            totpAttempts++;
+                            if (totpAttempts < maxTotpAttempts) {
+                                ByteWriter w;
+                                w.writeU8(static_cast<uint8_t>(AuthResultCode::TotpInvalid));
+                                w.writeU8(0);
+                                w.writeString("Invalid Two-Factor Authentication Code. Please try again.");
+                                if (!sendFrame(clientSock, PacketType::AUTH_RESULT, 0, w.buffer().data(), w.buffer().size(), hostSendMutex_)) {
+                                    cleanup();
+                                    return;
+                                }
+                            }
+                        }
+                    }
+
+                    if (totpVerified) {
+                        recordAuthResultForIp(clientIp, true);
+                        accepted = true;
+                        grantedPerms = identity_.settings().defaultPermissions;
+                        resultCode = AuthResultCode::Accepted;
+                        resultMsg = "Authenticated via Unattended Password and TOTP 2FA";
+                    } else {
+                        recordAuthResultForIp(clientIp, false);
+                        accepted = false;
+                        resultCode = AuthResultCode::InvalidPassword;
+                        resultMsg = "Two-Factor Authentication failed (exceeded attempts or invalid code)";
+                    }
+                } else {
+                    // Standard unattended access without 2FA
+                    recordAuthResultForIp(clientIp, true);
+                    accepted = true;
+                    grantedPerms = identity_.settings().defaultPermissions;
+                    resultCode = AuthResultCode::Accepted;
+                    resultMsg = "Authenticated via Encrypted Challenge-Response";
+                }
             } else {
                 recordAuthResultForIp(clientIp, false);
                 accepted = false;
@@ -1619,8 +1698,26 @@ void NetworkEngine::runHostSession(uintptr_t clientSock, std::string clientIp) {
             hostStatus_.securityFingerprint = sasFingerprint;
         }
 
+        // Auto-provision virtual display if host is headless
+        if (identity_.settings().autoVirtualDisplay && VirtualDisplayManager::isHostHeadless()) {
+            VirtualDisplayManager::instance().ensureHeadlessDisplay(1920, 1080, 60);
+        }
+
+        // Register emergency wake callback for local physical interruptions
+        ScreenBlankManager::instance().setEmergencyWakeCallback([this]() {
+            hostPrivacyModeActive_.store(false);
+            PrivacyModeConfigPayload ack{};
+            ack.enable = 0;
+            ack.acknowledge = 1;
+            ack.blankMode = static_cast<uint8_t>(ScreenBlankManager::instance().currentBlankMode());
+            ByteWriter w;
+            w.writeBytes(&ack, sizeof(ack));
+            sendHostEncryptedPacket(PacketType::PRIVACY_MODE_TOGGLE, 0, w.buffer().data(), w.buffer().size());
+        });
+
         // 5. Initialize ScreenCapturer & send encrypted VIDEO_CONFIG
         ScreenCapturer capturer;
+        capturer.setAutoHeadless(identity_.settings().autoVirtualDisplay);
         auto monitors = capturer.enumerateMonitors();
         capturer.selectMonitor(0);
 
@@ -1639,8 +1736,17 @@ void NetworkEngine::runHostSession(uintptr_t clientSock, std::string clientIp) {
                 w.writeI32(m.height);
                 w.writeU8(m.isPrimary ? 1 : 0);
                 w.writeString(m.name);
+                w.writeU8(m.isVirtual ? 1 : 0);
+                w.writeU32(m.virtualId);
             }
             return sendHostEncryptedPacket(PacketType::VIDEO_CONFIG, 0, w.buffer().data(), w.buffer().size());
+        };
+
+        auto broadcastMonitorList = [&]() -> bool {
+            monitors = capturer.enumerateMonitors();
+            std::vector<uint8_t> monPayload;
+            serializeMonitorList(monitors, monPayload);
+            return sendHostEncryptedPacket(PacketType::MONITOR_LIST, 0, monPayload.data(), monPayload.size());
         };
 
         if (!sendVideoConfig()) {
@@ -1870,6 +1976,76 @@ void NetworkEngine::runHostSession(uintptr_t clientSock, std::string clientIp) {
                             }
                             break;
                         }
+                        case PacketType::VIRTUAL_DISPLAY_CMD: {
+                            VirtualDisplayCmdPayload cmd{};
+                            if (deserializeVirtualDisplayCmd(payload.data(), payload.size(), cmd)) {
+                                VirtualDisplayStatusPayload status{};
+                                status.displayId = cmd.displayId;
+                                status.width = cmd.width;
+                                status.height = cmd.height;
+                                status.refreshRate = cmd.refreshRate;
+                                status.isVirtual = 1;
+                                status.isHeadlessFallback = 0;
+                                status.driverBackend = 0;
+
+                                if (cmd.cmd == static_cast<uint8_t>(VirtualDisplayCmdType::Create)) {
+                                    uint32_t newId = 0;
+                                    bool ok = VirtualDisplayManager::instance().createVirtualDisplay(
+                                        cmd.width, cmd.height, cmd.refreshRate,
+                                        (cmd.flags & 0x01) != 0,
+                                        &newId
+                                    );
+                                    if (ok) {
+                                        status.statusCode = static_cast<uint8_t>(VirtualDisplayStatusCode::Success);
+                                        status.displayId = newId;
+                                        VirtualDisplayInfo vinfo;
+                                        if (VirtualDisplayManager::instance().getDisplayInfo(newId, vinfo)) {
+                                            status.driverBackend = static_cast<uint8_t>(vinfo.backend);
+                                            status.width = vinfo.width;
+                                            status.height = vinfo.height;
+                                            status.refreshRate = vinfo.refreshRate;
+                                        }
+                                        status.message = "Virtual display created successfully";
+                                    } else {
+                                        status.statusCode = static_cast<uint8_t>(VirtualDisplayStatusCode::FailedGeneric);
+                                        status.message = "Failed to create virtual display surface";
+                                    }
+                                } else if (cmd.cmd == static_cast<uint8_t>(VirtualDisplayCmdType::Destroy)) {
+                                    bool ok = VirtualDisplayManager::instance().destroyVirtualDisplay(cmd.displayId);
+                                    if (ok) {
+                                        status.statusCode = static_cast<uint8_t>(VirtualDisplayStatusCode::Success);
+                                        status.message = "Virtual display destroyed";
+                                        if (capturer.currentMonitor().virtualId == cmd.displayId) {
+                                            requestedMonitor.store(0);
+                                            forceKeyframeFlag.store(true);
+                                        }
+                                    } else {
+                                        status.statusCode = static_cast<uint8_t>(VirtualDisplayStatusCode::NotFound);
+                                        status.message = "Virtual display not found";
+                                    }
+                                } else if (cmd.cmd == static_cast<uint8_t>(VirtualDisplayCmdType::SetMode)) {
+                                    bool ok = VirtualDisplayManager::instance().setVirtualDisplayMode(
+                                        cmd.displayId, cmd.width, cmd.height, cmd.refreshRate
+                                    );
+                                    if (ok) {
+                                        status.statusCode = static_cast<uint8_t>(VirtualDisplayStatusCode::Success);
+                                        status.message = "Virtual display mode updated";
+                                        if (capturer.currentMonitor().virtualId == cmd.displayId) {
+                                            forceKeyframeFlag.store(true);
+                                        }
+                                    } else {
+                                        status.statusCode = static_cast<uint8_t>(VirtualDisplayStatusCode::NotFound);
+                                        status.message = "Virtual display not found";
+                                    }
+                                }
+
+                                std::vector<uint8_t> stBytes;
+                                serializeVirtualDisplayStatus(status, stBytes);
+                                sendHostEncryptedPacket(PacketType::VIRTUAL_DISPLAY_STATUS, 0, stBytes.data(), stBytes.size());
+                                broadcastMonitorList();
+                            }
+                            break;
+                        }
                         case PacketType::MONITOR_SELECT: {
                             int32_t monIdx = r.readI32();
                             if (monIdx >= -1) {
@@ -2036,12 +2212,14 @@ void NetworkEngine::runHostSession(uintptr_t clientSock, std::string clientIp) {
                                     r.readBytes(&cp, sizeof(cp));
                                     cp.customNotice[sizeof(cp.customNotice) - 1] = '\0';
                                     cp.brandName[sizeof(cp.brandName) - 1] = '\0';
-                                    setHostPrivacyMode(cp.enable != 0, cp.customNotice, cp.brandName, cp.showDeskId != 0);
+                                    ScreenBlankMode bm = static_cast<ScreenBlankMode>(cp.blankMode);
+                                    setHostPrivacyMode(cp.enable != 0, cp.customNotice, cp.brandName, cp.showDeskId != 0, bm);
 
                                     PrivacyModeConfigPayload ack{};
                                     ack.enable = isHostPrivacyModeActive() ? 1 : 0;
                                     ack.acknowledge = 1;
                                     ack.showDeskId = cp.showDeskId;
+                                    ack.blankMode = static_cast<uint8_t>(ScreenBlankManager::instance().currentBlankMode());
                                     std::snprintf(ack.customNotice, sizeof(ack.customNotice), "%s", cp.customNotice);
                                     std::snprintf(ack.brandName, sizeof(ack.brandName), "%s", cp.brandName);
                                     ByteWriter w;
@@ -2196,6 +2374,61 @@ void NetworkEngine::runHostSession(uintptr_t clientSock, std::string clientIp) {
                         }
                         case PacketType::RESOLUTION_CHANGE_REQ: {
                             handleIncomingResolutionChangeReq(r.currentPtr(), r.remaining(), perms);
+                            break;
+                        }
+                        case PacketType::SYNC_SCAN_REQ: {
+                            if (perms & PERM_FILE_TRANSFER) {
+                                SyncScanReqPayload req;
+                                if (deserializeSyncScanReq(payload.data(), payload.size(), req)) {
+                                    SyncScanRespPayload resp;
+                                    fileSyncMgr_.handleScanReqHost(req, resp);
+                                    std::vector<uint8_t> respBuf;
+                                    serializeSyncScanResp(resp, respBuf);
+                                    sendPacketHelper(PacketType::SYNC_SCAN_RESP, respBuf);
+                                }
+                            }
+                            break;
+                        }
+                        case PacketType::SYNC_HASH_REQ: {
+                            if (perms & PERM_FILE_TRANSFER) {
+                                SyncHashReqPayload req;
+                                if (deserializeSyncHashReq(payload.data(), payload.size(), req)) {
+                                    SyncHashRespPayload resp;
+                                    fileSyncMgr_.handleHashReqHost(req, resp);
+                                    std::vector<uint8_t> respBuf;
+                                    serializeSyncHashResp(resp, respBuf);
+                                    sendPacketHelper(PacketType::SYNC_HASH_RESP, respBuf);
+                                }
+                            }
+                            break;
+                        }
+                        case PacketType::SYNC_DELTA_BLOCK: {
+                            if (perms & PERM_FILE_TRANSFER) {
+                                SyncDeltaBlockPayload block;
+                                if (deserializeSyncDeltaBlock(payload.data(), payload.size(), block)) {
+                                    fileSyncMgr_.handleDeltaBlock(block);
+                                }
+                            }
+                            break;
+                        }
+                        case PacketType::SYNC_ACTION_REQ: {
+                            if (perms & PERM_FILE_TRANSFER) {
+                                SyncActionReqPayload req;
+                                if (deserializeSyncActionReq(payload.data(), payload.size(), req)) {
+                                    SyncActionRespPayload resp;
+                                    fileSyncMgr_.handleActionReq(req, resp);
+                                    std::vector<uint8_t> respBuf;
+                                    serializeSyncActionResp(resp, respBuf);
+                                    sendPacketHelper(PacketType::SYNC_ACTION_RESP, respBuf);
+                                }
+                            }
+                            break;
+                        }
+                        case PacketType::SYNC_STATUS_UPDATE: {
+                            SyncStatusUpdatePayload status;
+                            if (deserializeSyncStatusUpdate(payload.data(), payload.size(), status)) {
+                                fileSyncMgr_.handleStatusUpdate(status);
+                            }
                             break;
                         }
                         case PacketType::DISCONNECT:
@@ -2362,6 +2595,8 @@ void NetworkEngine::runHostSession(uintptr_t clientSock, std::string clientIp) {
                 });
             }
 
+            fileSyncMgr_.pumpOutgoingSync(sendPacketHelper, 4);
+
             uint64_t elapsed = nowTickMs() - frameStart;
             uint64_t targetInterval = (effectiveFps >= 60) ? 16 :
                                       (effectiveFps >= 30) ? 33 : 66;
@@ -2438,6 +2673,12 @@ void NetworkEngine::disconnectViewer() {
     }
     fileManager_.abortActiveTransfers();
     {
+        std::lock_guard<std::mutex> lock(viewerTotpMutex_);
+        viewerTotpCancelled_ = true;
+        viewerTotpSubmitted_ = false;
+        viewerTotpCv_.notify_all();
+    }
+    {
         std::lock_guard<std::mutex> lock(viewerStatsMutex_);
         if (viewerStats_.state != ViewerConnectionState::Error) {
             viewerStats_.state = ViewerConnectionState::Disconnected;
@@ -2449,6 +2690,26 @@ void NetworkEngine::disconnectViewer() {
         viewerFullCanvasDirty_ = true;
         viewerDirtyBounds_ = RECT{0, 0, 0, 0};
     }
+}
+
+void NetworkEngine::submitViewerTotpCode(const std::string& code) {
+    std::lock_guard<std::mutex> lock(viewerTotpMutex_);
+    viewerTotpCode_ = code;
+    viewerTotpSubmitted_ = true;
+    viewerTotpCancelled_ = false;
+    viewerTotpCv_.notify_all();
+}
+
+void NetworkEngine::cancelViewerTotp() {
+    std::lock_guard<std::mutex> lock(viewerTotpMutex_);
+    viewerTotpCancelled_ = true;
+    viewerTotpSubmitted_ = false;
+    viewerTotpCv_.notify_all();
+}
+
+bool NetworkEngine::isWaitingForTotp() const {
+    std::lock_guard<std::mutex> lock(viewerStatsMutex_);
+    return viewerStats_.state == ViewerConnectionState::WaitingTotp;
 }
 
 ViewerSessionStats NetworkEngine::viewerStats() const {
@@ -2801,6 +3062,73 @@ void NetworkEngine::runViewerSession(std::string targetInput, std::string passwo
                     uint8_t perms = r.readU8();
                     std::string msg = r.readString();
 
+                    if (code == AuthResultCode::TotpRequired || code == AuthResultCode::TotpInvalid) {
+                        while (viewerActive_.load()) {
+                            setStatus(ViewerConnectionState::WaitingTotp,
+                                      (code == AuthResultCode::TotpInvalid)
+                                          ? "Invalid 2FA code. Please try again."
+                                          : "Two-Factor Authentication required. Enter the 6-digit code.");
+
+                            // Wait for user input via modal dialog
+                            std::string codeToSend;
+                            {
+                                std::unique_lock<std::mutex> lock(viewerTotpMutex_);
+                                viewerTotpSubmitted_ = false;
+                                viewerTotpCancelled_ = false;
+                                viewerTotpCode_.clear();
+                                bool signaled = viewerTotpCv_.wait_for(lock, std::chrono::seconds(45), [&]() {
+                                    return viewerTotpSubmitted_ || viewerTotpCancelled_ || !viewerActive_.load();
+                                });
+                                if (!signaled || viewerTotpCancelled_ || !viewerActive_.load()) {
+                                    setStatus(ViewerConnectionState::Error, "2FA verification cancelled or timed out.");
+                                    closeWinSock(vSock);
+                                    viewerSock_.store(~uintptr_t(0));
+                                    return false;
+                                }
+                                codeToSend = viewerTotpCode_;
+                            }
+
+                            // Send PacketType::TOTP_VERIFY
+                            ByteWriter tw;
+                            tw.writeString(codeToSend);
+                            if (!sendFrame(vSock, PacketType::TOTP_VERIFY, 0, tw.buffer().data(), tw.buffer().size(), viewerSendMutex_)) {
+                                setStatus(ViewerConnectionState::Error, "Failed to send 2FA verification code.");
+                                closeWinSock(vSock);
+                                viewerSock_.store(~uintptr_t(0));
+                                return false;
+                            }
+
+                            // Receive next result packet
+                            if (!recvFrame(vSock, hdr, payload)) {
+                                setStatus(ViewerConnectionState::Error, "Connection closed during 2FA verification.");
+                                closeWinSock(vSock);
+                                viewerSock_.store(~uintptr_t(0));
+                                return false;
+                            }
+
+                            if (static_cast<PacketType>(hdr.type) == PacketType::AUTH_RESULT) {
+                                ByteReader r2(payload);
+                                code = static_cast<AuthResultCode>(r2.readU8());
+                                perms = r2.readU8();
+                                msg = r2.readString();
+
+                                if (code == AuthResultCode::Accepted) {
+                                    // Successfully verified! Break out and proceed to session cipher setup
+                                    break;
+                                } else if (code == AuthResultCode::TotpInvalid) {
+                                    // Code was wrong, loop again to prompt user with error caption
+                                    continue;
+                                } else {
+                                    // Locked out, rate-limited, or host error
+                                    setStatus(ViewerConnectionState::Error, msg.empty() ? "2FA verification failed." : msg);
+                                    closeWinSock(vSock);
+                                    viewerSock_.store(~uintptr_t(0));
+                                    return false;
+                                }
+                            }
+                        }
+                    }
+
                     if (code != AuthResultCode::Accepted) {
                         if (!isReconnecting) {
                             setStatus(ViewerConnectionState::Error, msg.empty() ? "Authentication rejected." : msg);
@@ -2951,6 +3279,7 @@ void NetworkEngine::runViewerSession(std::string targetInput, std::string passwo
                 }
 
                 fileManager_.pumpOutgoingChunks(sendPacketHelper, 4);
+                fileSyncMgr_.pumpOutgoingSync(sendPacketHelper, 4);
 
                 SOCKET ws = toWinSock(vSock);
                 if (ws == INVALID_SOCKET) {
@@ -2998,6 +3327,10 @@ void NetworkEngine::runViewerSession(std::string targetInput, std::string passwo
                                 m.height = r.readI32();
                                 m.isPrimary = (r.readU8() != 0);
                                 m.name = r.readString();
+                                if (r.hasRemaining(1 + 4)) {
+                                    m.isVirtual = (r.readU8() != 0);
+                                    m.virtualId = r.readU32();
+                                }
                                 mons.push_back(m);
                             }
                             {
@@ -3018,24 +3351,22 @@ void NetworkEngine::runViewerSession(std::string targetInput, std::string passwo
                             break;
                         }
                         case PacketType::MONITOR_LIST: {
-                            uint16_t mcount = r.readU16();
                             std::vector<MonitorDesc> mons;
-                            mons.reserve(mcount);
-                            for (uint16_t i = 0; i < mcount; ++i) {
-                                MonitorDesc m;
-                                m.index = r.readI32();
-                                m.x = r.readI32();
-                                m.y = r.readI32();
-                                m.width = r.readI32();
-                                m.height = r.readI32();
-                                m.isPrimary = (r.readU8() != 0);
-                                m.name = r.readString();
-                                mons.push_back(m);
-                            }
-                            {
+                            if (deserializeMonitorList(payload.data(), payload.size(), mons)) {
                                 std::lock_guard<std::mutex> lock(viewerStatsMutex_);
                                 viewerStats_.monitors = std::move(mons);
                                 viewerStats_.monitorCount = std::max<int>(1, static_cast<int>(viewerStats_.monitors.size()));
+                            }
+                            break;
+                        }
+                        case PacketType::VIRTUAL_DISPLAY_STATUS: {
+                            VirtualDisplayStatusPayload status{};
+                            if (deserializeVirtualDisplayStatus(payload.data(), payload.size(), status)) {
+                                std::lock_guard<std::mutex> lock(viewerStatsMutex_);
+                                viewerStats_.lastVirtualDisplayStatus = status;
+                                if (!status.message.empty()) {
+                                    viewerStats_.statusMessage = status.message;
+                                }
                             }
                             break;
                         }
@@ -3427,6 +3758,42 @@ void NetworkEngine::runViewerSession(std::string targetInput, std::string passwo
                             }
                             break;
                         }
+                        case PacketType::SYNC_SCAN_RESP: {
+                            SyncScanRespPayload resp;
+                            if (deserializeSyncScanResp(payload.data(), payload.size(), resp)) {
+                                fileSyncMgr_.handleScanResp(resp);
+                                fileSyncMgr_.generateDiffPlan();
+                            }
+                            break;
+                        }
+                        case PacketType::SYNC_HASH_RESP: {
+                            SyncHashRespPayload resp;
+                            if (deserializeSyncHashResp(payload.data(), payload.size(), resp)) {
+                                fileSyncMgr_.handleHashResp(resp);
+                            }
+                            break;
+                        }
+                        case PacketType::SYNC_DELTA_BLOCK: {
+                            SyncDeltaBlockPayload block;
+                            if (deserializeSyncDeltaBlock(payload.data(), payload.size(), block)) {
+                                fileSyncMgr_.handleDeltaBlock(block);
+                            }
+                            break;
+                        }
+                        case PacketType::SYNC_STATUS_UPDATE: {
+                            SyncStatusUpdatePayload status;
+                            if (deserializeSyncStatusUpdate(payload.data(), payload.size(), status)) {
+                                fileSyncMgr_.handleStatusUpdate(status);
+                            }
+                            break;
+                        }
+                        case PacketType::SYNC_ACTION_RESP: {
+                            SyncActionRespPayload resp;
+                            if (deserializeSyncActionResp(payload.data(), payload.size(), resp)) {
+                                fileSyncMgr_.handleActionResp(resp);
+                            }
+                            break;
+                        }
                         case PacketType::DISCONNECT:
                             viewerActive_.store(false);
                             break;
@@ -3602,6 +3969,51 @@ void NetworkEngine::selectRemoteMonitor(int monitorIndex) {
     sendViewerEncryptedPacket(PacketType::MONITOR_SELECT, 0, w.buffer().data(), w.buffer().size());
 }
 
+bool NetworkEngine::requestCreateVirtualDisplay(uint32_t width, uint32_t height, uint32_t refreshRate, bool preferIddCx) {
+    if (viewerSock_.load() == ~uintptr_t(0)) return false;
+    VirtualDisplayCmdPayload cmd{};
+    cmd.cmd = static_cast<uint8_t>(VirtualDisplayCmdType::Create);
+    cmd.displayId = 0;
+    cmd.width = (width > 0) ? width : 1920;
+    cmd.height = (height > 0) ? height : 1080;
+    cmd.refreshRate = (refreshRate > 0) ? refreshRate : 60;
+    cmd.flags = preferIddCx ? 0x01 : 0x02;
+
+    std::vector<uint8_t> buf;
+    serializeVirtualDisplayCmd(cmd, buf);
+    return sendViewerEncryptedPacket(PacketType::VIRTUAL_DISPLAY_CMD, 0, buf.data(), buf.size());
+}
+
+bool NetworkEngine::requestDestroyVirtualDisplay(uint32_t displayId) {
+    if (viewerSock_.load() == ~uintptr_t(0)) return false;
+    VirtualDisplayCmdPayload cmd{};
+    cmd.cmd = static_cast<uint8_t>(VirtualDisplayCmdType::Destroy);
+    cmd.displayId = displayId;
+    cmd.width = 0;
+    cmd.height = 0;
+    cmd.refreshRate = 0;
+    cmd.flags = 0;
+
+    std::vector<uint8_t> buf;
+    serializeVirtualDisplayCmd(cmd, buf);
+    return sendViewerEncryptedPacket(PacketType::VIRTUAL_DISPLAY_CMD, 0, buf.data(), buf.size());
+}
+
+bool NetworkEngine::requestSetVirtualDisplayMode(uint32_t displayId, uint32_t width, uint32_t height, uint32_t refreshRate) {
+    if (viewerSock_.load() == ~uintptr_t(0)) return false;
+    VirtualDisplayCmdPayload cmd{};
+    cmd.cmd = static_cast<uint8_t>(VirtualDisplayCmdType::SetMode);
+    cmd.displayId = displayId;
+    cmd.width = (width > 0) ? width : 1920;
+    cmd.height = (height > 0) ? height : 1080;
+    cmd.refreshRate = (refreshRate > 0) ? refreshRate : 60;
+    cmd.flags = 0;
+
+    std::vector<uint8_t> buf;
+    serializeVirtualDisplayCmd(cmd, buf);
+    return sendViewerEncryptedPacket(PacketType::VIRTUAL_DISPLAY_CMD, 0, buf.data(), buf.size());
+}
+
 void NetworkEngine::updateQualitySettings(QualityPreset preset, uint8_t targetFps, bool adaptiveFps) {
     if (viewerSock_.load() == ~uintptr_t(0)) return;
     {
@@ -3720,6 +4132,59 @@ void NetworkEngine::pushLocalClipboardNow() {
     }
 }
 
+bool NetworkEngine::requestRemoteScan(const std::string& remotePath) {
+    fileSyncMgr_.setRemoteRoot(remotePath);
+    SyncScanReqPayload req;
+    req.scanId = static_cast<uint32_t>(GetTickCount64());
+    req.rootPath = remotePath;
+    req.flags = 0x01; // Recursive
+    std::vector<uint8_t> buf;
+    serializeSyncScanReq(req, buf);
+    if (viewerSock_.load() != ~uintptr_t(0)) {
+        return sendViewerEncryptedPacket(PacketType::SYNC_SCAN_REQ, 0, buf.data(), buf.size());
+    } else if (activeHostClientSock_.load() != ~uintptr_t(0)) {
+        return sendHostEncryptedPacket(PacketType::SYNC_SCAN_REQ, 0, buf.data(), buf.size());
+    }
+    return false;
+}
+
+bool NetworkEngine::requestRemoteBlockHashes(const std::string& relativePath) {
+    SyncHashReqPayload req;
+    req.syncId = 1;
+    req.fileId = 1;
+    req.relativePath = relativePath;
+    std::vector<uint8_t> buf;
+    serializeSyncHashReq(req, buf);
+    if (viewerSock_.load() != ~uintptr_t(0)) {
+        return sendViewerEncryptedPacket(PacketType::SYNC_HASH_REQ, 0, buf.data(), buf.size());
+    } else if (activeHostClientSock_.load() != ~uintptr_t(0)) {
+        return sendHostEncryptedPacket(PacketType::SYNC_HASH_REQ, 0, buf.data(), buf.size());
+    }
+    return false;
+}
+
+bool NetworkEngine::startFolderSync(const std::string& localPath, const std::string& remotePath, SyncMode mode, bool purge) {
+    fileSyncMgr_.setLocalRoot(localPath);
+    fileSyncMgr_.setRemoteRoot(remotePath);
+    fileSyncMgr_.setSyncMode(mode);
+    fileSyncMgr_.setMirrorPurge(purge);
+    return fileSyncMgr_.startSync();
+}
+
+void NetworkEngine::cancelFolderSync() {
+    fileSyncMgr_.cancelSync();
+    SyncActionReqPayload req;
+    req.actionId = static_cast<uint32_t>(GetTickCount64());
+    req.actionType = static_cast<uint8_t>(SyncActionType::AbortSync);
+    std::vector<uint8_t> buf;
+    serializeSyncActionReq(req, buf);
+    if (viewerSock_.load() != ~uintptr_t(0)) {
+        sendViewerEncryptedPacket(PacketType::SYNC_ACTION_REQ, 0, buf.data(), buf.size());
+    } else if (activeHostClientSock_.load() != ~uintptr_t(0)) {
+        sendHostEncryptedPacket(PacketType::SYNC_ACTION_REQ, 0, buf.data(), buf.size());
+    }
+}
+
 bool NetworkEngine::sendChatMessage(const std::string& text) {
     if (text.empty() || text.size() > 2048) return false;
 
@@ -3825,16 +4290,20 @@ void NetworkEngine::configurePrivacyCurtain(const std::string& notice, const std
     privacyCurtainShowId_ = showId;
 }
 
-void NetworkEngine::requestTogglePrivacyMode() {
+void NetworkEngine::requestTogglePrivacyMode(ScreenBlankMode blankMode) {
     bool current = viewerPrivacyModeActive_.load();
     const auto& s = identity_.settings();
+    if (!s.hardwareDpmsBlanking && blankMode == ScreenBlankMode::Unified) {
+        blankMode = ScreenBlankMode::CurtainOnly;
+    }
+
     std::string notice = !privacyCurtainNotice_.empty() ? privacyCurtainNotice_ : s.privacyCustomNotice;
     std::string brand = !privacyCurtainBrand_.empty() ? privacyCurtainBrand_ : s.privacyBrandName;
     PrivacyModeConfigPayload p{};
     p.enable = current ? 0 : 1;
     p.acknowledge = 0;
     p.showDeskId = privacyCurtainShowId_ ? 1 : 0;
-    p.reserved = 0;
+    p.blankMode = static_cast<uint8_t>(blankMode);
     std::snprintf(p.customNotice, sizeof(p.customNotice), "%s", notice.c_str());
     std::snprintf(p.brandName, sizeof(p.brandName), "%s", brand.c_str());
     ByteWriter w;
@@ -3847,10 +4316,10 @@ bool NetworkEngine::isPrivacyModeEngaged() const {
 }
 
 bool NetworkEngine::isHostPrivacyModeActive() const {
-    return hostPrivacyModeActive_.load();
+    return ScreenBlankManager::instance().isBlankActive() || hostPrivacyModeActive_.load();
 }
 
-void NetworkEngine::setHostPrivacyMode(bool enable, const std::string& notice, const std::string& brand, bool showId) {
+void NetworkEngine::setHostPrivacyMode(bool enable, const std::string& notice, const std::string& brand, bool showId, ScreenBlankMode blankMode) {
     if (enable) {
         if (!notice.empty()) privacyCurtainNotice_ = notice;
         else if (privacyCurtainNotice_.empty()) privacyCurtainNotice_ = identity_.settings().privacyCustomNotice;
@@ -3859,9 +4328,19 @@ void NetworkEngine::setHostPrivacyMode(bool enable, const std::string& notice, c
         else if (privacyCurtainBrand_.empty()) privacyCurtainBrand_ = identity_.settings().privacyBrandName;
 
         privacyCurtainShowId_ = showId;
-        createPrivacyCurtainWindow();
+
+        // Auto-provision virtual display if host is headless
+        if ((blankMode == ScreenBlankMode::DpmsOnly || blankMode == ScreenBlankMode::Unified) &&
+            identity_.settings().autoVirtualDisplay && VirtualDisplayManager::isHostHeadless()) {
+            VirtualDisplayManager::instance().ensureHeadlessDisplay(1920, 1080, 60);
+        }
+
+        ScreenBlankManager::instance().engageBlanking(blankMode, privacyCurtainNotice_, privacyCurtainBrand_, privacyCurtainShowId_, identity_.deskId());
+        hostPrivacyModeActive_.store(true);
     } else {
+        ScreenBlankManager::instance().disengageBlanking();
         destroyPrivacyCurtainWindow();
+        hostPrivacyModeActive_.store(false);
     }
 }
 
@@ -3929,6 +4408,7 @@ void NetworkEngine::destroyPrivacyCurtainWindow() {
         DestroyWindow(hwndPrivacyCurtain_);
         hwndPrivacyCurtain_ = nullptr;
     }
+    ScreenBlankManager::instance().disengageBlanking();
     hostPrivacyModeActive_.store(false);
 }
 

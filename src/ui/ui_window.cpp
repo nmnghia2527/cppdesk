@@ -7,6 +7,10 @@
 #include <dwmapi.h>
 #include <commdlg.h>
 #include <shellapi.h>
+#include <shobjidl.h>
+#ifdef DeleteFile
+#undef DeleteFile
+#endif
 
 #include <cstdio>
 #include <cmath>
@@ -183,6 +187,7 @@ CppDeskWindow::CppDeskWindow(IdentityManager& identity, NetworkEngine& network, 
     network_.setAudioMuted(s.audioMutedDefault);
     network_.configurePrivacyCurtain(s.privacyCustomNotice, s.privacyBrandName, s.privacyShowDeskId);
     updateActivePalette(themeAnimT_);
+    updateTotpQrMatrix();
 
     LARGE_INTEGER freq{}, now{};
     QueryPerformanceFrequency(&freq);
@@ -194,6 +199,9 @@ CppDeskWindow::CppDeskWindow(IdentityManager& identity, NetworkEngine& network, 
 CppDeskWindow::~CppDeskWindow() {
     if (sessionRecorder_.isRecording()) {
         sessionRecorder_.stopRecording();
+    }
+    if (recordingPlayer_) {
+        recordingPlayer_->close();
     }
     if (notificationMgr_) {
         notificationMgr_->shutdown();
@@ -385,10 +393,13 @@ bool CppDeskWindow::initGraphics() {
 void CppDeskWindow::discardDeviceResources() {
     if (appIconBitmap_) { appIconBitmap_->Release(); appIconBitmap_ = nullptr; }
     if (remoteBitmap_) { remoteBitmap_->Release(); remoteBitmap_ = nullptr; }
+    if (recordingPlayerBitmap_) { recordingPlayerBitmap_->Release(); recordingPlayerBitmap_ = nullptr; }
     if (solidBrush_) { solidBrush_->Release(); solidBrush_ = nullptr; }
     if (renderTarget_) { renderTarget_->Release(); renderTarget_ = nullptr; }
     bitmapW_ = 0;
     bitmapH_ = 0;
+    recordingPlayerBitmapW_ = 0;
+    recordingPlayerBitmapH_ = 0;
 }
 
 void CppDeskWindow::releaseGraphics() {
@@ -571,7 +582,24 @@ bool CppDeskWindow::stepAnimations(float dt) {
     float targetHwAccelModal = showHwAccelRestartModal_ ? 1.0f : 0.0f;
     if (stepSpring(hwAccelModalAnimT_, hwAccelModalAnimVel_, targetHwAccelModal, 28.0f, 0.74f, dt)) active = true;
 
-    // 15. Settings Tab Smooth Scroll Spring
+    // 15. Session Recording Player Modal Spring
+    float targetPlayerModal = showRecordingPlayer_ ? 1.0f : 0.0f;
+    if (stepSpring(recordingPlayerModalAnimT_, recordingPlayerModalAnimVel_, targetPlayerModal, 28.0f, 0.74f, dt)) active = true;
+
+    // 16. Viewer TOTP Challenge Modal Spring
+    bool waitingTotp = network_.isWaitingForTotp();
+    if (waitingTotp && !showTotpModal_) {
+        showTotpModal_ = true;
+        totpModalInput_.clear();
+        totpModalError_.clear();
+        focusedField_ = FocusedField::TotpModalCode;
+    } else if (!waitingTotp && showTotpModal_) {
+        showTotpModal_ = false;
+    }
+    float targetTotpModal = showTotpModal_ ? 1.0f : 0.0f;
+    if (stepSpring(totpModalAnimT_, totpModalAnimVel_, targetTotpModal, 28.0f, 0.74f, dt)) active = true;
+
+    // 17. Settings Tab Smooth Scroll Spring
     if (!draggingSettingsScrollbar_) {
         settingsScrollTarget_ = std::clamp(settingsScrollTarget_, 0.0f, settingsMaxScroll_);
         if (stepSpring(settingsScrollOffset_, settingsScrollVel_, settingsScrollTarget_, 32.0f, 0.88f, dt, 0.15f)) {
@@ -1433,7 +1461,8 @@ void CppDeskWindow::onPaint() {
         float scrimAlpha = std::clamp(drawerAnimT_, 0.0f, 1.0f) * 0.18f;
         fillRoundRect(contentBounds, 0.0f, rgba(28, 24, 20, scrimAlpha));
 
-        float drawerW = std::min(395.0f, width * 0.42f);
+        float targetDrawerW = (drawerTab_ == DrawerTab::Sync) ? 440.0f : 395.0f;
+        float drawerW = std::min(targetDrawerW, width * 0.48f);
         UiRect drawerBounds = { width - drawerW - 14.0f, topOffset + 12.0f, width - 14.0f, height - 14.0f };
         drawFileTransferDrawer(drawerBounds, drawerAnimT_);
     }
@@ -1481,6 +1510,16 @@ void CppDeskWindow::onPaint() {
     // Hardware Acceleration Restart Sheet Modal
     if (hwAccelModalAnimT_ > 0.004f) {
         drawHwAccelRestartModal(width, height, hwAccelModalAnimT_);
+    }
+
+    // Session Recording Player Sheet Modal
+    if (recordingPlayerModalAnimT_ > 0.004f) {
+        drawRecordingPlayerModal(width, height, recordingPlayerModalAnimT_);
+    }
+
+    // Viewer TOTP Challenge Modal
+    if (totpModalAnimT_ > 0.004f) {
+        drawTotpChallengeModal(width, height);
     }
 
     // Floating Capsule Toast
@@ -2464,9 +2503,9 @@ void CppDeskWindow::drawRemoteSessionView(const UiRect& bounds, float alpha) {
                    isMuted ? COL_TEXT_ACCENT : COL_TEXT_ON_ACCENT);
         rx = audioBtn.left - 6.0f;
 
-        // Privacy Mode Curtain Button
+        // Privacy Mode Screen Blank Button
         bool privacyOn = stats.privacyModeEngaged;
-        std::string privLabel = privacyOn ? "Privacy: ON" : "Privacy: OFF";
+        std::string privLabel = privacyOn ? "Blank: ON" : "Blank Screen";
         UiRect privBtn = { rx - 92.0f, hudBar.top + 8.0f, rx, hudBar.bottom - 8.0f };
         drawButton("sess_privacy_btn", privBtn, privLabel,
                    privacyOn ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
@@ -2848,7 +2887,7 @@ void CppDeskWindow::drawSettingsView(const UiRect& bounds, float alpha) {
     float staggerR = (1.0f - sR) * 14.0f;
 
     float pad = 20.0f;
-    float minCardsH = 808.0f;
+    float minCardsH = 1150.0f;
     float availCardsH = bounds.height() - (pad + 66.0f + 12.0f + pad);
     float cardsH = std::max(minCardsH, availCardsH);
     float totalContentH = pad + 66.0f + 12.0f + cardsH + pad;
@@ -3177,7 +3216,7 @@ void CppDeskWindow::drawSettingsView(const UiRect& bounds, float alpha) {
     ly = qualBox.bottom + 10.0f;
 
     // 4. Display & Acceleration
-    UiRect ovBox = { lx, ly, lrx, ly + 114.0f };
+    UiRect ovBox = { lx, ly, lrx, ly + 142.0f };
     fillRoundRect(ovBox, 12.0f, COL_BG_SUBTLE);
     strokeRoundRect(ovBox, 12.0f, COL_BORDER);
 
@@ -3207,10 +3246,17 @@ void CppDeskWindow::drawSettingsView(const UiRect& bounds, float alpha) {
                          showHwAccelRestartModal_ = true;
                      });
 
+    drawToggleSwitch("sett_auto_virtual_display", { ovBox.left + 16.0f, ovBox.top + 110.0f, ovBox.right - 16.0f, ovBox.top + 136.0f },
+                     s.autoVirtualDisplay, "Auto Virtual Display for Headless Host", [this]() {
+                         AppSettings ns = identity_.settings();
+                         ns.autoVirtualDisplay = !ns.autoVirtualDisplay;
+                         identity_.updateSettings(ns);
+                     });
+
     ly = ovBox.bottom + 10.0f;
 
     // 5. Curtain Screen & Privacy Branding (v3.2.0)
-    UiRect privBox = { lx, ly, lrx, ly + 128.0f };
+    UiRect privBox = { lx, ly, lrx, ly + 156.0f };
     fillRoundRect(privBox, 12.0f, COL_BG_SUBTLE);
     strokeRoundRect(privBox, 12.0f, COL_BORDER);
 
@@ -3251,6 +3297,16 @@ void CppDeskWindow::drawSettingsView(const UiRect& bounds, float alpha) {
         ns.privacyShowDeskId = !ns.privacyShowDeskId;
         identity_.updateSettings(ns);
         network_.configurePrivacyCurtain(ns.privacyCustomNotice, ns.privacyBrandName, ns.privacyShowDeskId);
+    });
+
+    // Row 4: Hardware DPMS Blanking toggle
+    float py4 = py3 + 28.0f;
+    UiRect dpmsToggle = { privBox.left + 16.0f, py4, privBox.right - 16.0f, py4 + 24.0f };
+    drawToggleSwitch("sett_priv_dpms_blank", dpmsToggle, s.hardwareDpmsBlanking,
+                     "Hardware DPMS Display Standby (Power Off Monitor)", [this]() {
+        AppSettings ns = identity_.settings();
+        ns.hardwareDpmsBlanking = !ns.hardwareDpmsBlanking;
+        identity_.updateSettings(ns);
     });
 
     ly = privBox.bottom + 10.0f;
@@ -3640,7 +3696,116 @@ void CppDeskWindow::drawSettingsView(const UiRect& bounds, float alpha) {
 
     ry = svcBox.bottom + 10.0f;
 
-    // 5. Data & Reset Actions
+    // 5. Two-Factor Authentication (TOTP)
+    UiRect totpBox = { rx, ry, rrx, ry + 246.0f };
+    fillRoundRect(totpBox, 12.0f, COL_BG_SUBTLE);
+    strokeRoundRect(totpBox, 12.0f, COL_BORDER);
+
+    drawText("TWO-FACTOR AUTHENTICATION (TOTP)",
+             { totpBox.left + 16.0f, totpBox.top + 8.0f, totpBox.right - 16.0f, totpBox.top + 22.0f },
+             fmtSmall_, COL_TEXT_ACCENT);
+
+    // Toggle 2FA switch
+    drawToggleSwitch("sett_totp_enable",
+                     { totpBox.left + 16.0f, totpBox.top + 26.0f, totpBox.right - 16.0f, totpBox.top + 50.0f },
+                     s.totpEnabled, "Require 2FA code for unattended access", [this, s]() {
+                         if (s.totpEnabled) {
+                             AppSettings ns = identity_.settings();
+                             ns.totpEnabled = false;
+                             identity_.updateSettings(ns);
+                             totpEnrollSuccess_ = false;
+                             totpEnrollFeedback_ = "2FA disabled.";
+                             showToast("Two-Factor Authentication Disabled");
+                         } else {
+                             showToast("Verify a 6-digit code below to enable 2FA", true);
+                         }
+                     });
+
+    // QR Code Box (110x110)
+    UiRect qrRect = { totpBox.left + 16.0f, totpBox.top + 56.0f, totpBox.left + 126.0f, totpBox.top + 166.0f };
+    renderQrCodeDirect2D(qrRect, totpQrMatrix_, totpQrMatrixSize_, alpha);
+
+    // Right of QR: Secret Key & Action Buttons
+    float totpInfoX = qrRect.right + 12.0f;
+    float totpInfoRx = totpBox.right - 16.0f;
+
+    drawText("Secret Key (Base32):", { totpInfoX, qrRect.top, totpInfoRx, qrRect.top + 16.0f }, fmtSmall_, COL_TEXT_SECONDARY);
+
+    std::string curSecret = s.totpSecret.empty() ? identity_.totpManager().getSecretBase32() : s.totpSecret;
+    std::string formattedKey = TotpManager::formatBase32Secret(curSecret);
+
+    UiRect keyBox = { totpInfoX, qrRect.top + 18.0f, totpInfoRx - 64.0f, qrRect.top + 46.0f };
+    fillRoundRect(keyBox, 6.0f, COL_BG_INPUT);
+    strokeRoundRect(keyBox, 6.0f, COL_BORDER);
+    drawText(formattedKey, { keyBox.left + 8.0f, keyBox.top, keyBox.right - 8.0f, keyBox.bottom },
+             fmtMono_, COL_TEXT_PRIMARY, DWRITE_TEXT_ALIGNMENT_LEADING);
+
+    UiRect copyBtn = { keyBox.right + 6.0f, keyBox.top, totpInfoRx, keyBox.bottom };
+    drawButton("sett_totp_copy", copyBtn, "Copy",
+               COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 6.0f, [this, curSecret]() {
+                   ClipboardManager::setClipboardUtf8(curSecret);
+                   showToast("Secret key copied to clipboard");
+               }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
+
+    UiRect regenBtn = { totpInfoX, keyBox.bottom + 8.0f, totpInfoRx, keyBox.bottom + 36.0f };
+    drawButton("sett_totp_regen", regenBtn, "Regenerate Secret Key",
+               COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 6.0f, [this]() {
+                   identity_.totpManager().generateNewSecret();
+                   std::string newSecret = identity_.totpManager().getSecretBase32();
+                   AppSettings ns = identity_.settings();
+                   ns.totpSecret = newSecret;
+                   ns.totpEnabled = false;
+                   identity_.updateSettings(ns);
+                   updateTotpQrMatrix();
+                   totpEnrollCodeEdit_.clear();
+                   totpEnrollSuccess_ = false;
+                   totpEnrollFeedback_ = "New key generated. Enter 6-digit code below to re-enable.";
+                   showToast("New 2FA key generated");
+               }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
+
+    // Row below QR: Test input field & "Verify & Enable"
+    float verifyY = qrRect.bottom + 10.0f;
+    drawText("Enrollment Code Verification:", { totpBox.left + 16.0f, verifyY, totpBox.right - 16.0f, verifyY + 16.0f },
+             fmtSmall_, COL_TEXT_SECONDARY);
+    verifyY += 18.0f;
+
+    float testFieldW = 120.0f;
+    UiRect testField = { totpBox.left + 16.0f, verifyY, totpBox.left + 16.0f + testFieldW, verifyY + 30.0f };
+    drawTextField("field_totp_enroll", FocusedField::TotpEnrollTestCode, testField,
+                  totpEnrollCodeEdit_, "000000", false);
+
+    float vBtnW = 124.0f;
+    UiRect verifyBtn = { testField.right + 8.0f, verifyY, testField.right + 8.0f + vBtnW, verifyY + 30.0f };
+    drawButton("sett_totp_verify", verifyBtn, s.totpEnabled ? "Verified" : "Verify & Enable",
+               s.totpEnabled ? COL_SEC_BTN_BG : COL_PRIMARY_ACCENT,
+               s.totpEnabled ? COL_SEC_BTN_HV : COL_PRIMARY_ACCENT_HV,
+               s.totpEnabled ? COL_TEXT_PRIMARY : COL_TEXT_ON_ACCENT, 6.0f, [this]() {
+                   if (totpEnrollCodeEdit_.size() == 6) {
+                       if (identity_.totpManager().verifyCode(totpEnrollCodeEdit_)) {
+                           AppSettings ns = identity_.settings();
+                           ns.totpEnabled = true;
+                           identity_.updateSettings(ns);
+                           totpEnrollSuccess_ = true;
+                           totpEnrollFeedback_ = "Code verified! 2FA enabled.";
+                           showToast("Two-Factor Authentication Enabled");
+                       } else {
+                           totpEnrollSuccess_ = false;
+                           totpEnrollFeedback_ = "Invalid 6-digit code. Check authenticator clock.";
+                           showToast("Invalid 2FA code", true);
+                       }
+                   } else {
+                       totpEnrollFeedback_ = "Please enter 6 digits.";
+                   }
+               }, fmtSmall_, s.totpEnabled, COL_BORDER);
+
+    UiRect fbRect = { verifyBtn.right + 8.0f, verifyY, totpBox.right - 16.0f, verifyY + 30.0f };
+    D2D1_COLOR_F fbCol = totpEnrollSuccess_ ? COL_SUCCESS : (totpEnrollFeedback_.empty() ? COL_TEXT_MUTED : COL_DANGER);
+    drawText(totpEnrollFeedback_.empty() ? (s.totpEnabled ? "2FA Active" : "Verification required") : totpEnrollFeedback_,
+             fbRect, fmtSmall_, fbCol, DWRITE_TEXT_ALIGNMENT_LEADING);
+
+    ry = totpBox.bottom + 10.0f;
+
+    // 6. Data & Reset Actions
     if (rightCard.bottom - 10.0f > ry + 36.0f) {
         UiRect maintBox = { rx, ry, rrx, rightCard.bottom - 16.0f };
         fillRoundRect(maintBox, 12.0f, COL_BG_SUBTLE);
@@ -3728,18 +3893,20 @@ void CppDeskWindow::drawFileTransferDrawer(const UiRect& bounds, float slideProg
     float rx = r.right - 20.0f;
     float y = r.top + 16.0f;
 
-    float tabW = (rx - x - 34.0f - 20.0f) / 5.0f;
+    float tabW = (rx - x - 34.0f - 25.0f) / 6.0f;
     UiRect tabFiles = { x, y, x + tabW, y + 32.0f };
     UiRect tabChat  = { tabFiles.right + 5.0f, y, tabFiles.right + 5.0f + tabW, y + 32.0f };
     UiRect tabTerm  = { tabChat.right + 5.0f, y, tabChat.right + 5.0f + tabW, y + 32.0f };
     UiRect tabDiag  = { tabTerm.right + 5.0f, y, tabTerm.right + 5.0f + tabW, y + 32.0f };
     UiRect tabHist  = { tabDiag.right + 5.0f, y, tabDiag.right + 5.0f + tabW, y + 32.0f };
+    UiRect tabSync  = { tabHist.right + 5.0f, y, tabHist.right + 5.0f + tabW, y + 32.0f };
 
     bool onFiles = (drawerTab_ == DrawerTab::FilesAndClip);
     bool onChat  = (drawerTab_ == DrawerTab::LiveChat);
     bool onTerm  = (drawerTab_ == DrawerTab::RemoteTerminal);
     bool onDiag  = (drawerTab_ == DrawerTab::Diagnostics);
     bool onHist  = (drawerTab_ == DrawerTab::ClipboardHistory);
+    bool onSync  = (drawerTab_ == DrawerTab::Sync);
 
     drawButton("drawer_tab_files", tabFiles, "Files",
                onFiles ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
@@ -3793,6 +3960,15 @@ void CppDeskWindow::drawFileTransferDrawer(const UiRect& bounds, float slideProg
                    focusedField_ = FocusedField::ClipboardSearch;
                }, fmtSmall_);
 
+    drawButton("drawer_tab_sync", tabSync, "Sync",
+               onSync ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
+               onSync ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
+               onSync ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
+               8.0f, [this]() {
+                   if (drawerTab_ == DrawerTab::Diagnostics) network_.setDiagnosticsActive(false);
+                   drawerTab_ = DrawerTab::Sync;
+               }, fmtSmall_);
+
     UiRect closeBtn = { rx - 28.0f, y + 1.0f, rx, y + 31.0f };
     drawButton("drawer_close", closeBtn, "", COL_SEC_BTN_BG, COL_DANGER, COL_TEXT_SECONDARY, 7.5f, [this]() {
         if (drawerTab_ == DrawerTab::Diagnostics) {
@@ -3823,6 +3999,13 @@ void CppDeskWindow::drawFileTransferDrawer(const UiRect& bounds, float slideProg
                        network_.fileTransferManager().openReceiveDirectoryInExplorer();
                    }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
         y += 44.0f;
+
+        UiRect openPlayerBtn = { x, y, rx, y + 34.0f };
+        drawButton("drawer_open_player", openPlayerBtn, "Recording Player...",
+                   COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 8.0f, [this]() {
+                       openRecordingPlayer();
+                   }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
+        y += 42.0f;
 
         UiRect syncClipBtn = { x, y, rx, y + 34.0f };
         drawButton("drawer_sync_clip", syncClipBtn, "Sync Clipboard",
@@ -4287,6 +4470,257 @@ void CppDeskWindow::drawFileTransferDrawer(const UiRect& bounds, float slideProg
                 cy += cardH + 6.0f;
             }
         }
+    } else if (drawerTab_ == DrawerTab::Sync) {
+        drawSyncDrawer({ x, y, rx, r.bottom - 16.0f });
+    }
+}
+
+// ---------------- Remote File Sync & Folder Mirroring Drawer ----------------
+
+void CppDeskWindow::drawSyncDrawer(const UiRect& contentRect) {
+    float x = contentRect.left;
+    float rx = contentRect.right;
+    float y = contentRect.top;
+
+    drawText("Synchronize local and remote folder directories.",
+             { x, y, rx, y + 16.0f }, fmtSmall_, COL_TEXT_SECONDARY);
+    y += 22.0f;
+
+    // 1. Local Folder Input
+    drawText("LOCAL FOLDER", { x, y, rx, y + 14.0f }, fmtSmall_, COL_TEXT_ACCENT);
+    y += 16.0f;
+    float browseW = 68.0f;
+    UiRect localFieldRect = { x, y, rx - browseW - 6.0f, y + 30.0f };
+    drawTextField("sync_local_path", FocusedField::SyncLocalPath, localFieldRect,
+                  syncLocalPathEdit_, "C:/local/folder/path", false);
+
+    UiRect browseBtnRect = { rx - browseW, y, rx, y + 30.0f };
+    drawButton("sync_browse_btn", browseBtnRect, "Browse...",
+               COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 7.0f, [this]() {
+                   openPickFolderDialog(syncLocalPathEdit_);
+               }, fmtSmall_, true, COL_BORDER, COL_PRIMARY_ACCENT);
+    y += 36.0f;
+
+    // 2. Remote Folder Input
+    drawText("REMOTE FOLDER", { x, y, rx, y + 14.0f }, fmtSmall_, COL_TEXT_ACCENT);
+    y += 16.0f;
+    UiRect remoteFieldRect = { x, y, rx, y + 30.0f };
+    drawTextField("sync_remote_path", FocusedField::SyncRemotePath, remoteFieldRect,
+                  syncRemotePathEdit_, "C:/remote/sync/path", false);
+    y += 36.0f;
+
+    // 3. Sync Mode Segmented Selector (Push, Pull, Two-Way)
+    drawText("SYNC MODE", { x, y, rx, y + 14.0f }, fmtSmall_, COL_TEXT_ACCENT);
+    y += 16.0f;
+    float modeW = (rx - x - 8.0f) / 3.0f;
+    UiRect modePush = { x, y, x + modeW, y + 28.0f };
+    UiRect modePull = { modePush.right + 4.0f, y, modePush.right + 4.0f + modeW, y + 28.0f };
+    UiRect modeTwoWay = { modePull.right + 4.0f, y, rx, y + 28.0f };
+
+    bool isPush = (syncSelectedMode_ == SyncMode::PushMirror);
+    bool isPull = (syncSelectedMode_ == SyncMode::PullMirror);
+    bool isTwoWay = (syncSelectedMode_ == SyncMode::TwoWay);
+
+    drawButton("sync_mode_push", modePush, "Push (->)",
+               isPush ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
+               isPush ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
+               isPush ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
+               6.5f, [this]() { syncSelectedMode_ = SyncMode::PushMirror; },
+               fmtSmall_, !isPush, COL_BORDER, isPush ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
+
+    drawButton("sync_mode_pull", modePull, "Pull (<-)",
+               isPull ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
+               isPull ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
+               isPull ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
+               6.5f, [this]() { syncSelectedMode_ = SyncMode::PullMirror; },
+               fmtSmall_, !isPull, COL_BORDER, isPull ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
+
+    drawButton("sync_mode_twoway", modeTwoWay, "Two-Way (<->)",
+               isTwoWay ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
+               isTwoWay ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
+               isTwoWay ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
+               6.5f, [this]() { syncSelectedMode_ = SyncMode::TwoWay; },
+               fmtSmall_, !isTwoWay, COL_BORDER, isTwoWay ? COL_TEXT_ON_ACCENT : COL_TEXT_ACCENT);
+    y += 34.0f;
+
+    // 4. Purge Toggle
+    drawToggleSwitch("sync_purge_toggle", { x, y, rx, y + 24.0f },
+                     syncMirrorPurgeChoice_, "Purge remote orphaned items", [this]() {
+                         syncMirrorPurgeChoice_ = !syncMirrorPurgeChoice_;
+                     });
+    y += 30.0f;
+
+    // 5. Scan & Action Buttons
+    auto& syncMgr = network_.fileSyncManager();
+    SyncStatus status = syncMgr.status();
+    bool isRunning = (status.state == SyncState::Scanning ||
+                      status.state == SyncState::Comparing ||
+                      status.state == SyncState::Transferring);
+
+    float actW = (rx - x - 8.0f) * 0.5f;
+    UiRect btnScan = { x, y, x + actW, y + 30.0f };
+    UiRect btnAction = { btnScan.right + 8.0f, y, rx, y + 30.0f };
+
+    drawButton("sync_btn_scan", btnScan, "Scan / Compare",
+               COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 7.5f, [this]() {
+                   if (syncLocalPathEdit_.empty() || syncRemotePathEdit_.empty()) {
+                       showToast("Enter both local and remote folders", true);
+                       return;
+                   }
+                   network_.requestRemoteScan(syncRemotePathEdit_);
+                   network_.fileSyncManager().requestScan(syncLocalPathEdit_);
+                   showToast("Scanning folder trees...");
+               }, fmtSmall_, true, COL_BORDER, COL_PRIMARY_ACCENT);
+
+    if (isRunning) {
+        drawButton("sync_btn_cancel", btnAction, "Cancel Sync",
+                   COL_SEC_BTN_BG, COL_DANGER, COL_TEXT_PRIMARY, 7.5f, [this]() {
+                       network_.cancelFolderSync();
+                       showToast("Folder sync cancelled");
+                   }, fmtSmall_, true, COL_BORDER, COL_TEXT_ON_ACCENT);
+    } else {
+        drawButton("sync_btn_start", btnAction, "Start Sync",
+                   COL_PRIMARY_ACCENT, COL_PRIMARY_ACCENT_HV, COL_TEXT_ON_ACCENT, 7.5f, [this]() {
+                       if (syncLocalPathEdit_.empty() || syncRemotePathEdit_.empty()) {
+                           showToast("Enter both local and remote folders", true);
+                           return;
+                       }
+                       network_.startFolderSync(syncLocalPathEdit_, syncRemotePathEdit_,
+                                                syncSelectedMode_, syncMirrorPurgeChoice_);
+                       showToast("Starting synchronization...");
+                   }, fmtSmall_);
+    }
+    y += 38.0f;
+
+    // 6. Status and Telemetry Bar
+    std::string stateStr;
+    switch (status.state) {
+        case SyncState::Scanning: stateStr = "Scanning trees..."; break;
+        case SyncState::Comparing: stateStr = "Comparing differential trees..."; break;
+        case SyncState::Transferring: stateStr = "Transferring delta blocks..."; break;
+        case SyncState::Completed: stateStr = "Sync Completed Successfully"; break;
+        case SyncState::Failed: stateStr = "Sync Failed: " + status.errorMessage; break;
+        case SyncState::Cancelled: stateStr = "Sync Cancelled"; break;
+        default: stateStr = "Idle"; break;
+    }
+
+    D2D1_COLOR_F statusCol = (status.state == SyncState::Completed) ? COL_SUCCESS :
+                             (status.state == SyncState::Failed) ? COL_DANGER :
+                             (isRunning) ? COL_PRIMARY_ACCENT : COL_TEXT_SECONDARY;
+
+    drawText(stateStr, { x, y, rx, y + 16.0f }, fmtBodyBold_, statusCol);
+    y += 20.0f;
+
+    // Progress bar
+    float progress = (status.totalBytes > 0)
+        ? static_cast<float>(static_cast<double>(status.bytesTransferred) / status.totalBytes)
+        : (status.state == SyncState::Completed ? 1.0f : 0.0f);
+    progress = std::clamp(progress, 0.0f, 1.0f);
+
+    UiRect progBg = { x, y, rx, y + 6.0f };
+    fillRoundRect(progBg, 3.0f, rgba(255, 255, 255, 0.08f));
+    if (progress > 0.001f) {
+        UiRect progFg = { x, y, x + (rx - x) * progress, y + 6.0f };
+        fillRoundRect(progFg, 3.0f, COL_PRIMARY_ACCENT);
+    }
+    y += 10.0f;
+
+    // Progress stats string
+    char statBuf[128];
+    double mbDone = static_cast<double>(status.bytesTransferred) / (1024.0 * 1024.0);
+    double mbTotal = static_cast<double>(status.totalBytes) / (1024.0 * 1024.0);
+    double kbSec = static_cast<double>(status.bytesPerSec) / 1024.0;
+    std::snprintf(statBuf, sizeof(statBuf), "Files: %u / %u  •  %.1f / %.1f MB  •  %.0f KB/s",
+                  status.filesCompleted, status.totalFiles, mbDone, mbTotal, kbSec);
+    drawText(statBuf, { x, y, rx, y + 14.0f }, fmtSmall_, COL_TEXT_MUTED);
+    y += 20.0f;
+
+    // 7. Diff Actions List
+    auto diffPlan = syncMgr.currentDiffPlan();
+    std::string planHeader = "PLANNED ACTIONS (" + std::to_string(diffPlan.size()) + ")";
+    drawText(planHeader, { x, y, rx, y + 14.0f }, fmtSmall_, COL_TEXT_ACCENT);
+    y += 18.0f;
+
+    float listBottom = contentRect.bottom;
+    if (listBottom > y + 40.0f) {
+        UiRect listBox = { x, y, rx, listBottom };
+        fillRoundRect(listBox, 8.0f, COL_BG_SUBTLE);
+        strokeRoundRect(listBox, 8.0f, COL_BORDER);
+
+        if (diffPlan.empty()) {
+            drawText("No pending synchronization actions.",
+                     listBox, fmtSmall_, COL_TEXT_MUTED,
+                     DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        } else {
+            float rowH = 30.0f;
+            int maxVisible = static_cast<int>((listBox.height() - 8.0f) / rowH);
+            if (maxVisible < 1) maxVisible = 1;
+            int totalItems = static_cast<int>(diffPlan.size());
+            int maxOffset = std::max(0, totalItems - maxVisible);
+            syncDiffScrollOffset_ = std::clamp(syncDiffScrollOffset_, 0.0f, static_cast<float>(maxOffset));
+
+            size_t startIdx = static_cast<size_t>(syncDiffScrollOffset_);
+            size_t endIdx = std::min(diffPlan.size(), startIdx + static_cast<size_t>(maxVisible));
+            float cy = listBox.top + 4.0f;
+
+            for (size_t i = startIdx; i < endIdx; ++i) {
+                const auto& item = diffPlan[i];
+                UiRect card = { listBox.left + 5.0f, cy, listBox.right - 5.0f, cy + rowH - 4.0f };
+                fillRoundRect(card, 5.0f, COL_BG_CARD);
+                strokeRoundRect(card, 5.0f, COL_BORDER);
+
+                std::string badge;
+                D2D1_COLOR_F badgeBg;
+                D2D1_COLOR_F badgeFg;
+                switch (item.action) {
+                    case SyncActionType::CreateDir:
+                        badge = "DIR";
+                        badgeBg = rgba(52, 199, 89, 0.22f);
+                        badgeFg = COL_SUCCESS;
+                        break;
+                    case SyncActionType::DeleteFile:
+                    case SyncActionType::DeleteDir:
+                        badge = "DEL";
+                        badgeBg = rgba(255, 59, 48, 0.22f);
+                        badgeFg = COL_DANGER;
+                        break;
+                    case SyncActionType::RequestFile:
+                        badge = "PULL";
+                        badgeBg = rgba(50, 173, 230, 0.22f);
+                        badgeFg = rgba(50, 173, 230, 1.0f);
+                        break;
+                    default:
+                        badge = "PUSH";
+                        badgeBg = rgba(0, 122, 255, 0.22f);
+                        badgeFg = COL_PRIMARY_ACCENT;
+                        break;
+                }
+
+                UiRect badgeRect = { card.left + 4.0f, card.top + 3.0f, card.left + 46.0f, card.bottom - 3.0f };
+                fillRoundRect(badgeRect, 3.5f, badgeBg);
+                drawText(badge, badgeRect, fmtSmall_, badgeFg,
+                         DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+
+                char szBuf[32] = {};
+                if (item.sizeBytes >= 1024 * 1024) {
+                    std::snprintf(szBuf, sizeof(szBuf), "%.1f MB", static_cast<double>(item.sizeBytes) / (1024.0 * 1024.0));
+                } else if (item.sizeBytes > 0) {
+                    std::snprintf(szBuf, sizeof(szBuf), "%.1f KB", static_cast<double>(item.sizeBytes) / 1024.0);
+                }
+
+                UiRect sizeRect = { card.right - 62.0f, card.top, card.right - 6.0f, card.bottom };
+                if (szBuf[0] != '\0') {
+                    drawText(szBuf, sizeRect, fmtSmall_, COL_TEXT_MUTED,
+                             DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                }
+
+                UiRect pathRect = { badgeRect.right + 6.0f, card.top, card.right - 68.0f, card.bottom };
+                drawText(item.relativePath, pathRect, fmtSmall_, COL_TEXT_PRIMARY,
+                         DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+
+                cy += rowH;
+            }
+        }
     }
 }
 
@@ -4363,7 +4797,7 @@ void CppDeskWindow::drawIncomingApprovalModal(float width, float height, float m
 
 // ---------------- macOS Dynamic Island Floating Top Bar ----------------
 
-void CppDeskWindow::drawDynamicIslandToolbar(float width, float /*height*/) {
+void CppDeskWindow::drawDynamicIslandToolbar(float width, float height) {
     if (floatingToolbarY_ <= -58.0f) return;
 
     auto stats = network_.viewerStats();
@@ -4466,10 +4900,10 @@ void CppDeskWindow::drawDynamicIslandToolbar(float width, float /*height*/) {
                }, fmtSmall_, islandAudioMuted, COL_BORDER);
     curX = islandAudioBtn.right + 6.0f;
 
-    // Privacy Mode Curtain Button
+    // Privacy Mode Screen Blank Button
     bool islandPrivacyOn = stats.privacyModeEngaged;
-    UiRect islandPrivacyBtn = { curX, pillTop + 6.0f, curX + 76.0f, pillBottom - 6.0f };
-    drawButton("island_privacy_btn", islandPrivacyBtn, islandPrivacyOn ? "Curtain: ON" : "Curtain",
+    UiRect islandPrivacyBtn = { curX, pillTop + 6.0f, curX + 88.0f, pillBottom - 6.0f };
+    drawButton("island_privacy_btn", islandPrivacyBtn, islandPrivacyOn ? "Blank: ON" : "Blank Screen",
                islandPrivacyOn ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
                islandPrivacyOn ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
                islandPrivacyOn ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
@@ -4568,8 +5002,10 @@ void CppDeskWindow::drawDynamicIslandToolbar(float width, float /*height*/) {
     if (showDisplayMenu_) {
         float itemH = 32.0f;
         int count = stats.monitors.empty() ? 1 : (static_cast<int>(stats.monitors.size()) + (stats.monitors.size() > 1 ? 1 : 0));
-        float dropH = count * itemH + 16.0f;
-        UiRect dropRect = { monBtn.left - 20.0f, pillBottom + 6.0f, monBtn.left + 230.0f, pillBottom + 6.0f + dropH };
+        float bottomAddH = 58.0f;
+        float dropH = count * itemH + 16.0f + bottomAddH;
+        float dropW = 280.0f;
+        UiRect dropRect = { monBtn.left - 30.0f, pillBottom + 6.0f, monBtn.left - 30.0f + dropW, pillBottom + 6.0f + dropH };
         drawCardShadow(dropRect, 14.0f, 0.95f);
         fillRoundRect(dropRect, 14.0f, withAlpha(COL_BG_CARD, 0.98f));
         strokeRoundRect(dropRect, 14.0f, COL_BORDER, 1.2f);
@@ -4580,6 +5016,7 @@ void CppDeskWindow::drawDynamicIslandToolbar(float width, float /*height*/) {
             drawButton("drop_mon_0", itemR, "Primary Display (Default)",
                        COL_PRIMARY_ACCENT, COL_PRIMARY_ACCENT_HV, COL_TEXT_ON_ACCENT, 6.0f,
                        [this]() { showDisplayMenu_ = false; }, fmtSmall_);
+            dy += itemH;
         } else {
             if (stats.monitors.size() > 1) {
                 bool isAll = (stats.activeMonitorIndex == -1);
@@ -4598,21 +5035,102 @@ void CppDeskWindow::drawDynamicIslandToolbar(float width, float /*height*/) {
             for (size_t i = 0; i < stats.monitors.size(); ++i) {
                 const auto& m = stats.monitors[i];
                 bool isCur = (m.index == stats.activeMonitorIndex);
+                bool isVirt = (m.isVirtual || m.name.find("[Virtual]") != std::string::npos);
                 UiRect itemR = { dropRect.left + 8.0f, dy, dropRect.right - 8.0f, dy + 28.0f };
                 std::string btnId = "drop_mon_" + std::to_string(i);
-                std::string label = m.name.empty() ? ("Display " + std::to_string(m.index + 1)) : m.name;
-                drawButton(btnId, itemR, label,
-                           isCur ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
-                           isCur ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
-                           isCur ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
-                           6.0f, [this, m]() {
-                               network_.selectRemoteMonitor(m.index);
-                               showDisplayMenu_ = false;
-                               showToast("Switched to Display " + std::to_string(m.index + 1));
-                           }, fmtSmall_, !isCur, COL_BORDER);
+
+                if (isVirt) {
+                    float closeW = 26.0f;
+                    UiRect btnR = { itemR.left, itemR.top, itemR.right - closeW - 4.0f, itemR.bottom };
+                    UiRect closeR = { itemR.right - closeW, itemR.top, itemR.right, itemR.bottom };
+                    std::string label = m.name.empty()
+                        ? ("Display " + std::to_string(m.index + 1) + " [Virtual]")
+                        : m.name;
+
+                    drawButton(btnId, btnR, label,
+                               isCur ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
+                               isCur ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
+                               isCur ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
+                               6.0f, [this, m]() {
+                                   network_.selectRemoteMonitor(m.index);
+                                   showDisplayMenu_ = false;
+                                   showToast("Switched to " + m.name);
+                               }, fmtSmall_, !isCur, COL_BORDER);
+
+                    drawButton("drop_mon_del_" + std::to_string(i), closeR, "X",
+                               COL_SEC_BTN_BG, COL_DANGER, COL_TEXT_PRIMARY,
+                               6.0f, [this, m]() {
+                                   network_.requestDestroyVirtualDisplay(m.virtualId);
+                                   showToast("Removing virtual display...");
+                               }, fmtSmall_, true, COL_BORDER);
+                } else {
+                    std::string label = m.name.empty() ? ("Display " + std::to_string(m.index + 1)) : m.name;
+                    drawButton(btnId, itemR, label,
+                               isCur ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
+                               isCur ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
+                               isCur ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
+                               6.0f, [this, m]() {
+                                   network_.selectRemoteMonitor(m.index);
+                                   showDisplayMenu_ = false;
+                                   showToast("Switched to Display " + std::to_string(m.index + 1));
+                               }, fmtSmall_, !isCur, COL_BORDER);
+                }
                 dy += itemH;
             }
         }
+
+        // Section: + Add Virtual Display
+        dy += 4.0f;
+        UiRect addTitleR = { dropRect.left + 10.0f, dy, dropRect.right - 10.0f, dy + 18.0f };
+        drawText("+ Add Virtual Display", addTitleR, fmtSmall_, COL_TEXT_SECONDARY);
+        dy += 20.0f;
+
+        float chipSpacing = 4.0f;
+        float totalChipW = (dropRect.right - 8.0f) - (dropRect.left + 8.0f);
+        float chipW = (totalChipW - 3.0f * chipSpacing) / 4.0f;
+        float chipH = 24.0f;
+
+        // Chip 1: 1080p
+        UiRect chip1R = { dropRect.left + 8.0f, dy, dropRect.left + 8.0f + chipW, dy + chipH };
+        drawButton("chip_res_1080p", chip1R, "1080p",
+                   COL_SEC_BTN_BG, COL_PRIMARY_ACCENT, COL_TEXT_PRIMARY,
+                   5.0f, [this]() {
+                       network_.requestCreateVirtualDisplay(1920, 1080, 60);
+                       showToast("Creating virtual display (1920x1080)...");
+                       showDisplayMenu_ = false;
+                   }, fmtSmall_, true, COL_BORDER);
+
+        // Chip 2: 1440p
+        UiRect chip2R = { chip1R.right + chipSpacing, dy, chip1R.right + chipSpacing + chipW, dy + chipH };
+        drawButton("chip_res_1440p", chip2R, "1440p",
+                   COL_SEC_BTN_BG, COL_PRIMARY_ACCENT, COL_TEXT_PRIMARY,
+                   5.0f, [this]() {
+                       network_.requestCreateVirtualDisplay(2560, 1440, 60);
+                       showToast("Creating virtual display (2560x1440)...");
+                       showDisplayMenu_ = false;
+                   }, fmtSmall_, true, COL_BORDER);
+
+        // Chip 3: 4K
+        UiRect chip3R = { chip2R.right + chipSpacing, dy, chip2R.right + chipSpacing + chipW, dy + chipH };
+        drawButton("chip_res_4k", chip3R, "4K",
+                   COL_SEC_BTN_BG, COL_PRIMARY_ACCENT, COL_TEXT_PRIMARY,
+                   5.0f, [this]() {
+                       network_.requestCreateVirtualDisplay(3840, 2160, 60);
+                       showToast("Creating virtual display (3840x2160)...");
+                       showDisplayMenu_ = false;
+                   }, fmtSmall_, true, COL_BORDER);
+
+        // Chip 4: Fit Window
+        UiRect chip4R = { chip3R.right + chipSpacing, dy, dropRect.right - 8.0f, dy + chipH };
+        drawButton("chip_res_fit", chip4R, "Fit",
+                   COL_SEC_BTN_BG, COL_PRIMARY_ACCENT, COL_TEXT_PRIMARY,
+                   5.0f, [this, width, height]() {
+                       uint32_t fitW = static_cast<uint32_t>(std::max(800.0f, width));
+                       uint32_t fitH = static_cast<uint32_t>(std::max(600.0f, height));
+                       network_.requestCreateVirtualDisplay(fitW, fitH, 60);
+                       showToast("Creating virtual display (" + std::to_string(fitW) + "x" + std::to_string(fitH) + ")...");
+                       showDisplayMenu_ = false;
+                   }, fmtSmall_, true, COL_BORDER);
     }
 
     // Dropdown 2: Admin Actions Menu
@@ -5336,6 +5854,525 @@ void CppDeskWindow::drawHwAccelRestartModal(float width, float height, float mod
     renderTarget_->SetTransform(D2D1::Matrix3x2F::Identity());
 }
 
+// ---------------- In-Session Session Recording Player & Transcoder ----------------
+
+void CppDeskWindow::openRecordingPlayer(const std::string& filePath) {
+    if (!recordingPlayer_) {
+        recordingPlayer_ = std::make_unique<SessionRecordingPlayer>();
+    }
+    recordingPlayer_->setOnFrameReady([this]() {
+        if (hwnd_) {
+            InvalidateRect(hwnd_, nullptr, FALSE);
+        }
+    });
+
+    if (!filePath.empty()) {
+        if (!recordingPlayer_->open(filePath)) {
+            showToast("Failed to open recording file", true);
+        }
+    }
+    trimInFrame_ = 0;
+    trimOutFrame_ = 0;
+    hasTrimIn_ = false;
+    hasTrimOut_ = false;
+    showRecordingPlayer_ = true;
+    InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+void CppDeskWindow::closeRecordingPlayer() {
+    showRecordingPlayer_ = false;
+    if (recordingPlayer_) {
+        recordingPlayer_->pause();
+    }
+    InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+void CppDeskWindow::drawRecordingPlayerModal(float width, float height, float modalProgress) {
+    if (!showRecordingPlayer_ && modalProgress <= 0.01f) return;
+
+    float alpha = std::clamp(modalProgress, 0.0f, 1.0f);
+    fillRoundRect({ 0.0f, 0.0f, width, height }, 0.0f, rgba(14, 16, 20, 0.74f * alpha));
+
+    // Scrim click closes modal
+    clickRegions_.push_back({ { 0.0f, 0.0f, width, height }, "player_scrim", [this]() {
+        closeRecordingPlayer();
+    }, false });
+
+    float mw = std::min(860.0f, width - 32.0f);
+    float mh = std::min(640.0f, height - 32.0f);
+    UiRect modal = { (width - mw) * 0.5f, (height - mh) * 0.5f, (width + mw) * 0.5f, (height + mh) * 0.5f };
+
+    float scale = 0.90f + 0.10f * modalProgress;
+    renderTarget_->SetTransform(
+        D2D1::Matrix3x2F::Scale(scale, scale, D2D1::Point2F(modal.centerX(), modal.centerY()))
+    );
+
+    drawCardSurface(modal, 18.0f, alpha);
+
+    float mx = modal.left + 24.0f;
+    float mrx = modal.right - 24.0f;
+    float my = modal.top + 20.0f;
+
+    // Header bar
+    drawText("Session Recording Player", { mx, my, mrx - 120.0f, my + 26.0f }, fmtHeading_, COL_TEXT_PRIMARY);
+
+    // "Open..." button
+    UiRect openBtnRect = { mrx - 110.0f, my, mrx - 40.0f, my + 28.0f };
+    drawButton("player_open_btn", openBtnRect, "Open...",
+               COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 8.0f,
+               [this]() {
+                   OPENFILENAMEW ofn{};
+                   wchar_t szFile[MAX_PATH] = L"";
+                   ofn.lStructSize = sizeof(ofn);
+                   ofn.hwndOwner = hwnd_;
+                   ofn.lpstrFile = szFile;
+                   ofn.nMaxFile = sizeof(szFile) / sizeof(wchar_t);
+                   ofn.lpstrFilter = L"AVI Session Recordings (*.avi)\0*.avi\0All Files (*.*)\0*.*\0";
+                   ofn.nFilterIndex = 1;
+                   ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST;
+                   if (GetOpenFileNameW(&ofn)) {
+                       int len = WideCharToMultiByte(CP_UTF8, 0, ofn.lpstrFile, -1, nullptr, 0, nullptr, nullptr);
+                       if (len > 1) {
+                           std::string path(len - 1, '\0');
+                           WideCharToMultiByte(CP_UTF8, 0, ofn.lpstrFile, -1, path.data(), len, nullptr, nullptr);
+                           openRecordingPlayer(path);
+                       }
+                   }
+               }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
+
+    // Close button
+    UiRect closeBtn = { mrx - 30.0f, my, mrx, my + 28.0f };
+    drawButton("player_modal_close", closeBtn, "×",
+               COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 14.0f,
+               [this]() { closeRecordingPlayer(); }, fmtHeading_);
+
+    my += 34.0f;
+
+    // Subtitle / filename badge
+    std::string subtitle;
+    if (recordingPlayer_ && recordingPlayer_->isOpen()) {
+        std::string fname = std::filesystem::path(recordingPlayer_->filePath()).filename().string();
+        subtitle = fname + " (" + std::to_string(recordingPlayer_->frameWidth()) + "x" +
+                   std::to_string(recordingPlayer_->frameHeight()) + " @ " +
+                   std::to_string(recordingPlayer_->fps()) + " fps)";
+    } else {
+        subtitle = "No recording loaded. Click Open to select an AVI file.";
+    }
+    drawText(subtitle, { mx, my, mrx, my + 18.0f }, fmtSmall_, COL_TEXT_SECONDARY);
+    my += 24.0f;
+
+    // Viewport canvas
+    float bottomReserved = 110.0f;
+    UiRect viewport = { mx, my, mrx, modal.bottom - bottomReserved };
+    fillRoundRect(viewport, 8.0f, rgba(12, 14, 18, 0.95f * alpha));
+    strokeRoundRect(viewport, 8.0f, COL_BORDER, 1.0f);
+
+    // Frame presentation
+    if (recordingPlayer_ && recordingPlayer_->isOpen()) {
+        if (recordingPlayer_->hasNewFrame()) {
+            std::vector<uint8_t> frameBgra;
+            int fw = 0, fh = 0;
+            recordingPlayer_->copyCurrentFrameBgra(frameBgra, fw, fh);
+            recordingPlayer_->clearNewFrameFlag();
+
+            if (!frameBgra.empty() && fw > 0 && fh > 0) {
+                if (!recordingPlayerBitmap_ || recordingPlayerBitmapW_ != fw || recordingPlayerBitmapH_ != fh) {
+                    if (recordingPlayerBitmap_) {
+                        recordingPlayerBitmap_->Release();
+                        recordingPlayerBitmap_ = nullptr;
+                    }
+                    D2D1_BITMAP_PROPERTIES props = D2D1::BitmapProperties(
+                        D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED));
+                    HRESULT hr = renderTarget_->CreateBitmap(D2D1::SizeU(fw, fh), props, &recordingPlayerBitmap_);
+                    if (SUCCEEDED(hr)) {
+                        recordingPlayerBitmapW_ = fw;
+                        recordingPlayerBitmapH_ = fh;
+                    }
+                }
+                if (recordingPlayerBitmap_) {
+                    recordingPlayerBitmap_->CopyFromMemory(nullptr, frameBgra.data(), fw * 4);
+                }
+            }
+        }
+
+        if (recordingPlayerBitmap_ && recordingPlayerBitmapW_ > 0 && recordingPlayerBitmapH_ > 0) {
+            float vW = viewport.width() - 8.0f;
+            float vH = viewport.height() - 8.0f;
+            float aspect = static_cast<float>(recordingPlayerBitmapW_) / static_cast<float>(recordingPlayerBitmapH_);
+            float fitW = vW;
+            float fitH = vW / aspect;
+            if (fitH > vH) {
+                fitH = vH;
+                fitW = vH * aspect;
+            }
+            UiRect fitRect = {
+                viewport.centerX() - fitW * 0.5f,
+                viewport.centerY() - fitH * 0.5f,
+                viewport.centerX() + fitW * 0.5f,
+                viewport.centerY() + fitH * 0.5f
+            };
+            renderTarget_->DrawBitmap(recordingPlayerBitmap_,
+                D2D1::RectF(fitRect.left, fitRect.top, fitRect.right, fitRect.bottom));
+        }
+    } else {
+        drawText("Open an AVI recording to inspect frames, scrub timeline, and export clips",
+                 viewport, fmtBody_, COL_TEXT_MUTED,
+                 DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+    }
+
+    // Timeline Scrubber Bar
+    float scrubY = viewport.bottom + 8.0f;
+    playerScrubberTrackRect_ = { mx, scrubY + 4.0f, mrx, scrubY + 12.0f };
+    fillRoundRect(playerScrubberTrackRect_, 4.0f, COL_BG_SUBTLE);
+    strokeRoundRect(playerScrubberTrackRect_, 4.0f, COL_BORDER, 1.0f);
+
+    uint32_t totFrames = (recordingPlayer_ && recordingPlayer_->isOpen()) ? recordingPlayer_->totalFrames() : 0;
+    uint32_t curFrame = (recordingPlayer_ && recordingPlayer_->isOpen()) ? recordingPlayer_->currentFrameIndex() : 0;
+
+    if (totFrames > 1) {
+        // Trim selection highlight
+        if (hasTrimIn_ || hasTrimOut_) {
+            uint32_t tIn = hasTrimIn_ ? trimInFrame_ : 0;
+            uint32_t tOut = hasTrimOut_ ? trimOutFrame_ : (totFrames - 1);
+            float xIn = playerScrubberTrackRect_.left + (static_cast<float>(tIn) / (totFrames - 1)) * playerScrubberTrackRect_.width();
+            float xOut = playerScrubberTrackRect_.left + (static_cast<float>(tOut) / (totFrames - 1)) * playerScrubberTrackRect_.width();
+            UiRect trimR = { xIn, playerScrubberTrackRect_.top - 3.0f, xOut, playerScrubberTrackRect_.bottom + 3.0f };
+            fillRoundRect(trimR, 3.0f, rgba(59, 130, 246, 0.45f));
+        }
+
+        // Progress fill
+        float frac = static_cast<float>(curFrame) / (totFrames - 1);
+        frac = std::clamp(frac, 0.0f, 1.0f);
+        float thumbX = playerScrubberTrackRect_.left + frac * playerScrubberTrackRect_.width();
+        UiRect progR = { playerScrubberTrackRect_.left, playerScrubberTrackRect_.top, thumbX, playerScrubberTrackRect_.bottom };
+        fillRoundRect(progR, 4.0f, COL_PRIMARY_ACCENT);
+
+        // Thumb handle
+        UiRect thumbRect = { thumbX - 6.0f, scrubY + 2.0f, thumbX + 6.0f, scrubY + 14.0f };
+        fillRoundRect(thumbRect, 6.0f, D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f));
+        strokeRoundRect(thumbRect, 6.0f, COL_PRIMARY_ACCENT, 1.5f);
+    }
+
+    // Scrubber click region
+    clickRegions_.push_back({
+        { playerScrubberTrackRect_.left - 8.0f, scrubY - 4.0f, playerScrubberTrackRect_.right + 8.0f, scrubY + 20.0f },
+        "player_scrubber_track",
+        [this]() {
+            if (recordingPlayer_ && recordingPlayer_->isOpen() && recordingPlayer_->totalFrames() > 1) {
+                draggingPlayerScrubber_ = true;
+                SetCapture(hwnd_);
+                float trackW = playerScrubberTrackRect_.width();
+                if (trackW > 1.0f) {
+                    float frac = std::clamp((mouseX_ - playerScrubberTrackRect_.left) / trackW, 0.0f, 1.0f);
+                    uint32_t targetFrame = static_cast<uint32_t>(frac * (recordingPlayer_->totalFrames() - 1));
+                    recordingPlayer_->seekToFrame(targetFrame);
+                    InvalidateRect(hwnd_, nullptr, FALSE);
+                }
+            }
+        },
+        false
+    });
+
+    // Time & Frame Counter Text
+    float timeY = scrubY + 18.0f;
+    if (totFrames > 0) {
+        uint64_t curSec = recordingPlayer_->currentTimestampUs() / 1000000ULL;
+        uint64_t durSec = recordingPlayer_->durationUs() / 1000000ULL;
+        char timeBuf[128];
+        std::snprintf(timeBuf, sizeof(timeBuf),
+                      "%02llu:%02llu / %02llu:%02llu   •   Frame %u / %u",
+                      curSec / 60, curSec % 60,
+                      durSec / 60, durSec % 60,
+                      curFrame + 1, totFrames);
+        drawText(timeBuf, { mx, timeY, mrx, timeY + 16.0f }, fmtSmall_, COL_TEXT_SECONDARY);
+    } else {
+        drawText("00:00 / 00:00   •   Frame 0 / 0", { mx, timeY, mrx, timeY + 16.0f }, fmtSmall_, COL_TEXT_MUTED);
+    }
+
+    // Transport Controls Bar
+    float ctlY = timeY + 22.0f;
+    float btnH = 30.0f;
+    float cx = mx;
+
+    // Step Prev |<
+    UiRect prevBtn = { cx, ctlY, cx + 36.0f, ctlY + btnH };
+    drawButton("player_step_prev", prevBtn, "|<",
+               COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 6.0f,
+               [this]() {
+                   if (recordingPlayer_) recordingPlayer_->stepFrame(-1);
+               }, fmtSmall_);
+    cx = prevBtn.right + 6.0f;
+
+    // Play/Pause Toggle
+    bool playing = (recordingPlayer_ && recordingPlayer_->isPlaying());
+    UiRect playBtn = { cx, ctlY, cx + 44.0f, ctlY + btnH };
+    drawButton("player_play_toggle", playBtn, playing ? "||" : ">",
+               COL_PRIMARY_ACCENT, COL_PRIMARY_ACCENT_HV, COL_TEXT_ON_ACCENT, 6.0f,
+               [this]() {
+                   if (recordingPlayer_) recordingPlayer_->togglePlayPause();
+               }, fmtSmall_);
+    cx = playBtn.right + 6.0f;
+
+    // Step Next >|
+    UiRect nextBtn = { cx, ctlY, cx + 36.0f, ctlY + btnH };
+    drawButton("player_step_next", nextBtn, ">|",
+               COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 6.0f,
+               [this]() {
+                   if (recordingPlayer_) recordingPlayer_->stepFrame(+1);
+               }, fmtSmall_);
+    cx = nextBtn.right + 14.0f;
+
+    // Speed chips: 0.5x, 1x, 2x, 4x
+    float curSpd = recordingPlayer_ ? recordingPlayer_->speed() : 1.0f;
+    auto drawSpeedChip = [this, &cx, ctlY, btnH, curSpd](const std::string& id, const std::string& label, float spd) {
+        bool active = (std::abs(curSpd - spd) < 0.05f);
+        UiRect r = { cx, ctlY, cx + 42.0f, ctlY + btnH };
+        drawButton(id, r, label,
+                   active ? COL_PRIMARY_ACCENT : COL_SEC_BTN_BG,
+                   active ? COL_PRIMARY_ACCENT_HV : COL_SEC_BTN_HV,
+                   active ? COL_TEXT_ON_ACCENT : COL_TEXT_PRIMARY,
+                   6.0f,
+                   [this, spd]() {
+                       if (recordingPlayer_) recordingPlayer_->setSpeed(spd);
+                   }, fmtSmall_);
+        cx = r.right + 6.0f;
+    };
+
+    drawSpeedChip("player_spd_05", "0.5x", 0.5f);
+    drawSpeedChip("player_spd_10", "1x", 1.0f);
+    drawSpeedChip("player_spd_20", "2x", 2.0f);
+    drawSpeedChip("player_spd_40", "4x", 4.0f);
+    cx += 8.0f;
+
+    // Mark In
+    UiRect markInBtn = { cx, ctlY, cx + 52.0f, ctlY + btnH };
+    drawButton("player_mark_in", markInBtn, "[ In",
+               hasTrimIn_ ? rgba(59, 130, 246, 0.35f) : COL_SEC_BTN_BG,
+               COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 6.0f,
+               [this]() {
+                   if (recordingPlayer_ && recordingPlayer_->isOpen()) {
+                       trimInFrame_ = recordingPlayer_->currentFrameIndex();
+                       hasTrimIn_ = true;
+                       if (hasTrimOut_ && trimInFrame_ > trimOutFrame_) trimOutFrame_ = trimInFrame_;
+                       showToast("Trim In set to Frame " + std::to_string(trimInFrame_ + 1));
+                   }
+               }, fmtSmall_, true, COL_BORDER);
+    cx = markInBtn.right + 6.0f;
+
+    // Mark Out
+    UiRect markOutBtn = { cx, ctlY, cx + 54.0f, ctlY + btnH };
+    drawButton("player_mark_out", markOutBtn, "Out ]",
+               hasTrimOut_ ? rgba(59, 130, 246, 0.35f) : COL_SEC_BTN_BG,
+               COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 6.0f,
+               [this]() {
+                   if (recordingPlayer_ && recordingPlayer_->isOpen()) {
+                       trimOutFrame_ = recordingPlayer_->currentFrameIndex();
+                       hasTrimOut_ = true;
+                       if (hasTrimIn_ && trimOutFrame_ < trimInFrame_) trimInFrame_ = trimOutFrame_;
+                       showToast("Trim Out set to Frame " + std::to_string(trimOutFrame_ + 1));
+                   }
+               }, fmtSmall_, true, COL_BORDER);
+    cx = markOutBtn.right + 6.0f;
+
+    // Reset Trim
+    if (hasTrimIn_ || hasTrimOut_) {
+        UiRect resetTrimBtn = { cx, ctlY, cx + 48.0f, ctlY + btnH };
+        drawButton("player_mark_reset", resetTrimBtn, "Reset",
+                   COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_SECONDARY, 6.0f,
+                   [this]() {
+                       hasTrimIn_ = false;
+                       hasTrimOut_ = false;
+                       trimInFrame_ = 0;
+                       trimOutFrame_ = 0;
+                       showToast("Trim range reset");
+                   }, fmtSmall_);
+        cx = resetTrimBtn.right + 6.0f;
+    }
+
+    // Right-aligned Export action buttons: Snapshot & Trim Clip
+    float rx = mrx;
+    UiRect trimBtn = { rx - 80.0f, ctlY, rx, ctlY + btnH };
+    drawButton("player_trim_export", trimBtn, "Trim Clip",
+               COL_PRIMARY_ACCENT, COL_PRIMARY_ACCENT_HV, COL_TEXT_ON_ACCENT, 6.0f,
+               [this]() {
+                   if (!recordingPlayer_ || !recordingPlayer_->isOpen() || recordingPlayer_->totalFrames() == 0) {
+                       showToast("No recording open to trim", true);
+                       return;
+                   }
+                   std::string dir = network_.fileTransferManager().receiveDirectory();
+                   std::string outPath = (std::filesystem::path(dir) / ("Trimmed_" + std::to_string(GetTickCount64()) + ".avi")).string();
+                   uint32_t sF = hasTrimIn_ ? trimInFrame_ : 0;
+                   uint32_t eF = hasTrimOut_ ? trimOutFrame_ : (recordingPlayer_->totalFrames() - 1);
+                   if (recordingPlayer_->trimClip(outPath, sF, eF)) {
+                       std::string fname = std::filesystem::path(outPath).filename().string();
+                       showToast("Trimmed clip exported: " + fname);
+                   } else {
+                       showToast("Failed to export trimmed clip", true);
+                   }
+               }, fmtSmall_);
+    rx = trimBtn.left - 8.0f;
+
+    UiRect snapBtn = { rx - 76.0f, ctlY, rx, ctlY + btnH };
+    drawButton("player_snapshot", snapBtn, "Snapshot",
+               COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 6.0f,
+               [this]() {
+                   if (!recordingPlayer_ || !recordingPlayer_->isOpen()) {
+                       showToast("No recording open for snapshot", true);
+                       return;
+                   }
+                   std::string dir = network_.fileTransferManager().receiveDirectory();
+                   std::string outPath = (std::filesystem::path(dir) / ("Snapshot_" + std::to_string(GetTickCount64()) + ".png")).string();
+                   if (recordingPlayer_->exportSnapshot(outPath)) {
+                       std::string fname = std::filesystem::path(outPath).filename().string();
+                       showToast("Snapshot saved: " + fname);
+                   } else {
+                       showToast("Failed to save snapshot", true);
+                   }
+               }, fmtSmall_, true, COL_BORDER, COL_TEXT_ACCENT);
+
+    renderTarget_->SetTransform(D2D1::Matrix3x2F::Identity());
+}
+
+// ---------------- Two-Factor Authentication (TOTP) UI & QR Rendering ----------------
+
+void CppDeskWindow::renderQrCodeDirect2D(
+    const UiRect& rect,
+    const std::vector<uint8_t>& matrix,
+    int matrixSize,
+    float alpha)
+{
+    if (!renderTarget_ || !solidBrush_ || alpha <= 0.01f) return;
+
+    fillRoundRect(rect, 8.0f, withAlpha(rgba(255, 255, 255), alpha));
+    strokeRoundRect(rect, 8.0f, withAlpha(COL_BORDER, alpha), 1.0f);
+
+    if (matrix.empty() || matrixSize <= 0) return;
+
+    float pad = 8.0f;
+    float availW = rect.width() - pad * 2.0f;
+    float availH = rect.height() - pad * 2.0f;
+    if (availW <= 0.0f || availH <= 0.0f) return;
+
+    float moduleSize = std::floor(std::min(availW, availH) / static_cast<float>(matrixSize));
+    if (moduleSize < 1.0f) moduleSize = 1.0f;
+
+    float qrTotal = moduleSize * static_cast<float>(matrixSize);
+    float startX = rect.left + (rect.width() - qrTotal) * 0.5f;
+    float startY = rect.top + (rect.height() - qrTotal) * 0.5f;
+
+    solidBrush_->SetColor(withAlpha(rgba(18, 18, 18), alpha));
+
+    for (int y = 0; y < matrixSize; ++y) {
+        for (int x = 0; x < matrixSize; ++x) {
+            if (matrix[static_cast<size_t>(y * matrixSize + x)] != 0) {
+                D2D1_RECT_F modRect = D2D1::RectF(
+                    startX + static_cast<float>(x) * moduleSize,
+                    startY + static_cast<float>(y) * moduleSize,
+                    startX + static_cast<float>(x + 1) * moduleSize,
+                    startY + static_cast<float>(y + 1) * moduleSize
+                );
+                renderTarget_->FillRectangle(modRect, solidBrush_);
+            }
+        }
+    }
+}
+
+void CppDeskWindow::updateTotpQrMatrix() {
+    const auto& s = identity_.settings();
+    std::string secret = s.totpSecret;
+    if (secret.empty()) {
+        secret = identity_.totpManager().getSecretBase32();
+        if (secret.empty()) {
+            identity_.totpManager().generateNewSecret();
+            secret = identity_.totpManager().getSecretBase32();
+            AppSettings ns = s;
+            ns.totpSecret = secret;
+            identity_.updateSettings(ns);
+        }
+    } else {
+        identity_.totpManager().setSecret(secret, (s.totpAlgorithm == "SHA256") ? TotpAlgorithm::Sha256 : TotpAlgorithm::Sha1);
+    }
+    std::string uri = identity_.totpManager().buildOtpAuthUri(identity_.deskId(), "CppDesk");
+    QrMatrix qr = QrMatrix::generate(uri);
+    totpQrMatrix_ = qr.modules();
+    totpQrMatrixSize_ = qr.size();
+}
+
+void CppDeskWindow::drawTotpChallengeModal(float clientW, float clientH) {
+    if (!showTotpModal_ && totpModalAnimT_ <= 0.004f) return;
+
+    float alpha = std::clamp(totpModalAnimT_, 0.0f, 1.0f);
+    fillRoundRect({ 0.0f, 0.0f, clientW, clientH }, 0.0f, rgba(28, 24, 20, 0.65f * alpha));
+
+    float mw = 440.0f;
+    float mh = 260.0f;
+    UiRect modal = { (clientW - mw) * 0.5f, (clientH - mh) * 0.5f, (clientW + mw) * 0.5f, (clientH + mh) * 0.5f };
+
+    float scale = 0.90f + 0.10f * totpModalAnimT_;
+    renderTarget_->SetTransform(
+        D2D1::Matrix3x2F::Scale(scale, scale, D2D1::Point2F(modal.centerX(), modal.centerY()))
+    );
+
+    drawCardShadow(modal, 24.0f, 1.4f * alpha);
+    drawCardSurface(modal, 20.0f, alpha);
+    strokeRoundRect(modal, 20.0f, withAlpha(COL_PRIMARY_ACCENT, 0.45f * alpha), 1.5f);
+
+    float mx = modal.left + 28.0f;
+    float mrx = modal.right - 28.0f;
+    float my = modal.top + 22.0f;
+
+    UiRect badge = { mx, my, mx + 160.0f, my + 22.0f };
+    fillRoundRect(badge, 5.0f, rgba(217, 119, 87, 0.18f));
+    strokeRoundRect(badge, 5.0f, rgba(217, 119, 87, 0.45f), 1.0f);
+    drawText("TWO-FACTOR AUTHENTICATION", badge, fmtSmall_, COL_PRIMARY_ACCENT, DWRITE_TEXT_ALIGNMENT_CENTER);
+
+    UiRect closeBtn = { mrx - 26.0f, my, mrx, my + 26.0f };
+    drawButton("modal_totp_close", closeBtn, "x",
+               COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 13.0f, [this]() {
+                   network_.cancelViewerTotp();
+                   showTotpModal_ = false;
+               }, fmtHeading_);
+    my += 30.0f;
+
+    drawText("Enter Security Code", { mx, my, mrx - 30.0f, my + 26.0f }, fmtHeading_, COL_TEXT_PRIMARY);
+    my += 28.0f;
+
+    std::string promptText = "The host requires a 6-digit TOTP verification code from your authenticator app to authorize unattended access.";
+    drawText(promptText, { mx, my, mrx, my + 32.0f }, fmtSmall_, COL_TEXT_SECONDARY);
+    my += 38.0f;
+
+    UiRect codeField = { mx, my, mrx, my + 36.0f };
+    drawTextField("field_totp_modal_code", FocusedField::TotpModalCode, codeField,
+                  totpModalInput_, "Enter 6-digit code (000000)", false);
+    my += 42.0f;
+
+    if (!totpModalError_.empty()) {
+        drawText(totpModalError_, { mx, my, mrx, my + 18.0f }, fmtSmall_, COL_DANGER, DWRITE_TEXT_ALIGNMENT_CENTER);
+    }
+    my += 20.0f;
+
+    float btnW = (mrx - mx - 12.0f) * 0.5f;
+    UiRect cancelBtn = { mx, my, mx + btnW, my + 36.0f };
+    drawButton("modal_totp_cancel", cancelBtn, "Cancel",
+               COL_SEC_BTN_BG, COL_SEC_BTN_HV, COL_TEXT_PRIMARY, 8.0f, [this]() {
+                   network_.cancelViewerTotp();
+                   showTotpModal_ = false;
+               }, fmtSmall_, true, COL_BORDER);
+
+    UiRect verifyBtn = { cancelBtn.right + 12.0f, my, mrx, my + 36.0f };
+    drawButton("modal_totp_submit", verifyBtn, "Verify & Connect",
+               COL_PRIMARY_ACCENT, COL_PRIMARY_ACCENT_HV, COL_TEXT_ON_ACCENT, 8.0f, [this]() {
+                   if (totpModalInput_.size() == 6) {
+                       network_.submitViewerTotpCode(totpModalInput_);
+                       totpModalError_.clear();
+                   } else {
+                       totpModalError_ = "Please enter 6 digits.";
+                   }
+               }, fmtSmall_);
+
+    renderTarget_->SetTransform(D2D1::Matrix3x2F::Identity());
+}
+
 void CppDeskWindow::triggerUpdateCheck(bool manual) {
     if (isCheckingUpdates_) return;
     isCheckingUpdates_ = true;
@@ -5790,7 +6827,7 @@ bool CppDeskWindow::mapCanvasPointToNormalized(float x, float y, float& outNormX
         }
     }
 
-    if (modalAnimT_ > 0.004f || shortcutsModalAnimT_ > 0.004f || portForwardModalAnimT_ > 0.004f || addressBookModalAnimT_ > 0.004f) {
+    if (modalAnimT_ > 0.004f || shortcutsModalAnimT_ > 0.004f || portForwardModalAnimT_ > 0.004f || addressBookModalAnimT_ > 0.004f || totpModalAnimT_ > 0.004f) {
         return false;
     }
     if (isFullscreen_ && floatingToolbarY_ > -50.0f && y <= (floatingToolbarY_ + 50.0f)) {
@@ -5804,7 +6841,8 @@ bool CppDeskWindow::mapCanvasPointToNormalized(float x, float y, float& outNormX
         RECT rc{};
         GetClientRect(hwnd_, &rc);
         float w = static_cast<float>(rc.right - rc.left);
-        float drawerW = std::min(395.0f, w * 0.42f);
+        float targetDrawerW = (drawerTab_ == DrawerTab::Sync) ? 440.0f : 395.0f;
+        float drawerW = std::min(targetDrawerW, w * 0.48f);
         if (x >= (w - drawerW - 14.0f)) {
             return false;
         }
@@ -5834,6 +6872,10 @@ std::string* CppDeskWindow::activeFocusedTextBuffer() {
     if (focusedField_ == FocusedField::ClipboardSearch) return &clipSearchQuery_;
     if (focusedField_ == FocusedField::PrivacyBrand) return &privacyBrandEdit_;
     if (focusedField_ == FocusedField::PrivacyNotice) return &privacyNoticeEdit_;
+    if (focusedField_ == FocusedField::TotpEnrollTestCode) return &totpEnrollCodeEdit_;
+    if (focusedField_ == FocusedField::TotpModalCode) return &totpModalInput_;
+    if (focusedField_ == FocusedField::SyncLocalPath) return &syncLocalPathEdit_;
+    if (focusedField_ == FocusedField::SyncRemotePath) return &syncRemotePathEdit_;
     return nullptr;
 }
 
@@ -5877,6 +6919,23 @@ void CppDeskWindow::onMouseMove(float x, float y) {
             settingsScrollVel_ = 0.0f;
             InvalidateRect(hwnd_, nullptr, FALSE);
             return;
+        }
+    }
+
+    if (draggingPlayerScrubber_) {
+        if (!mouseLeftDown_ || !(GetAsyncKeyState(VK_LBUTTON) & 0x8000)) {
+            draggingPlayerScrubber_ = false;
+            ReleaseCapture();
+            InvalidateRect(hwnd_, nullptr, FALSE);
+        } else if (recordingPlayer_ && recordingPlayer_->isOpen() && recordingPlayer_->totalFrames() > 1) {
+            float trackW = playerScrubberTrackRect_.width();
+            if (trackW > 1.0f) {
+                float frac = std::clamp((x - playerScrubberTrackRect_.left) / trackW, 0.0f, 1.0f);
+                uint32_t targetFrame = static_cast<uint32_t>(frac * (recordingPlayer_->totalFrames() - 1));
+                recordingPlayer_->seekToFrame(targetFrame);
+                InvalidateRect(hwnd_, nullptr, FALSE);
+                return;
+            }
         }
     }
 
@@ -5936,6 +6995,14 @@ void CppDeskWindow::onMouseButton(MouseButtonId btn, bool isDown, float x, float
         return;
     }
 
+    if (btn == MouseButtonId::Left && !isDown && draggingPlayerScrubber_) {
+        mouseLeftDown_ = false;
+        draggingPlayerScrubber_ = false;
+        ReleaseCapture();
+        InvalidateRect(hwnd_, nullptr, FALSE);
+        return;
+    }
+
     // If Mandatory Update Modal is active, intercept clicks and only allow update_modal_* buttons
     if (showUpdateRequiredModal_) {
         if (btn == MouseButtonId::Left) {
@@ -5966,7 +7033,8 @@ void CppDeskWindow::onMouseButton(MouseButtonId btn, bool isDown, float x, float
         RECT rc{};
         GetClientRect(hwnd_, &rc);
         float w = static_cast<float>(rc.right - rc.left);
-        float drawerW = std::min(395.0f, w * 0.42f);
+        float targetDrawerW = (drawerTab_ == DrawerTab::Sync) ? 440.0f : 395.0f;
+        float drawerW = std::min(targetDrawerW, w * 0.48f);
         if (x >= (w - drawerW - 14.0f)) {
             insideDrawer = true;
         }
@@ -6069,7 +7137,8 @@ void CppDeskWindow::onMouseWheel(int delta) {
         RECT rc{};
         GetClientRect(hwnd_, &rc);
         float w = static_cast<float>(rc.right - rc.left);
-        float drawerW = std::min(395.0f, w * 0.42f);
+        float targetDrawerW = (drawerTab_ == DrawerTab::Sync) ? 440.0f : 395.0f;
+        float drawerW = std::min(targetDrawerW, w * 0.48f);
         if (mouseX_ >= (w - drawerW - 14.0f)) {
             if (drawerTab_ == DrawerTab::LiveChat) {
                 chatScrollOffset_ += (delta > 0 ? 1 : -1);
@@ -6086,6 +7155,10 @@ void CppDeskWindow::onMouseWheel(int delta) {
             } else if (drawerTab_ == DrawerTab::ClipboardHistory) {
                 clipHistoryScrollOffset_ += (delta > 0 ? -1 : 1);
                 if (clipHistoryScrollOffset_ < 0) clipHistoryScrollOffset_ = 0;
+                InvalidateRect(hwnd_, nullptr, FALSE);
+            } else if (drawerTab_ == DrawerTab::Sync) {
+                syncDiffScrollOffset_ += (delta > 0 ? -1.0f : 1.0f);
+                if (syncDiffScrollOffset_ < 0.0f) syncDiffScrollOffset_ = 0.0f;
                 InvalidateRect(hwnd_, nullptr, FALSE);
             }
             return;
@@ -6117,6 +7190,7 @@ void CppDeskWindow::onCharInput(wchar_t ch) {
     std::string* target = activeFocusedTextBuffer();
     if (!target) return;
 
+    bool isTotp = (focusedField_ == FocusedField::TotpEnrollTestCode || focusedField_ == FocusedField::TotpModalCode);
     size_t maxLen = 64;
     if (focusedField_ == FocusedField::ChatInput || focusedField_ == FocusedField::TerminalInput || focusedField_ == FocusedField::EditNotes) {
         maxLen = 240;
@@ -6124,6 +7198,8 @@ void CppDeskWindow::onCharInput(wchar_t ch) {
         maxLen = 127;
     } else if (focusedField_ == FocusedField::PrivacyBrand) {
         maxLen = 63;
+    } else if (isTotp) {
+        maxLen = 6;
     }
 
     if (ch == L'\b') {
@@ -6155,6 +7231,30 @@ void CppDeskWindow::onCharInput(wchar_t ch) {
             identity_.updateSettings(ns);
             network_.configurePrivacyCurtain(ns.privacyCustomNotice, ns.privacyBrandName, ns.privacyShowDeskId);
             showToast("Privacy screen branding updated");
+        } else if (focusedField_ == FocusedField::TotpEnrollTestCode) {
+            if (totpEnrollCodeEdit_.size() == 6) {
+                if (identity_.totpManager().verifyCode(totpEnrollCodeEdit_)) {
+                    AppSettings ns = identity_.settings();
+                    ns.totpEnabled = true;
+                    identity_.updateSettings(ns);
+                    totpEnrollSuccess_ = true;
+                    totpEnrollFeedback_ = "Code verified! 2FA enabled.";
+                    showToast("Two-Factor Authentication Enabled");
+                } else {
+                    totpEnrollSuccess_ = false;
+                    totpEnrollFeedback_ = "Invalid 6-digit code. Check authenticator clock.";
+                    showToast("Invalid 2FA code", true);
+                }
+            } else {
+                totpEnrollFeedback_ = "Please enter 6 digits.";
+            }
+        } else if (focusedField_ == FocusedField::TotpModalCode) {
+            if (totpModalInput_.size() == 6) {
+                network_.submitViewerTotpCode(totpModalInput_);
+                totpModalError_.clear();
+            } else {
+                totpModalError_ = "Please enter 6 digits.";
+            }
         }
     } else if (ch == L'\t') {
         if (focusedField_ == FocusedField::RemoteId) focusedField_ = FocusedField::RemotePassword;
@@ -6177,12 +7277,18 @@ void CppDeskWindow::onCharInput(wchar_t ch) {
         }
         std::string clip = ClipboardManager::getClipboardUtf8();
         for (char c : clip) {
-            if (c >= 32 && c < 127 && target->size() < maxLen) {
+            if (isTotp) {
+                if (c >= '0' && c <= '9' && target->size() < maxLen) {
+                    target->push_back(c);
+                }
+            } else if (c >= 32 && c < 127 && target->size() < maxLen) {
                 target->push_back(c);
             }
         }
     } else if (ch >= 32 && ch < 127 && target->size() < maxLen) {
-        target->push_back(static_cast<char>(ch));
+        if (!isTotp || (ch >= L'0' && ch <= L'9')) {
+            target->push_back(static_cast<char>(ch));
+        }
     }
 
     InvalidateRect(hwnd_, nullptr, FALSE);
@@ -6213,6 +7319,13 @@ void CppDeskWindow::onKeyEvent(uint16_t vk, uint16_t scan, bool isDown, bool isE
             return;
         }
         if (vk == VK_ESCAPE) {
+            if (showTotpModal_) {
+                showTotpModal_ = false;
+                network_.cancelViewerTotp();
+                showToast("2FA challenge cancelled", true);
+                InvalidateRect(hwnd_, nullptr, FALSE);
+                return;
+            }
             if (showPerformanceHud_) {
                 showPerformanceHud_ = false;
                 InvalidateRect(hwnd_, nullptr, FALSE);
@@ -6573,6 +7686,35 @@ void CppDeskWindow::openSendFileDialog() {
     }
 }
 
+void CppDeskWindow::openPickFolderDialog(std::string& outPath) {
+    IFileDialog* pfd = nullptr;
+    HRESULT hr = CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&pfd));
+    if (SUCCEEDED(hr)) {
+        DWORD dwOptions = 0;
+        if (SUCCEEDED(pfd->GetOptions(&dwOptions))) {
+            pfd->SetOptions(dwOptions | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM);
+        }
+        pfd->SetTitle(L"Select Folder to Synchronize");
+        if (SUCCEEDED(pfd->Show(hwnd_))) {
+            IShellItem* psi = nullptr;
+            if (SUCCEEDED(pfd->GetResult(&psi))) {
+                PWSTR pszPath = nullptr;
+                if (SUCCEEDED(psi->GetDisplayName(SIGDN_FILESYSPATH, &pszPath))) {
+                    int utf8Len = WideCharToMultiByte(CP_UTF8, 0, pszPath, -1, nullptr, 0, nullptr, nullptr);
+                    if (utf8Len > 0) {
+                        std::string res(utf8Len - 1, '\0');
+                        WideCharToMultiByte(CP_UTF8, 0, pszPath, -1, res.data(), utf8Len, nullptr, nullptr);
+                        outPath = res;
+                    }
+                    CoTaskMemFree(pszPath);
+                }
+                psi->Release();
+            }
+        }
+        pfd->Release();
+    }
+}
+
 void CppDeskWindow::saveRemoteScreenshot() {
     if (frameBufferBgra_.empty() || frameBufferW_ <= 0 || frameBufferH_ <= 0) {
         showToast("No video frame available yet", true);
@@ -6630,7 +7772,7 @@ void CppDeskWindow::toggleScreenRecording() {
         }
 
         std::string fname = std::filesystem::path(path).filename().string();
-        showToast("Recording saved: " + fname + " (" + szBuf + ")");
+        showToast("Recording saved: " + fname + " (" + szBuf + ") • Review in Player");
     } else {
         if (frameBufferBgra_.empty() || frameBufferW_ <= 0 || frameBufferH_ <= 0) {
             showToast("No active remote video stream to record", true);

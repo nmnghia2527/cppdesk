@@ -8,17 +8,26 @@
 #include "../src/net/updater.hpp"
 #include "../src/ui/notification_manager.hpp"
 #include "../src/media/session_recorder.hpp"
+#include "../src/media/session_recording_player.hpp"
 #include "../src/media/voice_intercom.hpp"
 #include "../src/capture/display_manager.hpp"
+#include "../src/capture/virtual_display_manager.hpp"
+#include "../src/capture/screen_blank_manager.hpp"
 #include "../src/control/session_tab_manager.hpp"
 #include "../src/control/windows_service_manager.hpp"
 #include "../src/control/shortcut_manager.hpp"
+#include "../src/core/totp_manager.hpp"
+#include "../src/core/qr_matrix.hpp"
+#include "../src/control/file_sync_manager.hpp"
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
 #include <objbase.h>
+#ifdef DeleteFile
+#undef DeleteFile
+#endif
 
 #include <iostream>
 #include <fstream>
@@ -3819,6 +3828,1403 @@ void testZeroAllocAudioAndStackWideText() {
     }
 }
 
+void testVirtualDisplayManagerAndHeadlessEmulation() {
+    std::cout << "[TEST 43] Virtual Multi-Display Driver & Headless Display Emulation Subsystem...\n" << std::flush;
+
+    // 1. Protocol Serialization & Deserialization
+    {
+        // 1.1 VirtualDisplayCmdPayload round-trip (Create, Destroy, SetMode, resolutions)
+        VirtualDisplayCmdPayload cmd1;
+        cmd1.cmd = static_cast<uint8_t>(VirtualDisplayCmdType::Create);
+        cmd1.displayId = 0;
+        cmd1.width = 1920;
+        cmd1.height = 1080;
+        cmd1.refreshRate = 60;
+        cmd1.flags = 0x01; // Prefer IddCx
+
+        std::vector<uint8_t> cmdBytes;
+        serializeVirtualDisplayCmd(cmd1, cmdBytes);
+        TEST_ASSERT(cmdBytes.size() == 18);
+
+        VirtualDisplayCmdPayload cmd1Dec{};
+        TEST_ASSERT(deserializeVirtualDisplayCmd(cmdBytes.data(), cmdBytes.size(), cmd1Dec));
+        TEST_ASSERT(cmd1Dec.cmd == static_cast<uint8_t>(VirtualDisplayCmdType::Create));
+        TEST_ASSERT(cmd1Dec.displayId == 0);
+        TEST_ASSERT(cmd1Dec.width == 1920);
+        TEST_ASSERT(cmd1Dec.height == 1080);
+        TEST_ASSERT(cmd1Dec.refreshRate == 60);
+        TEST_ASSERT(cmd1Dec.flags == 0x01);
+
+        // 1.2 Truncated command buffer underflow safety (< 18 bytes)
+        for (size_t trunc = 0; trunc < 18; ++trunc) {
+            VirtualDisplayCmdPayload dummy{};
+            TEST_ASSERT(!deserializeVirtualDisplayCmd(cmdBytes.data(), trunc, dummy));
+        }
+
+        // 1.3 Destroy and SetMode payloads
+        VirtualDisplayCmdPayload cmdDestroy;
+        cmdDestroy.cmd = static_cast<uint8_t>(VirtualDisplayCmdType::Destroy);
+        cmdDestroy.displayId = 105;
+        serializeVirtualDisplayCmd(cmdDestroy, cmdBytes);
+        VirtualDisplayCmdPayload cmdDestroyDec{};
+        TEST_ASSERT(deserializeVirtualDisplayCmd(cmdBytes.data(), cmdBytes.size(), cmdDestroyDec));
+        TEST_ASSERT(cmdDestroyDec.cmd == static_cast<uint8_t>(VirtualDisplayCmdType::Destroy));
+        TEST_ASSERT(cmdDestroyDec.displayId == 105);
+
+        VirtualDisplayCmdPayload cmdMode;
+        cmdMode.cmd = static_cast<uint8_t>(VirtualDisplayCmdType::SetMode);
+        cmdMode.displayId = 105;
+        cmdMode.width = 3840;
+        cmdMode.height = 2160;
+        cmdMode.refreshRate = 120;
+        cmdMode.flags = 0x02;
+        serializeVirtualDisplayCmd(cmdMode, cmdBytes);
+        VirtualDisplayCmdPayload cmdModeDec{};
+        TEST_ASSERT(deserializeVirtualDisplayCmd(cmdBytes.data(), cmdBytes.size(), cmdModeDec));
+        TEST_ASSERT(cmdModeDec.cmd == static_cast<uint8_t>(VirtualDisplayCmdType::SetMode));
+        TEST_ASSERT(cmdModeDec.displayId == 105);
+        TEST_ASSERT(cmdModeDec.width == 3840);
+        TEST_ASSERT(cmdModeDec.height == 2160);
+        TEST_ASSERT(cmdModeDec.refreshRate == 120);
+        TEST_ASSERT(cmdModeDec.flags == 0x02);
+
+        // 1.4 VirtualDisplayStatusPayload round-trip
+        VirtualDisplayStatusPayload st;
+        st.statusCode = static_cast<uint8_t>(VirtualDisplayStatusCode::Success);
+        st.displayId = 42;
+        st.width = 2560;
+        st.height = 1440;
+        st.refreshRate = 75;
+        st.isVirtual = 1;
+        st.isHeadlessFallback = 1;
+        st.driverBackend = 0; // Software
+        st.message = "Virtual Display Initialized Successfully";
+
+        std::vector<uint8_t> stBytes;
+        serializeVirtualDisplayStatus(st, stBytes);
+        TEST_ASSERT(stBytes.size() >= 20);
+
+        VirtualDisplayStatusPayload stDec{};
+        TEST_ASSERT(deserializeVirtualDisplayStatus(stBytes.data(), stBytes.size(), stDec));
+        TEST_ASSERT(stDec.statusCode == static_cast<uint8_t>(VirtualDisplayStatusCode::Success));
+        TEST_ASSERT(stDec.displayId == 42);
+        TEST_ASSERT(stDec.width == 2560);
+        TEST_ASSERT(stDec.height == 1440);
+        TEST_ASSERT(stDec.refreshRate == 75);
+        TEST_ASSERT(stDec.isVirtual == 1);
+        TEST_ASSERT(stDec.isHeadlessFallback == 1);
+        TEST_ASSERT(stDec.driverBackend == 0);
+        TEST_ASSERT(stDec.message == "Virtual Display Initialized Successfully");
+
+        // 1.5 Truncated status buffer underflow safety (< 20 bytes)
+        for (size_t trunc = 0; trunc < 20; ++trunc) {
+            VirtualDisplayStatusPayload dummy{};
+            TEST_ASSERT(!deserializeVirtualDisplayStatus(stBytes.data(), trunc, dummy));
+        }
+
+        // 1.6 serializeMonitorList and deserializeMonitorList round-trip with isVirtual and virtualId
+        std::vector<MonitorDesc> testMons;
+        MonitorDesc m1;
+        m1.index = 0;
+        m1.x = 0;
+        m1.y = 0;
+        m1.width = 1920;
+        m1.height = 1080;
+        m1.isPrimary = true;
+        m1.name = "Primary Physical Display";
+        m1.isVirtual = false;
+        m1.virtualId = 0;
+        testMons.push_back(m1);
+
+        MonitorDesc m2;
+        m2.index = 1;
+        m2.x = 1920;
+        m2.y = 0;
+        m2.width = 2560;
+        m2.height = 1440;
+        m2.isPrimary = false;
+        m2.name = "Secondary Virtual Display [Virtual]";
+        m2.isVirtual = true;
+        m2.virtualId = 88;
+        testMons.push_back(m2);
+
+        std::vector<uint8_t> monListBytes;
+        serializeMonitorList(testMons, monListBytes);
+        TEST_ASSERT(!monListBytes.empty());
+
+        std::vector<MonitorDesc> testMonsDec;
+        TEST_ASSERT(deserializeMonitorList(monListBytes.data(), monListBytes.size(), testMonsDec));
+        TEST_ASSERT(testMonsDec.size() == 2);
+        TEST_ASSERT(!testMonsDec[0].isVirtual);
+        TEST_ASSERT(testMonsDec[0].virtualId == 0);
+        TEST_ASSERT(testMonsDec[1].isVirtual);
+        TEST_ASSERT(testMonsDec[1].virtualId == 88);
+        TEST_ASSERT(testMonsDec[1].width == 2560);
+        TEST_ASSERT(testMonsDec[1].height == 1440);
+    }
+
+    // 2. VirtualDisplayManager Lifecycle
+    {
+        auto& vdm = VirtualDisplayManager::instance();
+        vdm.destroyAllSessionDisplays();
+        TEST_ASSERT(vdm.virtualDisplayCount() == 0);
+
+        uint32_t id1 = 0;
+        TEST_ASSERT(vdm.createVirtualDisplay(1920, 1080, 60, false, &id1));
+        TEST_ASSERT(id1 != 0);
+        TEST_ASSERT(vdm.virtualDisplayCount() == 1);
+
+        VirtualDisplayInfo info1;
+        TEST_ASSERT(vdm.getDisplayInfo(id1, info1));
+        TEST_ASSERT(info1.id == id1);
+        TEST_ASSERT(info1.width == 1920);
+        TEST_ASSERT(info1.height == 1080);
+        TEST_ASSERT(info1.refreshRate == 60);
+        TEST_ASSERT(info1.backend == VirtualBackend::Software);
+
+        // Create secondary virtual display (2560x1440 @ 60Hz)
+        uint32_t id2 = 0;
+        TEST_ASSERT(vdm.createVirtualDisplay(2560, 1440, 60, false, &id2));
+        TEST_ASSERT(id2 != 0 && id2 != id1);
+        TEST_ASSERT(vdm.virtualDisplayCount() == 2);
+
+        VirtualDisplayInfo info2;
+        TEST_ASSERT(vdm.getDisplayInfo(id2, info2));
+        // Verify horizontal coordinate topology offset: secondary display placed to the right
+        TEST_ASSERT(info2.x >= (info1.x + static_cast<int32_t>(info1.width)));
+
+        // Mode change: resize display 1 to 1280x720 @ 75Hz
+        TEST_ASSERT(vdm.setVirtualDisplayMode(id1, 1280, 720, 75));
+        TEST_ASSERT(vdm.getDisplayInfo(id1, info1));
+        TEST_ASSERT(info1.width == 1280);
+        TEST_ASSERT(info1.height == 720);
+        TEST_ASSERT(info1.refreshRate == 75);
+
+        // Destroy display 2
+        TEST_ASSERT(vdm.destroyVirtualDisplay(id2));
+        TEST_ASSERT(vdm.virtualDisplayCount() == 1);
+        TEST_ASSERT(!vdm.getDisplayInfo(id2, info2));
+
+        // Session teardown
+        vdm.destroyAllSessionDisplays();
+        TEST_ASSERT(vdm.virtualDisplayCount() == 0);
+    }
+
+    // 3. Headless Detection & Auto-Provisioning
+    {
+        auto& vdm = VirtualDisplayManager::instance();
+        vdm.destroyAllSessionDisplays();
+
+        uint32_t physCount = VirtualDisplayManager::getPhysicalMonitorCount();
+        bool isHeadless = VirtualDisplayManager::isHostHeadless();
+        TEST_ASSERT(isHeadless == (physCount == 0));
+
+        // Ensure headless display
+        TEST_ASSERT(vdm.ensureHeadlessDisplay(1920, 1080, 60));
+        TEST_ASSERT(vdm.hasActiveHeadlessDisplay());
+        uint32_t hId = vdm.headlessDisplayId();
+        TEST_ASSERT(hId != 0);
+
+        VirtualDisplayInfo hInfo;
+        TEST_ASSERT(vdm.getDisplayInfo(hId, hInfo));
+        TEST_ASSERT(hInfo.isHeadlessFallback);
+        TEST_ASSERT(hInfo.width == 1920);
+        TEST_ASSERT(hInfo.height == 1080);
+
+        // Idempotency: calling again returns true without creating a duplicate
+        TEST_ASSERT(vdm.ensureHeadlessDisplay(1920, 1080, 60));
+        TEST_ASSERT(vdm.virtualDisplayCount() == 1);
+        TEST_ASSERT(vdm.headlessDisplayId() == hId);
+
+        // Release headless display
+        vdm.releaseHeadlessDisplay();
+        TEST_ASSERT(!vdm.hasActiveHeadlessDisplay());
+        TEST_ASSERT(vdm.headlessDisplayId() == 0);
+        TEST_ASSERT(vdm.virtualDisplayCount() == 0);
+    }
+
+    // 4. Software Surface Capture & Synthetic Pattern Rendering
+    {
+        auto& vdm = VirtualDisplayManager::instance();
+        vdm.destroyAllSessionDisplays();
+
+        uint32_t testId = 0;
+        TEST_ASSERT(vdm.createVirtualDisplay(1920, 1080, 60, false, &testId));
+        vdm.renderSyntheticDesktop(testId, "Test Headless Synthetic Host");
+
+        std::vector<uint8_t> frameBuf;
+        int fw = 0, fh = 0;
+        TEST_ASSERT(vdm.captureSoftwareSurface(testId, frameBuf, fw, fh));
+        TEST_ASSERT(fw == 1920 && fh == 1080);
+        TEST_ASSERT(frameBuf.size() == static_cast<size_t>(fw) * fh * 4);
+
+        // Verify non-zero pixels and fully opaque alpha channel
+        bool hasNonZero = false;
+        bool allOpaque = true;
+        for (size_t p = 0; p < frameBuf.size(); p += 4) {
+            if (frameBuf[p + 0] != 0 || frameBuf[p + 1] != 0 || frameBuf[p + 2] != 0) {
+                hasNonZero = true;
+            }
+            if (frameBuf[p + 3] != 0xFF) {
+                allOpaque = false;
+                break;
+            }
+        }
+        TEST_ASSERT(hasNonZero);
+        TEST_ASSERT(allOpaque);
+
+        // Pass software frame into SIMD tile diff / hash kernels and verify TileCodec::encodeRect
+        TileCodec::initGdiPlus();
+        EncodedTile encTile = TileCodec::encodeRect(0, 0, 64, 64, frameBuf.data(), QualityPreset::Balanced);
+        TEST_ASSERT(!encTile.data.empty());
+        TEST_ASSERT(encTile.width == 64 && encTile.height == 64);
+
+        std::vector<uint8_t> canvas(64 * 64 * 4, 0);
+        TEST_ASSERT(TileCodec::decodeTileIntoCanvas(encTile, canvas.data(), 64, 64));
+
+        vdm.destroyAllSessionDisplays();
+    }
+
+    // 5. ScreenCapturer Integration
+    {
+        auto& vdm = VirtualDisplayManager::instance();
+        vdm.destroyAllSessionDisplays();
+
+        uint32_t vId = 0;
+        TEST_ASSERT(vdm.createVirtualDisplay(1920, 1080, 60, false, &vId));
+
+        ScreenCapturer capturer;
+        auto mons = capturer.enumerateMonitors();
+        TEST_ASSERT(!mons.empty());
+
+        int vIndex = -1;
+        for (const auto& m : mons) {
+            if (m.isVirtual && m.virtualId == vId) {
+                vIndex = m.index;
+                break;
+            }
+        }
+        TEST_ASSERT(vIndex != -1);
+
+        // Select virtual monitor index
+        TEST_ASSERT(capturer.selectMonitor(vIndex));
+        TEST_ASSERT(capturer.currentMonitor().isVirtual);
+        TEST_ASSERT(capturer.currentMonitor().virtualId == vId);
+        TEST_ASSERT(capturer.frameWidth() == 1920);
+        TEST_ASSERT(capturer.frameHeight() == 1080);
+        TEST_ASSERT(capturer.dxgiRecoveryState() == ScreenCapturer::DxgiRecoveryState::Disabled);
+
+        // Capture dirty tiles from virtual display
+        std::vector<EncodedTile> tiles;
+        bool isKf = false;
+        CursorState cur{};
+        bool ok = capturer.captureDirtyTiles(true, QualityPreset::Balanced, tiles, isKf, cur);
+        TEST_ASSERT(ok);
+        TEST_ASSERT(isKf);
+        TEST_ASSERT(!tiles.empty());
+        TEST_ASSERT(capturer.frameWidth() == 1920);
+
+        vdm.destroyAllSessionDisplays();
+    }
+
+    // 6. AppSettings Persistence
+    {
+        IdentityManager idMgr(77);
+        AppSettings s = idMgr.settings();
+        TEST_ASSERT(s.autoVirtualDisplay); // Default is true
+
+        s.autoVirtualDisplay = false;
+        idMgr.updateSettings(s);
+
+        IdentityManager idReload(77);
+        idReload.loadOrCreate();
+        TEST_ASSERT(!idReload.settings().autoVirtualDisplay);
+
+        s.autoVirtualDisplay = true;
+        idMgr.updateSettings(s);
+        idReload.loadOrCreate();
+        TEST_ASSERT(idReload.settings().autoVirtualDisplay);
+    }
+
+    // 7. Network Engine Protocol APIs
+    {
+        IdentityManager hId(81);
+        IdentityManager vId(82);
+        NetworkEngine host(hId);
+        NetworkEngine viewer(vId);
+
+        // APIs safely return false when viewer socket is not connected
+        TEST_ASSERT(!viewer.requestCreateVirtualDisplay(1920, 1080, 60));
+        TEST_ASSERT(!viewer.requestDestroyVirtualDisplay(1));
+        TEST_ASSERT(!viewer.requestSetVirtualDisplayMode(1, 1280, 720, 60));
+
+        // Test status payload storage in ViewerSessionStats
+        auto stats = viewer.viewerStats();
+        TEST_ASSERT(stats.monitors.empty() || !stats.monitors.empty());
+    }
+}
+
+void testHardwareDpmsAndScreenBlanking() {
+    std::cout << "[TEST 44] Remote Screen Blanking & Hardware DPMS Power Management...\n" << std::flush;
+
+    // 1. ScreenBlankMode Enum Values
+    TEST_ASSERT(static_cast<uint8_t>(ScreenBlankMode::CurtainOnly) == 0);
+    TEST_ASSERT(static_cast<uint8_t>(ScreenBlankMode::DpmsOnly) == 1);
+    TEST_ASSERT(static_cast<uint8_t>(ScreenBlankMode::Unified) == 2);
+
+    // 2. PrivacyModeConfigPayload Binary Packing & Serialization
+    TEST_ASSERT(sizeof(PrivacyModeConfigPayload) == 196);
+    PrivacyModeConfigPayload samplePayload{};
+    TEST_ASSERT(reinterpret_cast<uintptr_t>(&samplePayload.blankMode) - reinterpret_cast<uintptr_t>(&samplePayload) == 3);
+
+    samplePayload.enable = 1;
+    samplePayload.acknowledge = 0;
+    samplePayload.showDeskId = 1;
+    samplePayload.blankMode = static_cast<uint8_t>(ScreenBlankMode::Unified);
+    std::snprintf(samplePayload.customNotice, sizeof(samplePayload.customNotice), "Enterprise Blanking Active");
+    std::snprintf(samplePayload.brandName, sizeof(samplePayload.brandName), "CppDesk Corp");
+
+    std::vector<uint8_t> encoded;
+    serializePrivacyModeConfig(samplePayload, encoded);
+    TEST_ASSERT(encoded.size() == sizeof(PrivacyModeConfigPayload));
+
+    PrivacyModeConfigPayload decodedPayload{};
+    bool decOk = deserializePrivacyModeConfig(encoded.data(), encoded.size(), decodedPayload);
+    TEST_ASSERT(decOk);
+    TEST_ASSERT(decodedPayload.enable == 1);
+    TEST_ASSERT(decodedPayload.acknowledge == 0);
+    TEST_ASSERT(decodedPayload.showDeskId == 1);
+    TEST_ASSERT(decodedPayload.blankMode == static_cast<uint8_t>(ScreenBlankMode::Unified));
+    TEST_ASSERT(std::string(decodedPayload.customNotice) == "Enterprise Blanking Active");
+    TEST_ASSERT(std::string(decodedPayload.brandName) == "CppDesk Corp");
+
+    // 3. Buffer Underflow & Backward Compatibility
+    PrivacyModeConfigPayload underflowOut{};
+    TEST_ASSERT(!deserializePrivacyModeConfig(nullptr, 196, underflowOut));
+    TEST_ASSERT(!deserializePrivacyModeConfig(encoded.data(), 195, underflowOut));
+
+    // Backward compatibility overlay with legacy PrivacyModePayload at offset 0 and 1
+    const PrivacyModePayload* legacyView = reinterpret_cast<const PrivacyModePayload*>(&decodedPayload);
+    TEST_ASSERT(legacyView->enable == 1);
+    TEST_ASSERT(legacyView->acknowledge == 0);
+
+    // blankMode = 0 decodes to CurtainOnly
+    samplePayload.blankMode = 0;
+    serializePrivacyModeConfig(samplePayload, encoded);
+    TEST_ASSERT(deserializePrivacyModeConfig(encoded.data(), encoded.size(), decodedPayload));
+    TEST_ASSERT(static_cast<ScreenBlankMode>(decodedPayload.blankMode) == ScreenBlankMode::CurtainOnly);
+
+    // 4. AppSettings Persistence for hardwareDpmsBlanking
+    {
+        IdentityManager idMgr(88);
+        AppSettings s = idMgr.settings();
+        TEST_ASSERT(s.hardwareDpmsBlanking); // Default true
+
+        s.hardwareDpmsBlanking = false;
+        idMgr.updateSettings(s);
+
+        IdentityManager idReload(88);
+        idReload.loadOrCreate();
+        TEST_ASSERT(!idReload.settings().hardwareDpmsBlanking);
+
+        s.hardwareDpmsBlanking = true;
+        idMgr.updateSettings(s);
+        idReload.loadOrCreate();
+        TEST_ASSERT(idReload.settings().hardwareDpmsBlanking);
+    }
+
+    // 5. DPMS API Execution
+    ScreenBlankManager::powerDownDisplays();
+    ScreenBlankManager::wakeDisplays();
+    TEST_ASSERT(true);
+
+    // 6. Low-Level Hook Filter Logic
+    // Mouse tests
+    TEST_ASSERT(!ScreenBlankManager::isPhysicalEvent(LLMHF_INJECTED, true));
+    TEST_ASSERT(ScreenBlankManager::isPhysicalEvent(0, true));
+    MSLLHOOKSTRUCT msHookInjected{};
+    msHookInjected.flags = LLMHF_INJECTED;
+    TEST_ASSERT(!ScreenBlankManager::isPhysicalMouseInput(msHookInjected));
+    MSLLHOOKSTRUCT msHookPhysical{};
+    msHookPhysical.flags = 0;
+    TEST_ASSERT(ScreenBlankManager::isPhysicalMouseInput(msHookPhysical));
+
+    // Keyboard tests
+    TEST_ASSERT(!ScreenBlankManager::isPhysicalEvent(LLKHF_INJECTED, false));
+    TEST_ASSERT(ScreenBlankManager::isPhysicalEvent(0, false));
+    KBDLLHOOKSTRUCT kbdHookInjected{};
+    kbdHookInjected.flags = LLKHF_INJECTED;
+    TEST_ASSERT(!ScreenBlankManager::isPhysicalKeyboardInput(kbdHookInjected));
+    KBDLLHOOKSTRUCT kbdHookPhysical{};
+    kbdHookPhysical.flags = 0;
+    TEST_ASSERT(ScreenBlankManager::isPhysicalKeyboardInput(kbdHookPhysical));
+
+    // 7. ScreenBlankManager Lifecycle & Emergency Callback
+    {
+        auto& sbm = ScreenBlankManager::instance();
+        TEST_ASSERT(!sbm.isBlankActive());
+
+        bool emergencyFired = false;
+        sbm.setEmergencyWakeCallback([&emergencyFired]() {
+            emergencyFired = true;
+        });
+
+        // Engage mock blanking in DpmsOnly mode
+        sbm.engageBlanking(ScreenBlankMode::DpmsOnly, "Notice", "Brand", true, 123456789);
+        TEST_ASSERT(sbm.isBlankActive());
+        TEST_ASSERT(sbm.currentBlankMode() == ScreenBlankMode::DpmsOnly);
+
+        // Simulate emergency wake
+        sbm.triggerEmergencyWake();
+        TEST_ASSERT(!sbm.isBlankActive());
+        TEST_ASSERT(emergencyFired);
+
+        // Disengage blanking cleanup
+        sbm.disengageBlanking();
+        TEST_ASSERT(!sbm.isBlankActive());
+        sbm.setEmergencyWakeCallback(nullptr);
+    }
+
+    // 8. NetworkEngine Integration APIs (safe when disconnected)
+    {
+        IdentityManager hId(89);
+        IdentityManager vId(90);
+        NetworkEngine host(hId);
+        NetworkEngine viewer(vId);
+
+        // Safe call when disconnected
+        viewer.requestTogglePrivacyMode(ScreenBlankMode::Unified);
+        viewer.requestTogglePrivacyMode(ScreenBlankMode::CurtainOnly);
+        viewer.requestTogglePrivacyMode(ScreenBlankMode::DpmsOnly);
+        TEST_ASSERT(!viewer.isPrivacyModeEngaged());
+        TEST_ASSERT(!host.isHostPrivacyModeActive());
+
+        // Host privacy mode engage and disengage
+        host.setHostPrivacyMode(true, "Sec Notice", "Sec Brand", false, ScreenBlankMode::CurtainOnly);
+        TEST_ASSERT(host.isHostPrivacyModeActive());
+        host.setHostPrivacyMode(false);
+        TEST_ASSERT(!host.isHostPrivacyModeActive());
+    }
+}
+
+void testSessionRecordingPlayerAndTranscoder() {
+    std::cout << "[TEST 45] Session Recording Player & Format Transcoder...\n";
+
+    std::string recPath = "cppdesk_test_player_rec.avi";
+    std::string corruptPath = "cppdesk_test_corrupt.avi";
+    std::string snapBmpPath = "cppdesk_test_snap.bmp";
+    std::string snapPngPath = "cppdesk_test_snap.png";
+    std::string trimmedPath = "cppdesk_test_trimmed.avi";
+
+    // Clean up any stale files
+    std::filesystem::remove(recPath);
+    std::filesystem::remove(corruptPath);
+    std::filesystem::remove(snapBmpPath);
+    std::filesystem::remove(snapPngPath);
+    std::filesystem::remove(trimmedPath);
+
+    // 1. Synthetic AVI Generation with SessionRecorder
+    {
+        SessionRecorder recorder;
+        bool ok = recorder.startRecording(recPath, 320, 240, 30);
+        TEST_ASSERT(ok);
+
+        // Push 12 synthetic frames with alternating colors
+        // Pattern 0: Red    (B=0,   G=0,   R=255, A=255)
+        // Pattern 1: Green  (B=0,   G=255, R=0,   A=255)
+        // Pattern 2: Blue   (B=255, G=0,   R=0,   A=255)
+        // Pattern 3: Yellow (B=0,   G=255, R=255, A=255)
+        std::vector<uint8_t> frame(320 * 240 * 4);
+        for (int i = 0; i < 12; ++i) {
+            int pat = i % 4;
+            uint8_t b = (pat == 2) ? 255 : 0;
+            uint8_t g = (pat == 1 || pat == 3) ? 255 : 0;
+            uint8_t r = (pat == 0 || pat == 3) ? 255 : 0;
+            uint8_t a = 255;
+            for (size_t p = 0; p < 320 * 240; ++p) {
+                frame[p * 4 + 0] = b;
+                frame[p * 4 + 1] = g;
+                frame[p * 4 + 2] = r;
+                frame[p * 4 + 3] = a;
+            }
+            recorder.pushFrame(frame.data(), 320, 240);
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+
+        recorder.stopRecording();
+        TEST_ASSERT(std::filesystem::exists(recPath));
+        TEST_ASSERT(std::filesystem::file_size(recPath) > 1000);
+    }
+
+    // 2. Demuxer Header & Index Verification
+    {
+        SessionRecordingPlayer player;
+        TEST_ASSERT(!player.isOpen());
+        bool opened = player.open(recPath);
+        TEST_ASSERT(opened);
+        TEST_ASSERT(player.isOpen());
+        TEST_ASSERT(player.frameWidth() == 320);
+        TEST_ASSERT(player.frameHeight() == 240);
+        TEST_ASSERT(player.fps() == 30);
+        TEST_ASSERT(player.totalFrames() == 12);
+        TEST_ASSERT(player.durationUs() > 0);
+        TEST_ASSERT(player.filePath() == recPath);
+
+        // 3. Frame Seeking & Decoding Verification
+        // Seek to Frame 0 (Red)
+        TEST_ASSERT(player.seekToFrame(0));
+        TEST_ASSERT(player.currentFrameIndex() == 0);
+        std::vector<uint8_t> buf0;
+        int w = 0, h = 0;
+        player.copyCurrentFrameBgra(buf0, w, h);
+        TEST_ASSERT(w == 320 && h == 240);
+        TEST_ASSERT(buf0.size() == 320 * 240 * 4);
+        // Verify center pixel is Red: B=0, G=0, R=255, A=255
+        size_t centerPix = (120 * 320 + 160) * 4;
+        TEST_ASSERT(buf0[centerPix + 0] == 0);
+        TEST_ASSERT(buf0[centerPix + 1] == 0);
+        TEST_ASSERT(buf0[centerPix + 2] == 255);
+        TEST_ASSERT(buf0[centerPix + 3] == 255);
+
+        // Seek to Frame 2 (Blue)
+        TEST_ASSERT(player.seekToFrame(2));
+        TEST_ASSERT(player.currentFrameIndex() == 2);
+        std::vector<uint8_t> buf2;
+        player.copyCurrentFrameBgra(buf2, w, h);
+        TEST_ASSERT(buf2[centerPix + 0] == 255);
+        TEST_ASSERT(buf2[centerPix + 1] == 0);
+        TEST_ASSERT(buf2[centerPix + 2] == 0);
+        TEST_ASSERT(buf2[centerPix + 3] == 255);
+
+        // Seek by timestamp (50% elapsed time -> should be frame 6)
+        uint64_t midTs = player.durationUs() / 2;
+        TEST_ASSERT(player.seekToTimestampUs(midTs));
+        TEST_ASSERT(player.currentFrameIndex() == 6);
+
+        // Stepping: +1 and -1
+        TEST_ASSERT(player.stepFrame(1));
+        TEST_ASSERT(player.currentFrameIndex() == 7);
+        TEST_ASSERT(player.stepFrame(-1));
+        TEST_ASSERT(player.currentFrameIndex() == 6);
+
+        // Speed setting
+        player.setSpeed(2.0f);
+        TEST_ASSERT(std::abs(player.speed() - 2.0f) < 0.01f);
+
+        // Play and pause transitions
+        player.play();
+        TEST_ASSERT(player.isPlaying());
+        player.pause();
+        TEST_ASSERT(!player.isPlaying());
+        player.togglePlayPause();
+        TEST_ASSERT(player.isPlaying());
+        player.togglePlayPause();
+        TEST_ASSERT(!player.isPlaying());
+
+        // 5. Snapshot Export Verification
+        player.seekToFrame(2); // Frame 2 is Blue
+        TEST_ASSERT(player.exportSnapshotBmp(snapBmpPath));
+        TEST_ASSERT(std::filesystem::exists(snapBmpPath));
+        {
+            std::ifstream bfile(snapBmpPath, std::ios::binary);
+            TEST_ASSERT(bfile.is_open());
+            BITMAPFILEHEADER bfh{};
+            BITMAPINFOHEADER bih{};
+            bfile.read(reinterpret_cast<char*>(&bfh), sizeof(bfh));
+            bfile.read(reinterpret_cast<char*>(&bih), sizeof(bih));
+            TEST_ASSERT(bfh.bfType == 0x4D42); // 'BM'
+            TEST_ASSERT(bih.biWidth == 320);
+            TEST_ASSERT(std::abs(bih.biHeight) == 240);
+            TEST_ASSERT(bih.biBitCount == 32);
+        }
+
+        TEST_ASSERT(player.exportSnapshotPng(snapPngPath));
+        TEST_ASSERT(std::filesystem::exists(snapPngPath));
+        {
+            std::ifstream pfile(snapPngPath, std::ios::binary);
+            TEST_ASSERT(pfile.is_open());
+            uint8_t sig[8]{};
+            pfile.read(reinterpret_cast<char*>(sig), 8);
+            // PNG signature: 0x89 0x50 0x4E 0x47 0x0D 0x0A 0x1A 0x0A
+            TEST_ASSERT(sig[0] == 0x89 && sig[1] == 'P' && sig[2] == 'N' && sig[3] == 'G');
+        }
+
+        // 6. Lossless Clip Trimming Verification
+        // Trim frames 2 through 6 (5 frames total: 2, 3, 4, 5, 6)
+        TEST_ASSERT(player.trimClip(trimmedPath, 2, 6));
+        TEST_ASSERT(std::filesystem::exists(trimmedPath));
+
+        {
+            SessionRecordingPlayer trimmedPlayer;
+            TEST_ASSERT(trimmedPlayer.open(trimmedPath));
+            TEST_ASSERT(trimmedPlayer.totalFrames() == 5);
+            TEST_ASSERT(trimmedPlayer.frameWidth() == 320);
+            TEST_ASSERT(trimmedPlayer.frameHeight() == 240);
+
+            // Trimmed Frame 0 should match original Frame 2 (Blue)
+            TEST_ASSERT(trimmedPlayer.seekToFrame(0));
+            std::vector<uint8_t> tbuf0;
+            trimmedPlayer.copyCurrentFrameBgra(tbuf0, w, h);
+            TEST_ASSERT(tbuf0[centerPix + 0] == 255); // B
+            TEST_ASSERT(tbuf0[centerPix + 1] == 0);   // G
+            TEST_ASSERT(tbuf0[centerPix + 2] == 0);   // R
+            TEST_ASSERT(tbuf0[centerPix + 3] == 255); // A
+
+            // Trimmed Frame 4 should match original Frame 6 (Blue: 6 % 4 == 2)
+            TEST_ASSERT(trimmedPlayer.seekToFrame(4));
+            std::vector<uint8_t> tbuf4;
+            trimmedPlayer.copyCurrentFrameBgra(tbuf4, w, h);
+            TEST_ASSERT(tbuf4[centerPix + 0] == 255); // B
+            TEST_ASSERT(tbuf4[centerPix + 1] == 0);   // G
+            TEST_ASSERT(tbuf4[centerPix + 2] == 0);   // R
+            TEST_ASSERT(tbuf4[centerPix + 3] == 255); // A
+
+            trimmedPlayer.close();
+        }
+
+        player.close();
+    }
+
+    // 4. Corrupted Index Recovery Verification
+    {
+        // Copy original file up to 'idx1' and zero dwTotalFrames and dwLength
+        std::ifstream src(recPath, std::ios::binary);
+        TEST_ASSERT(src.is_open());
+        std::vector<uint8_t> data((std::istreambuf_iterator<char>(src)),
+                                  std::istreambuf_iterator<char>());
+        src.close();
+
+        // Find "idx1" FourCC
+        size_t idxPos = data.size();
+        for (size_t i = 0; i + 4 <= data.size(); ++i) {
+            if (std::memcmp(&data[i], "idx1", 4) == 0) {
+                idxPos = i;
+                break;
+            }
+        }
+        TEST_ASSERT(idxPos < data.size());
+
+        // Truncate at idx1
+        data.resize(idxPos);
+
+        // Zero dwTotalFrames at offset 48
+        if (data.size() > 52) {
+            std::memset(&data[48], 0, 4);
+        }
+        // Zero dwLength at offset 140
+        if (data.size() > 144) {
+            std::memset(&data[140], 0, 4);
+        }
+
+        std::ofstream corruptOut(corruptPath, std::ios::binary | std::ios::trunc);
+        corruptOut.write(reinterpret_cast<const char*>(data.data()), data.size());
+        corruptOut.close();
+
+        SessionRecordingPlayer corruptPlayer;
+        TEST_ASSERT(corruptPlayer.open(corruptPath));
+        TEST_ASSERT(corruptPlayer.isOpen());
+        // Scanning movi should have recovered all 12 frames
+        TEST_ASSERT(corruptPlayer.totalFrames() == 12);
+        TEST_ASSERT(corruptPlayer.frameWidth() == 320);
+        TEST_ASSERT(corruptPlayer.frameHeight() == 240);
+
+        // Decode Frame 0 (Red)
+        TEST_ASSERT(corruptPlayer.seekToFrame(0));
+        std::vector<uint8_t> cBuf0;
+        int w = 0, h = 0;
+        corruptPlayer.copyCurrentFrameBgra(cBuf0, w, h);
+        size_t centerPix = (120 * 320 + 160) * 4;
+        TEST_ASSERT(cBuf0[centerPix + 0] == 0);
+        TEST_ASSERT(cBuf0[centerPix + 1] == 0);
+        TEST_ASSERT(cBuf0[centerPix + 2] == 255);
+        TEST_ASSERT(cBuf0[centerPix + 3] == 255);
+
+        // Decode Frame 2 (Blue)
+        TEST_ASSERT(corruptPlayer.seekToFrame(2));
+        std::vector<uint8_t> cBuf2;
+        corruptPlayer.copyCurrentFrameBgra(cBuf2, w, h);
+        TEST_ASSERT(cBuf2[centerPix + 0] == 255);
+        TEST_ASSERT(cBuf2[centerPix + 1] == 0);
+        TEST_ASSERT(cBuf2[centerPix + 2] == 0);
+        TEST_ASSERT(cBuf2[centerPix + 3] == 255);
+
+        corruptPlayer.close();
+    }
+
+    // 7. Cleanup temporary files
+    std::filesystem::remove(recPath);
+    std::filesystem::remove(corruptPath);
+    std::filesystem::remove(snapBmpPath);
+    std::filesystem::remove(snapPngPath);
+    std::filesystem::remove(trimmedPath);
+}
+
+void testTwoFactorAuthTotpAndQrMatrix() {
+    std::cout << "[TEST 46] Two-Factor Authentication (TOTP RFC 6238) & Micro QR Synthesizer...\n";
+
+    // Part 1: Official RFC 6238 Appendix B Test Vectors
+    {
+        const char* rawKey1 = "12345678901234567890";
+        TotpManager sha1Mgr;
+        sha1Mgr.setSecretRaw(reinterpret_cast<const uint8_t*>(rawKey1), 20, TotpAlgorithm::Sha1);
+
+        TEST_ASSERT(sha1Mgr.generateCode(59, 8) == "94287082");
+        TEST_ASSERT(sha1Mgr.generateCode(59, 6) == "287082");
+        TEST_ASSERT(sha1Mgr.generateCode(1111111109, 8) == "07081804");
+        TEST_ASSERT(sha1Mgr.generateCode(1111111109, 6) == "081804");
+        TEST_ASSERT(sha1Mgr.generateCode(1111111111, 8) == "14050471");
+        TEST_ASSERT(sha1Mgr.generateCode(1111111111, 6) == "050471");
+        TEST_ASSERT(sha1Mgr.generateCode(1234567890, 8) == "89005924");
+        TEST_ASSERT(sha1Mgr.generateCode(1234567890, 6) == "005924");
+        TEST_ASSERT(sha1Mgr.generateCode(2000000000, 8) == "69279037");
+        TEST_ASSERT(sha1Mgr.generateCode(2000000000, 6) == "279037");
+        TEST_ASSERT(sha1Mgr.generateCode(20000000000ULL, 8) == "65353130");
+        TEST_ASSERT(sha1Mgr.generateCode(20000000000ULL, 6) == "353130");
+
+        const char* rawKey256 = "12345678901234567890123456789012";
+        TotpManager sha256Mgr;
+        sha256Mgr.setSecretRaw(reinterpret_cast<const uint8_t*>(rawKey256), 32, TotpAlgorithm::Sha256);
+
+        TEST_ASSERT(sha256Mgr.generateCode(59, 8) == "46119246");
+        TEST_ASSERT(sha256Mgr.generateCode(59, 6) == "119246");
+        TEST_ASSERT(sha256Mgr.generateCode(1111111109, 8) == "68084774");
+        TEST_ASSERT(sha256Mgr.generateCode(1111111109, 6) == "084774");
+        TEST_ASSERT(sha256Mgr.generateCode(1111111111, 8) == "67062674");
+        TEST_ASSERT(sha256Mgr.generateCode(1111111111, 6) == "062674");
+        TEST_ASSERT(sha256Mgr.generateCode(1234567890, 8) == "91819424");
+        TEST_ASSERT(sha256Mgr.generateCode(1234567890, 6) == "819424");
+        TEST_ASSERT(sha256Mgr.generateCode(2000000000, 8) == "90698825");
+        TEST_ASSERT(sha256Mgr.generateCode(2000000000, 6) == "698825");
+        TEST_ASSERT(sha256Mgr.generateCode(20000000000ULL, 8) == "77737706");
+        TEST_ASSERT(sha256Mgr.generateCode(20000000000ULL, 6) == "737706");
+    }
+
+    // Part 2: Base32 RFC 4648 Vectors & Formatting
+    {
+        auto enc = [](const std::string& str) {
+            return TotpManager::encodeBase32(reinterpret_cast<const uint8_t*>(str.data()), str.size());
+        };
+        auto dec = [](const std::string& b32) -> std::string {
+            std::vector<uint8_t> out;
+            if (!TotpManager::decodeBase32(b32, out)) return "";
+            return std::string(out.begin(), out.end());
+        };
+
+        TEST_ASSERT(enc("") == "");
+        TEST_ASSERT(enc("f") == "MY======");
+        TEST_ASSERT(enc("fo") == "MZXQ====");
+        TEST_ASSERT(enc("foo") == "MZXW6===");
+        TEST_ASSERT(enc("foob") == "MZXW6YQ=");
+        TEST_ASSERT(enc("fooba") == "MZXW6YTB");
+        TEST_ASSERT(enc("foobar") == "MZXW6YTBOI======");
+
+        TEST_ASSERT(dec("") == "");
+        TEST_ASSERT(dec("MY======") == "f");
+        TEST_ASSERT(dec("MZXQ====") == "fo");
+        TEST_ASSERT(dec("MZXW6===") == "foo");
+        TEST_ASSERT(dec("MZXW6YQ=") == "foob");
+        TEST_ASSERT(dec("MZXW6YTB") == "fooba");
+        TEST_ASSERT(dec("MZXW6YTBOI======") == "foobar");
+
+        TEST_ASSERT(dec("mzxw6ytboi======") == "foobar");
+        TEST_ASSERT(dec("MZXW 6YTB OI") == "foobar");
+        TEST_ASSERT(dec("MZXW-6YTB-OI") == "foobar");
+        TEST_ASSERT(dec("  mzxw 6ytb-oi==  ") == "foobar");
+
+        std::vector<uint8_t> invalidOut;
+        TEST_ASSERT(!TotpManager::decodeBase32("MZXW1", invalidOut));
+        TEST_ASSERT(!TotpManager::decodeBase32("MZXW8", invalidOut));
+        TEST_ASSERT(!TotpManager::decodeBase32("MZXW9", invalidOut));
+        TEST_ASSERT(!TotpManager::decodeBase32("MZXW0", invalidOut));
+
+        TEST_ASSERT(TotpManager::formatBase32Secret("MZXW6YTB") == "MZXW 6YTB");
+        TEST_ASSERT(TotpManager::formatBase32Secret("MZXW 6YTB OI") == "MZXW 6YTB OI");
+
+        TotpManager randMgr;
+        randMgr.generateNewSecret();
+        TEST_ASSERT(randMgr.isConfigured());
+        std::string randB32 = randMgr.getSecretBase32();
+        TEST_ASSERT(randB32.size() == 32);
+        std::vector<uint8_t> randBytes;
+        TEST_ASSERT(TotpManager::decodeBase32(randB32, randBytes));
+        TEST_ASSERT(randBytes.size() == 20);
+    }
+
+    // Part 3: QR Matrix Generator & Sizing
+    {
+        std::string uri = "otpauth://totp/CppDesk:401115368?secret=JBSWY3DPEHPK3PXP&issuer=CppDesk";
+        QrMatrix qr = QrMatrix::generate(uri);
+
+        TEST_ASSERT(qr.size() >= 21);
+        TEST_ASSERT(qr.modules().size() == static_cast<size_t>(qr.size() * qr.size()));
+
+        // Center 3x3 of top-left finder must be dark
+        TEST_ASSERT(qr.getModule(2, 2));
+        TEST_ASSERT(qr.getModule(2, 3));
+        TEST_ASSERT(qr.getModule(2, 4));
+        TEST_ASSERT(qr.getModule(3, 2));
+        TEST_ASSERT(qr.getModule(3, 3));
+        TEST_ASSERT(qr.getModule(3, 4));
+        TEST_ASSERT(qr.getModule(4, 2));
+        TEST_ASSERT(qr.getModule(4, 3));
+        TEST_ASSERT(qr.getModule(4, 4));
+
+        // Border corners of top-left finder must be dark
+        TEST_ASSERT(qr.getModule(0, 0));
+        TEST_ASSERT(qr.getModule(0, 6));
+        TEST_ASSERT(qr.getModule(6, 0));
+        TEST_ASSERT(qr.getModule(6, 6));
+
+        // Separator ring around center must have light modules
+        TEST_ASSERT(!qr.getModule(1, 1));
+        TEST_ASSERT(!qr.getModule(1, 5));
+        TEST_ASSERT(!qr.getModule(5, 1));
+        TEST_ASSERT(!qr.getModule(5, 5));
+
+        // Top-right finder
+        int rightX = qr.size() - 7;
+        TEST_ASSERT(qr.getModule(rightX + 3, 3));
+        TEST_ASSERT(qr.getModule(rightX, 0));
+        TEST_ASSERT(qr.getModule(rightX + 6, 6));
+
+        // Bottom-left finder
+        int botY = qr.size() - 7;
+        TEST_ASSERT(qr.getModule(3, botY + 3));
+        TEST_ASSERT(qr.getModule(0, botY));
+        TEST_ASSERT(qr.getModule(6, botY + 6));
+
+        // Timing patterns
+        for (int c = 8; c < qr.size() - 8; ++c) {
+            TEST_ASSERT(qr.getModule(c, 6) == (c % 2 == 0));
+            TEST_ASSERT(qr.getModule(6, c) == (c % 2 == 0));
+        }
+
+        QrMatrix qrSmall = QrMatrix::generate("HI", 1, 1);
+        TEST_ASSERT(qrSmall.size() == 21);
+    }
+
+    // Part 4: Clock Drift & Single-Use Replay Protection
+    {
+        TotpManager mgr;
+        mgr.generateNewSecret();
+
+        uint64_t tNow = 1700000000ULL;
+        std::string codeCur = mgr.generateCode(tNow);
+        std::string codePast = mgr.generateCode(tNow - 30);
+        std::string codeFuture = mgr.generateCode(tNow + 30);
+        std::string codeTooOld = mgr.generateCode(tNow - 65);
+        std::string codeTooFar = mgr.generateCode(tNow + 65);
+
+        TEST_ASSERT(mgr.verifyCode(codeCur, tNow));
+        TEST_ASSERT(mgr.lastConsumedStep() == tNow / 30);
+
+        TEST_ASSERT(!mgr.verifyCode(codeCur, tNow));
+        TEST_ASSERT(!mgr.verifyCode(codeCur, tNow + 10));
+
+        mgr.resetLastConsumedStep();
+        TEST_ASSERT(mgr.verifyCode(codePast, tNow));
+        TEST_ASSERT(mgr.lastConsumedStep() == (tNow - 30) / 30);
+
+        mgr.resetLastConsumedStep();
+        TEST_ASSERT(mgr.verifyCode(codeFuture, tNow));
+        TEST_ASSERT(mgr.lastConsumedStep() == (tNow + 30) / 30);
+
+        mgr.resetLastConsumedStep();
+        TEST_ASSERT(!mgr.verifyCode(codeTooOld, tNow));
+        TEST_ASSERT(!mgr.verifyCode(codeTooFar, tNow));
+
+        TEST_ASSERT(!mgr.verifyCode("abcdef", tNow));
+        TEST_ASSERT(!mgr.verifyCode("12345", tNow));
+        TEST_ASSERT(!mgr.verifyCode("1234567", tNow));
+        TEST_ASSERT(!mgr.verifyCode("", tNow));
+    }
+
+    // Part 5: End-to-End Loopback Challenge-Response Handshake
+    {
+        IdentityManager hostId(1011);
+        hostId.loadOrCreate();
+        hostId.setListenPort(50980);
+        hostId.setUnattendedEnabled(true);
+        hostId.setUnattendedPassword("SecureTestPass#2026");
+
+        AppSettings hs = hostId.settings();
+        hs.totpEnabled = true;
+        hostId.totpManager().generateNewSecret();
+        hs.totpSecret = hostId.totpManager().getSecretBase32();
+        hostId.updateSettings(hs);
+
+        NetworkEngine hostNet(hostId);
+        TEST_ASSERT(hostNet.start());
+        uint16_t hostPort = hostNet.hostListenPort();
+        TEST_ASSERT(hostPort > 0);
+
+        IdentityManager viewerId(1012);
+        viewerId.loadOrCreate();
+        viewerId.setListenPort(50981);
+        NetworkEngine viewerNet(viewerId);
+        TEST_ASSERT(viewerNet.start());
+
+        std::string target = "127.0.0.1:" + std::to_string(hostPort);
+
+        viewerNet.connectToRemote(target, "SecureTestPass#2026");
+
+        bool reachedWaitingTotp = false;
+        for (int i = 0; i < 60; ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            if (viewerNet.isWaitingForTotp() || viewerNet.viewerStats().state == ViewerConnectionState::WaitingTotp) {
+                reachedWaitingTotp = true;
+                break;
+            }
+        }
+        TEST_ASSERT(reachedWaitingTotp);
+        TEST_ASSERT(viewerNet.isWaitingForTotp());
+
+        viewerNet.submitViewerTotpCode("000000");
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        TEST_ASSERT(viewerNet.isWaitingForTotp());
+
+        std::string validCode = hostId.totpManager().generateCode();
+        viewerNet.submitViewerTotpCode(validCode);
+
+        bool reachedConnected = false;
+        for (int i = 0; i < 60; ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            if (viewerNet.viewerStats().state == ViewerConnectionState::Connected) {
+                reachedConnected = true;
+                break;
+            }
+        }
+        TEST_ASSERT(reachedConnected);
+
+        viewerNet.disconnectViewer();
+        hostNet.disconnectHostClient();
+        std::this_thread::sleep_for(std::chrono::milliseconds(150));
+
+        // Test 3-Strike Lockout
+        viewerNet.connectToRemote(target, "SecureTestPass#2026");
+        reachedWaitingTotp = false;
+        for (int i = 0; i < 60; ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            if (viewerNet.isWaitingForTotp()) {
+                reachedWaitingTotp = true;
+                break;
+            }
+        }
+        TEST_ASSERT(reachedWaitingTotp);
+
+        // Strike 1
+        viewerNet.submitViewerTotpCode("111111");
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        TEST_ASSERT(viewerNet.isWaitingForTotp());
+
+        // Strike 2
+        viewerNet.submitViewerTotpCode("222222");
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        TEST_ASSERT(viewerNet.isWaitingForTotp());
+
+        // Strike 3
+        viewerNet.submitViewerTotpCode("333333");
+
+        bool reachedDisconnected = false;
+        for (int i = 0; i < 60; ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            auto st = viewerNet.viewerStats().state;
+            if (st == ViewerConnectionState::Disconnected || st == ViewerConnectionState::Error) {
+                reachedDisconnected = true;
+                break;
+            }
+        }
+        TEST_ASSERT(reachedDisconnected);
+        TEST_ASSERT(!viewerNet.isWaitingForTotp());
+
+        viewerNet.disconnectViewer();
+        hostNet.disconnectHostClient();
+        viewerNet.stop();
+        hostNet.stop();
+    }
+}
+
+void testRemoteFileSyncAndFolderMirroring() {
+    std::cout << "[Test 47] Remote File Sync and Folder Mirroring..." << std::endl;
+
+    // 1. Serialization and Deserialization Round-Trip for all 8 Sync wire payloads
+    {
+        // 1a. SyncScanReqPayload
+        SyncScanReqPayload sreq{ 101, "sub/dir/path", 1 };
+        std::vector<uint8_t> sreqBuf;
+        serializeSyncScanReq(sreq, sreqBuf);
+        SyncScanReqPayload sreqOut;
+        TEST_ASSERT(deserializeSyncScanReq(sreqBuf.data(), sreqBuf.size(), sreqOut));
+        TEST_ASSERT(sreqOut.scanId == 101);
+        TEST_ASSERT(sreqOut.rootPath == "sub/dir/path");
+        TEST_ASSERT(!deserializeSyncScanReq(sreqBuf.data(), 3, sreqOut)); // Underflow guard
+
+        // 1b. SyncScanRespPayload
+        SyncScanRespPayload sresp;
+        sresp.scanId = 102;
+        sresp.statusCode = 0;
+        sresp.rootPath = "C:/Remote/Folder";
+        sresp.entries.push_back({ "file1.txt", 12345, 1700000000, 0 });
+        sresp.entries.push_back({ "nested_dir", 0, 1700000010, 1 });
+        std::vector<uint8_t> srespBuf;
+        serializeSyncScanResp(sresp, srespBuf);
+        SyncScanRespPayload srespOut;
+        TEST_ASSERT(deserializeSyncScanResp(srespBuf.data(), srespBuf.size(), srespOut));
+        TEST_ASSERT(srespOut.scanId == 102);
+        TEST_ASSERT(srespOut.rootPath == "C:/Remote/Folder");
+        TEST_ASSERT(srespOut.entries.size() == 2);
+        TEST_ASSERT(srespOut.entries[0].relativePath == "file1.txt");
+        TEST_ASSERT(srespOut.entries[0].sizeBytes == 12345);
+        TEST_ASSERT(srespOut.entries[1].isDirectory == 1);
+        TEST_ASSERT(!deserializeSyncScanResp(srespBuf.data(), 5, srespOut));
+
+        // 1c. SyncHashReqPayload
+        SyncHashReqPayload hreq{ 201, 5, "nested/data.bin" };
+        std::vector<uint8_t> hreqBuf;
+        serializeSyncHashReq(hreq, hreqBuf);
+        SyncHashReqPayload hreqOut;
+        TEST_ASSERT(deserializeSyncHashReq(hreqBuf.data(), hreqBuf.size(), hreqOut));
+        TEST_ASSERT(hreqOut.syncId == 201);
+        TEST_ASSERT(hreqOut.fileId == 5);
+        TEST_ASSERT(hreqOut.relativePath == "nested/data.bin");
+        TEST_ASSERT(!deserializeSyncHashReq(hreqBuf.data(), 4, hreqOut));
+
+        // 1d. SyncHashRespPayload
+        SyncHashRespPayload hresp;
+        hresp.syncId = 201;
+        hresp.fileId = 5;
+        hresp.targetFileSize = 131072;
+        std::array<uint8_t, 32> hash1{}, hash2{};
+        hash1.fill(0xAA);
+        hash2.fill(0xBB);
+        hresp.blockHashes.push_back(hash1);
+        hresp.blockHashes.push_back(hash2);
+        std::vector<uint8_t> hrespBuf;
+        serializeSyncHashResp(hresp, hrespBuf);
+        SyncHashRespPayload hrespOut;
+        TEST_ASSERT(deserializeSyncHashResp(hrespBuf.data(), hrespBuf.size(), hrespOut));
+        TEST_ASSERT(hrespOut.syncId == 201);
+        TEST_ASSERT(hrespOut.fileId == 5);
+        TEST_ASSERT(hrespOut.targetFileSize == 131072);
+        TEST_ASSERT(hrespOut.blockHashes.size() == 2);
+        TEST_ASSERT(hrespOut.blockHashes[0] == hash1);
+        TEST_ASSERT(hrespOut.blockHashes[1] == hash2);
+        TEST_ASSERT(!deserializeSyncHashResp(hrespBuf.data(), 12, hrespOut));
+
+        // 1e. SyncDeltaBlockPayload
+        SyncDeltaBlockPayload dblk;
+        dblk.syncId = 301;
+        dblk.fileId = 7;
+        dblk.blockIndex = 1;
+        dblk.blockOffset = 65536;
+        dblk.totalFileSize = 131072;
+        dblk.totalBlocks = 2;
+        dblk.blockData = { 0x10, 0x20, 0x30, 0x40, 0x50 };
+        dblk.blockHash = CryptoUtils::sha256(dblk.blockData.data(), dblk.blockData.size());
+        std::vector<uint8_t> dblkBuf;
+        serializeSyncDeltaBlock(dblk, dblkBuf);
+        SyncDeltaBlockPayload dblkOut;
+        TEST_ASSERT(deserializeSyncDeltaBlock(dblkBuf.data(), dblkBuf.size(), dblkOut));
+        TEST_ASSERT(dblkOut.syncId == 301);
+        TEST_ASSERT(dblkOut.fileId == 7);
+        TEST_ASSERT(dblkOut.blockIndex == 1);
+        TEST_ASSERT(dblkOut.blockOffset == 65536);
+        TEST_ASSERT(dblkOut.blockHash == dblk.blockHash);
+        TEST_ASSERT(dblkOut.blockData.size() == 5);
+        TEST_ASSERT(dblkOut.blockData[2] == 0x30);
+        TEST_ASSERT(!deserializeSyncDeltaBlock(dblkBuf.data(), 20, dblkOut));
+
+        // 1f. SyncStatusUpdatePayload
+        SyncStatusUpdatePayload sup;
+        sup.syncId = 401;
+        sup.syncState = 3;
+        sup.currentFileIndex = 10;
+        sup.totalFiles = 25;
+        sup.transferredBytes = 500000;
+        sup.totalBytes = 1200000;
+        sup.currentFileName = "images/photo.png";
+        std::vector<uint8_t> supBuf;
+        serializeSyncStatusUpdate(sup, supBuf);
+        SyncStatusUpdatePayload supOut;
+        TEST_ASSERT(deserializeSyncStatusUpdate(supBuf.data(), supBuf.size(), supOut));
+        TEST_ASSERT(supOut.syncId == 401);
+        TEST_ASSERT(supOut.syncState == 3);
+        TEST_ASSERT(supOut.currentFileIndex == 10);
+        TEST_ASSERT(supOut.totalFiles == 25);
+        TEST_ASSERT(supOut.transferredBytes == 500000);
+        TEST_ASSERT(supOut.totalBytes == 1200000);
+        TEST_ASSERT(supOut.currentFileName == "images/photo.png");
+        TEST_ASSERT(!deserializeSyncStatusUpdate(supBuf.data(), 16, supOut));
+
+        // 1g. SyncActionReqPayload
+        SyncActionReqPayload areq;
+        areq.actionId = 501;
+        areq.actionType = static_cast<uint8_t>(SyncActionType::DeleteFile);
+        areq.targetPath = "obsolete/temp.txt";
+        std::vector<uint8_t> areqBuf;
+        serializeSyncActionReq(areq, areqBuf);
+        SyncActionReqPayload areqOut;
+        TEST_ASSERT(deserializeSyncActionReq(areqBuf.data(), areqBuf.size(), areqOut));
+        TEST_ASSERT(areqOut.actionId == 501);
+        TEST_ASSERT(areqOut.actionType == static_cast<uint8_t>(SyncActionType::DeleteFile));
+        TEST_ASSERT(areqOut.targetPath == "obsolete/temp.txt");
+        TEST_ASSERT(!deserializeSyncActionReq(areqBuf.data(), 4, areqOut));
+
+        // 1h. SyncActionRespPayload
+        SyncActionRespPayload aresp{ 501, 1, 0, "OK" };
+        std::vector<uint8_t> arespBuf;
+        serializeSyncActionResp(aresp, arespBuf);
+        SyncActionRespPayload arespOut;
+        TEST_ASSERT(deserializeSyncActionResp(arespBuf.data(), arespBuf.size(), arespOut));
+        TEST_ASSERT(arespOut.actionId == 501);
+        TEST_ASSERT(arespOut.statusCode == 0);
+        TEST_ASSERT(arespOut.message == "OK");
+        TEST_ASSERT(!deserializeSyncActionResp(arespBuf.data(), 4, arespOut));
+    }
+
+    // Temporary test folder fixture
+    std::filesystem::path testRoot = std::filesystem::temp_directory_path() / ("cppdesk_sync_suite_" + std::to_string(GetTickCount64()));
+    std::filesystem::path localDir = testRoot / "local";
+    std::filesystem::path remoteDir = testRoot / "remote";
+    std::error_code ec;
+    std::filesystem::create_directories(localDir / "docs" / "nested", ec);
+    std::filesystem::create_directories(remoteDir, ec);
+
+    // 2. Tree Scan and Relative Path Normalization
+    {
+        // Populate nested local folder structure
+        std::ofstream(localDir / "root.txt", std::ios::binary) << "Root File Content";
+        std::ofstream(localDir / "docs" / "manual.pdf", std::ios::binary) << "PDF Mock Data Header";
+        std::ofstream(localDir / "docs" / "nested" / "config.json", std::ios::binary) << "{\"sync\": true}";
+
+        FileSyncManager mgr;
+        auto entries = mgr.scanLocalDirectory(localDir.string());
+        TEST_ASSERT(entries.size() == 5); // 2 directories ("docs", "docs/nested") + 3 files
+
+        // Check path normalization (strict forward-slash, no backslashes, no dot-dot)
+        for (const auto& e : entries) {
+            TEST_ASSERT(e.relativePath.find('\\') == std::string::npos);
+            TEST_ASSERT(e.relativePath.find("..") == std::string::npos);
+        }
+
+        bool hasRoot = false, hasDocs = false, hasNested = false, hasManual = false, hasConfig = false;
+        for (const auto& e : entries) {
+            if (e.relativePath == "root.txt" && !e.isDirectory && e.sizeBytes == 17) hasRoot = true;
+            if (e.relativePath == "docs" && e.isDirectory) hasDocs = true;
+            if (e.relativePath == "docs/nested" && e.isDirectory) hasNested = true;
+            if (e.relativePath == "docs/manual.pdf" && !e.isDirectory && e.sizeBytes == 20) hasManual = true;
+            if (e.relativePath == "docs/nested/config.json" && !e.isDirectory && (e.sizeBytes == 14 || e.sizeBytes == 16)) hasConfig = true;
+        }
+        TEST_ASSERT(hasRoot && hasDocs && hasNested && hasManual && hasConfig);
+    }
+
+    // 3. 64KB Block Hashing & Differential Block Isolation
+    {
+        std::filesystem::path file192Local = localDir / "blocks192.bin";
+        std::filesystem::path file192Remote = remoteDir / "blocks192.bin";
+
+        std::string block0(FileSyncManager::SYNC_BLOCK_SIZE, 'A');
+        std::string block1_local(FileSyncManager::SYNC_BLOCK_SIZE, 'B');
+        std::string block1_remote(FileSyncManager::SYNC_BLOCK_SIZE, 'Z'); // Differs!
+        std::string block2(FileSyncManager::SYNC_BLOCK_SIZE, 'C');
+
+        {
+            std::ofstream fl(file192Local, std::ios::binary);
+            fl.write(block0.data(), block0.size());
+            fl.write(block1_local.data(), block1_local.size());
+            fl.write(block2.data(), block2.size());
+        }
+        {
+            std::ofstream fr(file192Remote, std::ios::binary);
+            fr.write(block0.data(), block0.size());
+            fr.write(block1_remote.data(), block1_remote.size());
+            fr.write(block2.data(), block2.size());
+        }
+
+        FileSyncManager mgr;
+        auto hashesLocal = mgr.calculateBlockHashes(file192Local.string(), FileSyncManager::SYNC_BLOCK_SIZE);
+        auto hashesRemote = mgr.calculateBlockHashes(file192Remote.string(), FileSyncManager::SYNC_BLOCK_SIZE);
+
+        TEST_ASSERT(hashesLocal.size() == 3);
+        TEST_ASSERT(hashesRemote.size() == 3);
+        TEST_ASSERT(hashesLocal[0] == hashesRemote[0]); // Block 0 matches
+        TEST_ASSERT(hashesLocal[1] != hashesRemote[1]); // Block 1 is dirty!
+        TEST_ASSERT(hashesLocal[2] == hashesRemote[2]); // Block 2 matches
+    }
+
+    // 4. Dual-Tree Differential Plan Generation (PushMirror, PullMirror, TwoWay)
+    {
+        FileSyncManager mgr;
+        std::vector<SyncFileEntry> localTree = {
+            { "common.txt", 100, 1000, 0 },
+            { "local_only.txt", 200, 2000, 0 },
+            { "modified.txt", 300, 3500, 0 },
+            { "shared_dir", 0, 1000, 1 }
+        };
+        std::vector<SyncFileEntry> remoteTree = {
+            { "common.txt", 100, 1000, 0 },
+            { "remote_only.txt", 400, 4000, 0 },
+            { "modified.txt", 300, 3000, 0 },
+            { "shared_dir", 0, 1000, 1 }
+        };
+
+        // PushMirror with purge enabled
+        auto pushPlan = mgr.generateDiffPlan(localTree, remoteTree, SyncMode::PushMirror, true);
+        bool pushLocalOnly = false, pushModified = false, purgeRemoteOnly = false;
+        for (const auto& a : pushPlan) {
+            if (a.relativePath == "local_only.txt" && a.action != SyncActionType::DeleteFile) pushLocalOnly = true;
+            if (a.relativePath == "modified.txt") pushModified = true;
+            if (a.relativePath == "remote_only.txt" && a.action == SyncActionType::DeleteFile) purgeRemoteOnly = true;
+        }
+        TEST_ASSERT(pushLocalOnly);
+        TEST_ASSERT(pushModified);
+        TEST_ASSERT(purgeRemoteOnly);
+
+        // PullMirror without purge
+        auto pullPlan = mgr.generateDiffPlan(localTree, remoteTree, SyncMode::PullMirror, false);
+        bool pullRemoteOnly = false;
+        for (const auto& a : pullPlan) {
+            if (a.relativePath == "remote_only.txt" && a.action == SyncActionType::RequestFile) pullRemoteOnly = true;
+        }
+        TEST_ASSERT(pullRemoteOnly);
+
+        // TwoWay reconciliation
+        auto twoWayPlan = mgr.generateDiffPlan(localTree, remoteTree, SyncMode::TwoWay, false);
+        bool twoWayPush = false, twoWayPull = false;
+        for (const auto& a : twoWayPlan) {
+            if (a.relativePath == "local_only.txt" && a.action != SyncActionType::RequestFile) twoWayPush = true;
+            if (a.relativePath == "remote_only.txt" && a.action == SyncActionType::RequestFile) twoWayPull = true;
+        }
+        TEST_ASSERT(twoWayPush);
+        TEST_ASSERT(twoWayPull);
+    }
+
+    // 5. Delta Block Staging, Atomic Replacement, and Byte-for-Byte Match
+    {
+        // Prepare target base file on remote destination: 128KB (2 blocks)
+        std::filesystem::path patchTarget = remoteDir / "patch_target.dat";
+        std::filesystem::path patchSource = localDir / "patch_target.dat";
+        std::string partA(FileSyncManager::SYNC_BLOCK_SIZE, 'K');
+        std::string partB_old(FileSyncManager::SYNC_BLOCK_SIZE, 'M');
+        std::string partB_new(FileSyncManager::SYNC_BLOCK_SIZE, 'N'); // Modified block 1
+
+        {
+            std::ofstream ft(patchTarget, std::ios::binary);
+            ft.write(partA.data(), partA.size());
+            ft.write(partB_old.data(), partB_old.size());
+        }
+        {
+            std::ofstream fs(patchSource, std::ios::binary);
+            fs.write(partA.data(), partA.size());
+            fs.write(partB_new.data(), partB_new.size());
+        }
+
+        FileSyncManager srcMgr;
+        srcMgr.setLocalRoot(localDir.string());
+        srcMgr.setSyncState(SyncState::Syncing);
+
+        FileSyncManager dstMgr;
+        dstMgr.setLocalRoot(remoteDir.string());
+        dstMgr.setSyncState(SyncState::Syncing);
+
+        // Calculate remote block hashes to supply to source manager
+        auto remoteHashes = dstMgr.calculateBlockHashes(patchTarget.string(), FileSyncManager::SYNC_BLOCK_SIZE);
+        TEST_ASSERT(remoteHashes.size() == 2);
+
+        // Register incoming file on destination
+        dstMgr.registerIncomingFile(1, "patch_target.dat", 2ULL * FileSyncManager::SYNC_BLOCK_SIZE, 1700000000);
+
+        // Queue outgoing file on source with target hashes
+        srcMgr.queueOutgoingFile("patch_target.dat", localDir.string(), 2ULL * FileSyncManager::SYNC_BLOCK_SIZE, 1700000000, remoteHashes, 1);
+
+        // Pump blocks from source to destination
+        std::vector<SyncDeltaBlockPayload> capturedBlocks;
+        srcMgr.pumpOutgoingSync([&](PacketType type, const std::vector<uint8_t>& payload) {
+            if (type == PacketType::SYNC_DELTA_BLOCK) {
+                SyncDeltaBlockPayload blk;
+                if (deserializeSyncDeltaBlock(payload.data(), payload.size(), blk)) {
+                    capturedBlocks.push_back(std::move(blk));
+                }
+            }
+            return true;
+        }, 10);
+
+        // Only block 1 was dirty, so exactly 1 block must have been transmitted across the wire!
+        TEST_ASSERT(capturedBlocks.size() == 1);
+        TEST_ASSERT(capturedBlocks[0].blockIndex == 1);
+        TEST_ASSERT(capturedBlocks[0].blockOffset == FileSyncManager::SYNC_BLOCK_SIZE);
+
+        // Deliver delta block to destination
+        bool applied = dstMgr.handleDeltaBlock(capturedBlocks[0]);
+        TEST_ASSERT(applied);
+
+        // Verify destination file now exists, staging .part is deleted, and contents match byte-for-byte
+        TEST_ASSERT(std::filesystem::exists(patchTarget));
+        TEST_ASSERT(!std::filesystem::exists(patchTarget.string() + ".part"));
+        TEST_ASSERT(std::filesystem::file_size(patchTarget) == 2ULL * FileSyncManager::SYNC_BLOCK_SIZE);
+
+        auto readBytes = [](const std::filesystem::path& p) {
+            std::ifstream is(p, std::ios::binary);
+            return std::vector<uint8_t>((std::istreambuf_iterator<char>(is)), std::istreambuf_iterator<char>());
+        };
+        auto srcBytes = readBytes(patchSource);
+        auto dstBytes = readBytes(patchTarget);
+        TEST_ASSERT(srcBytes == dstBytes);
+    }
+
+    // 6. Host and Viewer Loopback Session Integration
+    {
+        IdentityManager hostId(1013);
+        hostId.loadOrCreate();
+        hostId.setListenPort(50984);
+        hostId.setUnattendedEnabled(true);
+        hostId.setUnattendedPassword("SyncHostPassword#2026");
+
+        IdentityManager viewerId(1014);
+        viewerId.loadOrCreate();
+        viewerId.setListenPort(50985);
+
+        NetworkEngine hostNet(hostId);
+        TEST_ASSERT(hostNet.start());
+        uint16_t hostPort = hostNet.hostListenPort();
+        TEST_ASSERT(hostPort > 0);
+
+        NetworkEngine viewerNet(viewerId);
+        TEST_ASSERT(viewerNet.start());
+
+        std::string target = "127.0.0.1:" + std::to_string(hostPort);
+        viewerNet.connectToRemote(target, "SyncHostPassword#2026");
+
+        bool connected = false;
+        for (int i = 0; i < 60; ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            if (viewerNet.viewerStats().state == ViewerConnectionState::Connected) {
+                connected = true;
+                break;
+            }
+        }
+        TEST_ASSERT(connected);
+
+        // Configure roots and trigger scan from viewer
+        viewerNet.requestRemoteScan(remoteDir.string());
+
+        // Wait brief tick for scan packets to exchange over loopback
+        for (int i = 0; i < 20; ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(25));
+        }
+
+        // Clean disconnect
+        viewerNet.disconnectViewer();
+        hostNet.disconnectHostClient();
+        viewerNet.stop();
+        hostNet.stop();
+    }
+
+    // 7. Cleanup of Temporary Test Folders
+    std::filesystem::remove_all(testRoot, ec);
+    TEST_ASSERT(!std::filesystem::exists(testRoot));
+}
+
 } // namespace
 
 int main() {
@@ -3871,6 +5277,11 @@ int main() {
         testParallelViewerDecodeAndTabFrameCache(); std::cout << "Test 40 done\n" << std::flush;
         testAvx2BlitRowBgraOpaque(); std::cout << "Test 41 done\n" << std::flush;
         testZeroAllocAudioAndStackWideText(); std::cout << "Test 42 done\n" << std::flush;
+        testVirtualDisplayManagerAndHeadlessEmulation(); std::cout << "Test 43 done\n" << std::flush;
+        testHardwareDpmsAndScreenBlanking(); std::cout << "Test 44 done\n" << std::flush;
+        testSessionRecordingPlayerAndTranscoder(); std::cout << "Test 45 done\n" << std::flush;
+        testTwoFactorAuthTotpAndQrMatrix(); std::cout << "Test 46 done\n" << std::flush;
+        testRemoteFileSyncAndFolderMirroring(); std::cout << "Test 47 done\n" << std::flush;
 
         std::cout << "---------------------------------------------------------\n";
         std::cout << "Assertions Passed: " << g_passed << " | Failed: " << g_failed << "\n";

@@ -6,6 +6,7 @@
 #include <vector>
 #include <stdexcept>
 #include <algorithm>
+#include <array>
 
 namespace cppdesk {
 
@@ -34,6 +35,7 @@ enum class PacketType : uint8_t {
     PING                = 0x07,
     PONG                = 0x08,
     DISCONNECT          = 0x09,
+    TOTP_VERIFY         = 0x0A, // Viewer -> Host: 6-digit TOTP verification code
 
     // Video & Monitor Control
     VIDEO_CONFIG        = 0x10,
@@ -50,6 +52,8 @@ enum class PacketType : uint8_t {
     TUNNEL_CLOSE        = 0x1B, // Bidirectional: Terminate tunnel connection
     TERMINAL_DATA       = 0x1C, // Bidirectional: Interactive command shell I/O
     WHITEBOARD_PACKET   = 0x1D, // Bidirectional: Whiteboard strokes & laser pointer updates
+    VIRTUAL_DISPLAY_CMD    = 0x1E, // Viewer -> Host: Create, Destroy, SetMode virtual displays
+    VIRTUAL_DISPLAY_STATUS = 0x1F, // Host -> Viewer: Status, geometry, and backend report
 
     // Remote Input Injection
     INPUT_MOUSE_MOVE    = 0x20,
@@ -82,6 +86,16 @@ enum class PacketType : uint8_t {
     REMOTE_REBOOT_REQUEST  = 0x3C, // Viewer -> Host: Request reboot (Normal or Safe Mode)
     REMOTE_REBOOT_CONFIRM  = 0x3D, // Host -> Viewer: Reboot ack with resume token & countdown
     REMOTE_REBOOT_RECONNECT= 0x3E, // Viewer -> Host: Reconnect handshake with resume token
+
+    // Remote File Synchronization & Folder Mirroring
+    SYNC_SCAN_REQ           = 0x40, // Requester -> Responder: Scan directory tree
+    SYNC_SCAN_RESP          = 0x41, // Responder -> Requester: Directory tree file entries
+    SYNC_HASH_REQ           = 0x42, // Source -> Target: Request 64KB block hashes for file
+    SYNC_HASH_RESP          = 0x43, // Target -> Source: Array of 32-byte block SHA-256 hashes
+    SYNC_DELTA_BLOCK        = 0x44, // Source -> Target: 64KB block payload with offset and hash
+    SYNC_STATUS_UPDATE      = 0x45, // Bidirectional: Sync progress and state telemetry
+    SYNC_ACTION_REQ         = 0x46, // Requester -> Responder: CreateDir, DeleteFile, DeleteDir, Abort
+    SYNC_ACTION_RESP        = 0x47, // Responder -> Requester: Action result acknowledgment
 
     // Relay & Rendezvous Protocol
     RELAY_REGISTER      = 0x50,
@@ -202,7 +216,8 @@ enum class ViewerConnectionState : uint8_t {
     WaitingApproval = 4,
     Connected       = 5,
     Error           = 6,
-    Reconnecting    = 7
+    Reconnecting    = 7,
+    WaitingTotp     = 8  // Pending user entry of 6-digit TOTP code
 };
 
 // Automatically drops effective FPS (60 -> 30 -> 15) when network RTT or TCP send duration indicates poor connection
@@ -232,7 +247,9 @@ enum class AuthResultCode : uint8_t {
     InvalidPassword  = 2,
     HostBusy         = 3,
     ProtocolError    = 4,
-    RateLimited      = 5
+    RateLimited      = 5,
+    TotpRequired     = 0x20, // 32: Host unattended password accepted, 6-digit TOTP code required
+    TotpInvalid      = 0x21  // 33: Submitted TOTP code was incorrect or replayed
 };
 
 #pragma pack(push, 1)
@@ -287,6 +304,12 @@ struct VoiceChunkHeader {
     uint32_t sampleFrames;   // number of sample frames in this chunk
 };
 
+enum class ScreenBlankMode : uint8_t {
+    CurtainOnly = 0, // Software privacy curtain window only
+    DpmsOnly    = 1, // Hardware DPMS monitor standby only
+    Unified     = 2  // Curtain window + Hardware DPMS monitor standby
+};
+
 struct PrivacyModePayload {
     uint8_t enable;          // 1 = engage, 0 = disengage
     uint8_t acknowledge;     // 0 = request, 1 = ACK confirmation
@@ -296,7 +319,7 @@ struct PrivacyModeConfigPayload {
     uint8_t enable;          // 1 = engage, 0 = disengage
     uint8_t acknowledge;     // 0 = request, 1 = ACK confirmation
     uint8_t showDeskId;      // 1 = show, 0 = hide
-    uint8_t reserved;        // alignment padding
+    uint8_t blankMode;       // ScreenBlankMode: CurtainOnly(0), DpmsOnly(1), Unified(2)
     char    customNotice[128]; // null-terminated UTF-8 notice text
     char    brandName[64];     // null-terminated UTF-8 branding name
 };
@@ -425,6 +448,8 @@ struct MonitorDesc {
     int32_t     height = 1080;
     bool        isPrimary = true;
     std::string name;
+    bool        isVirtual = false;
+    uint32_t    virtualId = 0;
 };
 
 struct EncodedTile {
@@ -858,6 +883,501 @@ inline bool deserializeRemoteRebootReconnect(const uint8_t* data, size_t size, R
         ByteReader r(data, size);
         out.callerDeskId = r.readU64();
         out.resumeTokenHex = r.readString();
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+// ---------------- Virtual Multi-Display & Headless Emulation Protocol ----------------
+
+enum class VirtualDisplayCmdType : uint8_t {
+    Create  = 1,
+    Destroy = 2,
+    SetMode = 3
+};
+
+enum class VirtualDisplayStatusCode : uint8_t {
+    Success          = 0,
+    FailedGeneric    = 1,
+    LimitReached     = 2,
+    NotFound         = 3,
+    PermissionDenied = 4,
+    DriverError      = 5
+};
+
+struct VirtualDisplayCmdPayload {
+    uint8_t  cmd = static_cast<uint8_t>(VirtualDisplayCmdType::Create);
+    uint32_t displayId = 0;
+    uint32_t width = 1920;
+    uint32_t height = 1080;
+    uint32_t refreshRate = 60;
+    uint8_t  flags = 0; // 0x01 = Prefer IddCx, 0x02 = Force Software
+};
+
+struct VirtualDisplayStatusPayload {
+    uint8_t     statusCode = static_cast<uint8_t>(VirtualDisplayStatusCode::Success);
+    uint32_t    displayId = 0;
+    uint32_t    width = 1920;
+    uint32_t    height = 1080;
+    uint32_t    refreshRate = 60;
+    uint8_t     isVirtual = 1;
+    uint8_t     isHeadlessFallback = 0;
+    uint8_t     driverBackend = 0; // 0 = Software, 1 = IddCx
+    std::string message;
+};
+
+inline void serializeVirtualDisplayCmd(const VirtualDisplayCmdPayload& payload, std::vector<uint8_t>& out) {
+    ByteWriter w;
+    w.writeU8(payload.cmd);
+    w.writeU32(payload.displayId);
+    w.writeU32(payload.width);
+    w.writeU32(payload.height);
+    w.writeU32(payload.refreshRate);
+    w.writeU8(payload.flags);
+    out = w.takeBuffer();
+}
+
+inline bool deserializeVirtualDisplayCmd(const uint8_t* data, size_t size, VirtualDisplayCmdPayload& out) {
+    if (!data || size < 18) return false;
+    try {
+        ByteReader r(data, size);
+        out.cmd = r.readU8();
+        out.displayId = r.readU32();
+        out.width = r.readU32();
+        out.height = r.readU32();
+        out.refreshRate = r.readU32();
+        out.flags = r.readU8();
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+inline void serializeVirtualDisplayStatus(const VirtualDisplayStatusPayload& payload, std::vector<uint8_t>& out) {
+    ByteWriter w;
+    w.writeU8(payload.statusCode);
+    w.writeU32(payload.displayId);
+    w.writeU32(payload.width);
+    w.writeU32(payload.height);
+    w.writeU32(payload.refreshRate);
+    w.writeU8(payload.isVirtual);
+    w.writeU8(payload.isHeadlessFallback);
+    w.writeU8(payload.driverBackend);
+    w.writeString(payload.message);
+    out = w.takeBuffer();
+}
+
+inline bool deserializeVirtualDisplayStatus(const uint8_t* data, size_t size, VirtualDisplayStatusPayload& out) {
+    if (!data || size < 20) return false;
+    try {
+        ByteReader r(data, size);
+        out.statusCode = r.readU8();
+        out.displayId = r.readU32();
+        out.width = r.readU32();
+        out.height = r.readU32();
+        out.refreshRate = r.readU32();
+        out.isVirtual = r.readU8();
+        out.isHeadlessFallback = r.readU8();
+        out.driverBackend = r.readU8();
+        if (r.hasRemaining(2)) {
+            out.message = r.readString();
+        } else {
+            out.message.clear();
+        }
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+inline void serializePrivacyModeConfig(const PrivacyModeConfigPayload& payload, std::vector<uint8_t>& out) {
+    ByteWriter w;
+    w.writeBytes(&payload, sizeof(payload));
+    out = w.takeBuffer();
+}
+
+inline bool deserializePrivacyModeConfig(const uint8_t* data, size_t size, PrivacyModeConfigPayload& out) {
+    if (!data || size < sizeof(PrivacyModeConfigPayload)) return false;
+    std::memcpy(&out, data, sizeof(PrivacyModeConfigPayload));
+    out.customNotice[sizeof(out.customNotice) - 1] = '\0';
+    out.brandName[sizeof(out.brandName) - 1] = '\0';
+    return true;
+}
+
+inline void serializeMonitorList(const std::vector<MonitorDesc>& monitors, std::vector<uint8_t>& out) {
+    ByteWriter w;
+    uint16_t mcount = static_cast<uint16_t>(std::min<size_t>(monitors.size(), 65535));
+    w.writeU16(mcount);
+    for (size_t i = 0; i < mcount; ++i) {
+        const auto& m = monitors[i];
+        w.writeI32(m.index);
+        w.writeI32(m.x);
+        w.writeI32(m.y);
+        w.writeI32(m.width);
+        w.writeI32(m.height);
+        w.writeU8(m.isPrimary ? 1 : 0);
+        w.writeString(m.name);
+        w.writeU8(m.isVirtual ? 1 : 0);
+        w.writeU32(m.virtualId);
+    }
+    out = w.takeBuffer();
+}
+
+inline bool deserializeMonitorList(const uint8_t* data, size_t size, std::vector<MonitorDesc>& out) {
+    if (!data || size < 2) return false;
+    try {
+        ByteReader r(data, size);
+        uint16_t mcount = r.readU16();
+        out.clear();
+        out.reserve(mcount);
+        for (uint16_t i = 0; i < mcount; ++i) {
+            MonitorDesc m;
+            m.index = r.readI32();
+            m.x = r.readI32();
+            m.y = r.readI32();
+            m.width = r.readI32();
+            m.height = r.readI32();
+            m.isPrimary = (r.readU8() != 0);
+            m.name = r.readString();
+            if (r.hasRemaining(1 + 4)) {
+                m.isVirtual = (r.readU8() != 0);
+                m.virtualId = r.readU32();
+            } else {
+                m.isVirtual = false;
+                m.virtualId = 0;
+            }
+            out.push_back(std::move(m));
+        }
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+struct TotpVerifyPacket {
+    std::string totpCode; // 6-digit decimal string
+};
+
+inline void serializeTotpVerify(const TotpVerifyPacket& packet, std::vector<uint8_t>& out) {
+    ByteWriter w;
+    w.writeString(packet.totpCode);
+    out = w.takeBuffer();
+}
+
+inline bool deserializeTotpVerify(const uint8_t* data, size_t size, TotpVerifyPacket& out) {
+    if (!data || size < 2) return false;
+    try {
+        ByteReader r(data, size);
+        out.totpCode = r.readString();
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+// Remote File Synchronization and Folder Mirroring Structs & Serializers
+
+struct SyncFileEntry {
+    std::string relativePath;  // Normalized canonical path with forward slashes (e.g. "bin/app.exe")
+    uint64_t sizeBytes = 0;    // File size in bytes (0 for directories)
+    uint64_t mtimeSec = 0;     // Unix epoch modification timestamp
+    uint8_t isDirectory = 0;   // 1 = directory, 0 = regular file
+};
+
+struct SyncScanReqPayload {
+    uint32_t scanId = 0;
+    std::string rootPath;
+    uint8_t flags = 0;         // 0x01 = Recursive, 0x02 = IncludeHidden
+};
+
+struct SyncScanRespPayload {
+    uint32_t scanId = 0;
+    uint8_t statusCode = 0;    // 0 = Success, 1 = DirectoryNotFound, 2 = AccessDenied, 3 = Error
+    std::string rootPath;
+    std::vector<SyncFileEntry> entries;
+};
+
+struct SyncHashReqPayload {
+    uint32_t syncId = 0;
+    uint32_t fileId = 0;
+    std::string relativePath;
+};
+
+struct SyncHashRespPayload {
+    uint32_t syncId = 0;
+    uint32_t fileId = 0;
+    uint64_t targetFileSize = 0;
+    std::vector<std::array<uint8_t, 32>> blockHashes;
+};
+
+struct SyncDeltaBlockPayload {
+    uint32_t syncId = 0;
+    uint32_t fileId = 0;
+    uint32_t blockIndex = 0;
+    uint64_t blockOffset = 0;
+    uint64_t totalFileSize = 0;
+    uint32_t totalBlocks = 0;
+    std::array<uint8_t, 32> blockHash{};
+    std::vector<uint8_t> blockData;
+};
+
+struct SyncStatusUpdatePayload {
+    uint32_t syncId = 0;
+    uint8_t syncState = 0;       // 0=Idle, 1=Scanning, 2=DiffReady, 3=Syncing, 4=Completed, 5=Failed, 6=Cancelled
+    uint64_t transferredBytes = 0;
+    uint64_t totalBytes = 0;
+    uint32_t currentFileIndex = 0;
+    uint32_t totalFiles = 0;
+    std::string currentFileName;
+    std::string errorMessage;
+};
+
+#ifdef DeleteFile
+#undef DeleteFile
+#endif
+
+enum class SyncActionType : uint8_t {
+    CreateDir   = 1,
+    DeleteFile  = 2,
+    DeleteDir   = 3,
+    AbortSync   = 4,
+    RequestFile = 5
+};
+
+#ifdef DeleteFile
+#undef DeleteFile
+#endif
+
+struct SyncActionReqPayload {
+    uint32_t actionId = 0;
+    uint8_t actionType = 0;
+    std::string targetPath;
+};
+
+struct SyncActionRespPayload {
+    uint32_t actionId = 0;
+    uint8_t actionType = 0;
+    uint8_t statusCode = 0;     // 0 = Success, 1 = Failed
+    std::string message;
+};
+
+inline void serializeSyncScanReq(const SyncScanReqPayload& p, std::vector<uint8_t>& out) {
+    ByteWriter w;
+    w.writeU32(p.scanId);
+    w.writeString(p.rootPath);
+    w.writeU8(p.flags);
+    out = w.takeBuffer();
+}
+
+inline bool deserializeSyncScanReq(const uint8_t* data, size_t size, SyncScanReqPayload& out) {
+    if (!data || size < 5) return false;
+    try {
+        ByteReader r(data, size);
+        out.scanId = r.readU32();
+        out.rootPath = r.readString();
+        out.flags = r.readU8();
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+inline void serializeSyncScanResp(const SyncScanRespPayload& p, std::vector<uint8_t>& out) {
+    ByteWriter w;
+    w.writeU32(p.scanId);
+    w.writeU8(p.statusCode);
+    w.writeString(p.rootPath);
+    w.writeU32(static_cast<uint32_t>(p.entries.size()));
+    for (const auto& entry : p.entries) {
+        w.writeString(entry.relativePath);
+        w.writeU64(entry.sizeBytes);
+        w.writeU64(entry.mtimeSec);
+        w.writeU8(entry.isDirectory);
+    }
+    out = w.takeBuffer();
+}
+
+inline bool deserializeSyncScanResp(const uint8_t* data, size_t size, SyncScanRespPayload& out) {
+    if (!data || size < 9) return false;
+    try {
+        ByteReader r(data, size);
+        out.scanId = r.readU32();
+        out.statusCode = r.readU8();
+        out.rootPath = r.readString();
+        uint32_t count = r.readU32();
+        out.entries.clear();
+        out.entries.reserve(count);
+        for (uint32_t i = 0; i < count; ++i) {
+            SyncFileEntry e;
+            e.relativePath = r.readString();
+            e.sizeBytes = r.readU64();
+            e.mtimeSec = r.readU64();
+            e.isDirectory = r.readU8();
+            out.entries.push_back(std::move(e));
+        }
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+inline void serializeSyncHashReq(const SyncHashReqPayload& p, std::vector<uint8_t>& out) {
+    ByteWriter w;
+    w.writeU32(p.syncId);
+    w.writeU32(p.fileId);
+    w.writeString(p.relativePath);
+    out = w.takeBuffer();
+}
+
+inline bool deserializeSyncHashReq(const uint8_t* data, size_t size, SyncHashReqPayload& out) {
+    if (!data || size < 8) return false;
+    try {
+        ByteReader r(data, size);
+        out.syncId = r.readU32();
+        out.fileId = r.readU32();
+        out.relativePath = r.readString();
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+inline void serializeSyncHashResp(const SyncHashRespPayload& p, std::vector<uint8_t>& out) {
+    ByteWriter w;
+    w.writeU32(p.syncId);
+    w.writeU32(p.fileId);
+    w.writeU64(p.targetFileSize);
+    w.writeU32(static_cast<uint32_t>(p.blockHashes.size()));
+    for (const auto& h : p.blockHashes) {
+        w.writeBytes(h.data(), 32);
+    }
+    out = w.takeBuffer();
+}
+
+inline bool deserializeSyncHashResp(const uint8_t* data, size_t size, SyncHashRespPayload& out) {
+    if (!data || size < 20) return false;
+    try {
+        ByteReader r(data, size);
+        out.syncId = r.readU32();
+        out.fileId = r.readU32();
+        out.targetFileSize = r.readU64();
+        uint32_t count = r.readU32();
+        out.blockHashes.clear();
+        out.blockHashes.resize(count);
+        for (uint32_t i = 0; i < count; ++i) {
+            r.readBytes(out.blockHashes[i].data(), 32);
+        }
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+inline void serializeSyncDeltaBlock(const SyncDeltaBlockPayload& p, std::vector<uint8_t>& out) {
+    ByteWriter w;
+    w.writeU32(p.syncId);
+    w.writeU32(p.fileId);
+    w.writeU32(p.blockIndex);
+    w.writeU64(p.blockOffset);
+    w.writeU64(p.totalFileSize);
+    w.writeU32(p.totalBlocks);
+    w.writeBytes(p.blockHash.data(), 32);
+    w.writeU32(static_cast<uint32_t>(p.blockData.size()));
+    if (!p.blockData.empty()) {
+        w.writeBytes(p.blockData.data(), p.blockData.size());
+    }
+    out = w.takeBuffer();
+}
+
+inline bool deserializeSyncDeltaBlock(const uint8_t* data, size_t size, SyncDeltaBlockPayload& out) {
+    if (!data || size < (4 + 4 + 4 + 8 + 8 + 4 + 32 + 4)) return false;
+    try {
+        ByteReader r(data, size);
+        out.syncId = r.readU32();
+        out.fileId = r.readU32();
+        out.blockIndex = r.readU32();
+        out.blockOffset = r.readU64();
+        out.totalFileSize = r.readU64();
+        out.totalBlocks = r.readU32();
+        r.readBytes(out.blockHash.data(), 32);
+        uint32_t dataLen = r.readU32();
+        out.blockData = r.readBytesVector(dataLen);
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+inline void serializeSyncStatusUpdate(const SyncStatusUpdatePayload& p, std::vector<uint8_t>& out) {
+    ByteWriter w;
+    w.writeU32(p.syncId);
+    w.writeU8(p.syncState);
+    w.writeU64(p.transferredBytes);
+    w.writeU64(p.totalBytes);
+    w.writeU32(p.currentFileIndex);
+    w.writeU32(p.totalFiles);
+    w.writeString(p.currentFileName);
+    w.writeString(p.errorMessage);
+    out = w.takeBuffer();
+}
+
+inline bool deserializeSyncStatusUpdate(const uint8_t* data, size_t size, SyncStatusUpdatePayload& out) {
+    if (!data || size < (4 + 1 + 8 + 8 + 4 + 4 + 2 + 2)) return false;
+    try {
+        ByteReader r(data, size);
+        out.syncId = r.readU32();
+        out.syncState = r.readU8();
+        out.transferredBytes = r.readU64();
+        out.totalBytes = r.readU64();
+        out.currentFileIndex = r.readU32();
+        out.totalFiles = r.readU32();
+        out.currentFileName = r.readString();
+        out.errorMessage = r.readString();
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+inline void serializeSyncActionReq(const SyncActionReqPayload& p, std::vector<uint8_t>& out) {
+    ByteWriter w;
+    w.writeU32(p.actionId);
+    w.writeU8(p.actionType);
+    w.writeString(p.targetPath);
+    out = w.takeBuffer();
+}
+
+inline bool deserializeSyncActionReq(const uint8_t* data, size_t size, SyncActionReqPayload& out) {
+    if (!data || size < 5) return false;
+    try {
+        ByteReader r(data, size);
+        out.actionId = r.readU32();
+        out.actionType = r.readU8();
+        out.targetPath = r.readString();
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+inline void serializeSyncActionResp(const SyncActionRespPayload& p, std::vector<uint8_t>& out) {
+    ByteWriter w;
+    w.writeU32(p.actionId);
+    w.writeU8(p.actionType);
+    w.writeU8(p.statusCode);
+    w.writeString(p.message);
+    out = w.takeBuffer();
+}
+
+inline bool deserializeSyncActionResp(const uint8_t* data, size_t size, SyncActionRespPayload& out) {
+    if (!data || size < 6) return false;
+    try {
+        ByteReader r(data, size);
+        out.actionId = r.readU32();
+        out.actionType = r.readU8();
+        out.statusCode = r.readU8();
+        out.message = r.readString();
         return true;
     } catch (...) {
         return false;

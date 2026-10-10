@@ -20,15 +20,21 @@ $CoreSources = @(
     "src/control/shell_clipboard.cpp",
     "src/control/clipboard_file_manager.cpp",
     "src/control/whiteboard_manager.cpp",
+    "src/control/file_sync_manager.cpp",
     "src/net/network_engine.cpp",
     "src/net/updater.cpp",
     "src/ui/notification_manager.cpp",
     "src/media/session_recorder.cpp",
+    "src/media/session_recording_player.cpp",
     "src/media/voice_intercom.cpp",
     "src/capture/display_manager.cpp",
+    "src/capture/virtual_display_manager.cpp",
+    "src/capture/screen_blank_manager.cpp",
     "src/control/session_tab_manager.cpp",
     "src/control/windows_service_manager.cpp",
-    "src/control/shortcut_manager.cpp"
+    "src/control/shortcut_manager.cpp",
+    "src/core/totp_manager.cpp",
+    "src/core/qr_matrix.cpp"
 )
 
 $AppSources = $CoreSources + @(
